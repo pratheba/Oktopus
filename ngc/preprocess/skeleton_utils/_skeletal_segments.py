@@ -1,0 +1,122 @@
+import numpy as np
+import os
+import sys
+import trimesh
+
+
+def DFS(corner_points, branch_points, edge_points, dictpoint):
+
+    def DFS_helper(idx, points, isvisited, segments):
+        idxbyte = idx.tobytes()
+        if idxbyte in isvisited:
+            return segments, isvisited
+
+        segments.append(idx)
+        p = dictpoint[idxbyte]
+        if p['num'] <= 2:
+            isvisited.append(idxbyte)
+            end_points = p['end'] 
+            for ep in end_points:
+                segments, isvisited = DFS_helper(ep, dictpoint, isvisited, segments)
+        elif p['num'] > 2:
+            #segments.append(p['id'])
+            return segments, isvisited
+
+        return segments, isvisited
+
+
+    allsegments = []
+    cornersegments = []
+    innersegments = []
+    isvisited = []
+    count = 1
+
+    ### Segments of corner vertices
+    for p in corner_points:
+        idx = p['id']
+        segments = []
+
+        segments, isvisited = DFS_helper(idx, dictpoint, isvisited, segments)
+        allsegments.append(segments)
+        cornersegments.append(segments)
+        trimesh.Trimesh(vertices = np.array(segments), process=False).export(str(count)+'.ply')
+        count += 1
+
+    ### Segments of branch points
+    for p in branch_points:
+        idx = p['id']
+        end_points = p['end'] 
+        isvisited.append(idx.tobytes())
+        for ep in end_points:
+            if ep.tobytes() in isvisited:
+                continue
+            segments = []
+            segments.append(idx)
+            #segments.append(ep)
+
+            segments, isvisited = DFS_helper(ep, dictpoint, isvisited, segments)
+            allsegments.append(segments)
+            innersegments.append(segments)
+            trimesh.Trimesh(vertices = np.array(segments), process=False).export(str(count)+'.ply')
+            count += 1
+
+    return cornersegments, innersegments, allsegments
+
+def get_segments(skeletonfile):
+    fread = open(skeletonfile, "r")
+    lines = []
+    dictpoint = {}
+    all_keypoints = []
+    for line in fread:
+        line = line.strip()
+        arr = np.fromstring(line, dtype=float, sep=' ')
+        lines.append([arr[1:4],arr[4:]])
+        arr1 = arr[1:4].tobytes()
+        arr2 = arr[4:7].tobytes()
+        if not arr1 in dictpoint:
+            dictpoint[arr1] = {'num': 1, 'id': arr[1:4], 'end': [arr[4:7]]}
+            all_keypoints.append(arr[1:4])
+        else:
+            dictpoint[arr1]['num'] += 1 
+            dictpoint[arr1]['end'].append(arr[4:7])
+
+        if not arr2 in dictpoint:
+            dictpoint[arr2] = {'num': 1, 'id': arr[4:7], 'end': [arr[1:4]]}
+            all_keypoints.append(arr[4:7])
+        else:
+            dictpoint[arr2]['num'] += 1
+            dictpoint[arr2]['end'].append(arr[1:4])
+
+    corner_points = []
+    branch_points = []
+    edge_points = []
+    for idx, values in dictpoint.items():
+        if values['num'] == 1:
+            corner_points.append(values)
+        if values['num'] == 2:
+            edge_points.append(values)
+        if values['num'] > 2:
+            branch_points.append(values)
+    keypoints = np.asarray(all_keypoints)
+    #keypoints = np.unique(keypoints)
+
+    cornersegments, innersegments, allsegments = DFS(corner_points, branch_points, edge_points, dictpoint)
+
+    cornersegments = np.asarray(cornersegments, dtype="object")
+    innersegments = np.asarray(innersegments, dtype="object")
+    allsegments = np.asarray(allsegments, dtype="object")
+    cornerpoints = np.asarray(corner_points, dtype="object")
+
+    return {'cornerpoints': cornerpoints,
+            'keypoints': keypoints,
+            'cornersegments': cornersegments,
+            'innersegments': innersegments,
+            'allsegments': allsegments}
+
+#    np.save(os.path.join(outputfolder, filename+'_cornerpoints.npy'), np.array(corner_points))
+#    np.save(os.path.join(outputfolder, filename+'_cornersegments.npy'), cornersegments)
+#    np.save(os.path.join(outputfolder, filename+'_innersegments.npy'), innersegments)
+#    np.save(os.path.join(outputfolder, filename+'_segments.npy'), allsegments)
+    
+if __name__ == '__main__':
+    get_segments(*sys.argv[1:])
