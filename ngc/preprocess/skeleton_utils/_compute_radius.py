@@ -53,7 +53,7 @@ def compute_radius(key_points, corr_polyline):
                 polyline.append(index2)
                 tmp.append(index2)
             if not len(tmp):
-                keypoint_radius[vecbyte] = {'keypoint': vec, 'radius': (0,0)}
+                keypoint_radius[vecbyte] = {'keypoint': vec, 'radius': (0.01,0.01)}
                 continue
             tmp = np.hstack(tmp)
             v1 = polylines[tmp][:,0:3]

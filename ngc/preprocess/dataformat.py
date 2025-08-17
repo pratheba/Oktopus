@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import pickle
+import argparse
 import os
 
 def create_json(segments, segments_xyz, keypoint_radius, iscorner=False):
@@ -17,16 +18,16 @@ def create_json(segments, segments_xyz, keypoint_radius, iscorner=False):
         xyz = segments_xyz[idx]
         for k, keypoint in enumerate(keypoints):
             vecbyte = keypoint.tobytes()
-            radius = keypoint_radius[vecbyte]['radius']
+            if vecbyte not in keypoint_radius:
+                radius = [0.01, 0.01]
+            else:
+                radius = keypoint_radius[vecbyte]['radius']
             keyradius.append([radius[0], radius[1]])
         x_axis = xyz[:,:3]
-        y_axis = -xyz[:,3:6]
+        y_axis = xyz[:,3:6]
         z_axis = xyz[:,6:]
         ball = {'start_x': None, 'end_x': None}
         #if iscorner:
-        x_axis = np.insert(x_axis, 0, x_axis[0], axis=0)
-        y_axis = np.insert(y_axis, 0, y_axis[0], axis=0)
-        z_axis = np.insert(z_axis, 0, z_axis[0], axis=0)
         ball = {'start_x': None, 'end_x': None}
         keyradius = np.array(keyradius)
 
@@ -46,6 +47,8 @@ def create_input_json(corner_segments_file, inner_segments_file, \
         corner_segments_xyz_file, inner_segments_xyz_file, radius_file,\
         output_folder, filename):
 
+    print("creating input json")
+
     corner_segments = np.load(corner_segments_file, allow_pickle=True)
     inner_segments = np.load(inner_segments_file, allow_pickle=True)
     corner_segments_xyz = np.load(corner_segments_xyz_file, allow_pickle=True)
@@ -63,7 +66,22 @@ def create_input_json(corner_segments_file, inner_segments_file, \
     #np.save(os.path.join(output_folder, filename+'_std_handle.pkl'), input_dict)
 
 
-if __name__ == '__main__':
-    import sys
-    create_input_json(*sys.argv[1:])
+#if __name__ == '__main__':
+#    import sys
+#    create_input_json(*sys.argv[1:])
     
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--corner_segments_file', type=str, required=True, help="Corner segments filepath")
+    parser.add_argument('--inner_segments_file', type=str, required=True, help="Inner segments filepath")
+    parser.add_argument('--corner_segments_xyz_file', type=str, required=True, help="Corner segments profile xyz")
+    parser.add_argument('--inner_segments_xyz_file', type=str, required=True, help="Inner segments profile xyz")
+    parser.add_argument('--radius_file', type=str, required=True, help="Key points radius filepath")
+    parser.add_argument('--output_folder', type=str, required=True, help="Output folder location")
+    parser.add_argument('--filename', type=str, required=True, help="Filename to save")
+
+    args = parser.parse_args()
+    create_input_json(args.corner_segments_file, \
+            args.inner_segments_file, args.corner_segments_xyz_file, \
+            args.inner_segments_xyz_file, args.radius_file, \
+            args.output_folder, args.filename)
