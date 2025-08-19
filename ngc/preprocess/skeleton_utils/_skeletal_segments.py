@@ -8,77 +8,107 @@ from visualize import pointcloud_viz, curve_viz
 class SkeletalSegments():
     def __init__(self, root_points, mapping_dict, correspondences):
         self.initial_segments = self.get_initial_segments(root_points, mapping_dict)
-        #self.initial_keypoints = self.get_initial_keyframes()
         self.initial_keypoints, self.initial_correspondence = self.get_keyframes_and_reassignCorrespondence(self.initial_segments, correspondences)
-        #keypoints = np.vstack(keypoints)
-        #np.save('keypoints_file.npy', keypoints)
 
-    #def keyframe_radius(self):
+        self.compute_additional_points()
 
-    def compute_additional_points(corner_point, prev_point, max_radius, approxdis):
+        self.segments = self.initial_segments
+        self.keypoints = self.initial_keypoints
+        self.correspondence = self.initial_correspondence
+
+
+    #def compute_additional_points(corner_point, prev_point, max_radius, approxdis, correspondence_points):
         #corner_points = np.load(corner_points_file, allow_pickle=True)
-        tangent = np.array(corner_point - prev_point)
-        norm_tangent = tangent / np.linalg.norm(tangent)
-        point = corner_point
-        addtional_points = []
-        radius = max_radius
-        while radius >= approxdis:
-            newpoint = point + norm_tangent*approxdis
-            radius -= approxdis
-            point = newpoint
-            additional_points.append(point)
+    def compute_additional_points(self):
+        for key, keypoints in self.initial_keypoints.items():
+            corner_point = keypoints[-1]
+            prev_point = keypoints[-2]
+            tangent = np.array(corner_point - prev_point)
+            norm_tangent = tangent / np.linalg.norm(tangent)
 
-        additional_points.append(point + norm_tangent*radius)
-        return additional_points
+    
+            correspondence = self.initial_correspondence[corner_point.tobytes()]['corres']
+            trimesh.Trimesh(vertices = np.array(correspondence), process=False).export("add_keypoint_orig_corres.ply")
+            radius = (np.linalg.norm(corner_point - correspondence, axis=1))
+            max_radius = np.max(radius)
+            numkeypoints = round((max_radius+0.01)*10)
 
+            add_keypoints = [corner_point + norm_tangent*i*0.1 for i in range(numkeypoints+1)]
+            #add_keypoints = np.concatenate((np.array([corner_point]), np.array(add_keypoints)))
+            #print(add_keypoints)
 
-    #def getKeyPointCorrespondence(keypoints, correspondence_file):
-    #    pointcorrespondence = point_correspondence(keypoints, correspondence_file)
+            add_correspondence = self.assign_closest_correspondence(add_keypoints, correspondence)
+            #print(len(correspondence))
+
+            count = 0
+            new_keypoints = {}
+            #add_keypoints = []
+            
+            for k, v in add_correspondence.items():
+                if len(v['corres']) <= 0:
+                    continue
+                new_keypoints.update({k:v})
+                #add_keypoints.append(v['skelpoint'])
+                #print(v['skelpoint'])
+                nodes = np.array([v['skelpoint']])
+                nodes = np.concatenate((nodes, v['corres']))
+                #print("len of v ", len(v['corres']))
+                trimesh.Trimesh(vertices = np.array(nodes), process=False).export("add_keypoint_corres"+str(count)+".ply")
+                count += 1
+
+            self.initial_correspondence.update(new_keypoints)
+            #print(self.initial_keypoints[key])
+            self.initial_keypoints[key] = np.concatenate((np.array(self.initial_keypoints[key]), np.array(add_keypoints)[1:count+1]))
+            #print(self.initial_keypoints[key])
+            #print("********")
+            #exit()
+
+            #nodes = []
+            #for k,v in self.initial_correspondence.items():
+            #    if len(nodes):
+            #        nodes = np.concatenate((nodes, v['corres']))
+            #    else:
+            #        nodes = v['corres']
+                #print("len of v ", len(v['corres']))
+            #trimesh.Trimesh(vertices = np.array(nodes), process=False).export("add_keypoint_corres_final.ply")
 
     def collectCorrespondences(self, points, correspondence_map):
-       
+        """ Collects the surface vertices that belongs to a segment made of the keypoints.
+
+        Parameters
+        ----------
+        points: np.array
+             The key points that make a segment
+        correspondence_map: dict
+             Dictionary where key is the keyframe points and values contain the correspondence points of the surface
+
+        Returns
+        -------
+        np.array
+            Collection of surface vertices
+
+        """
         allcorrespoints = []
-        #print(correspondence_map)
-        #allnodes = []
-        #for k, v in correspondence_map.items():
-        #    nodes = v['corres']
-        #    allnodes.append(nodes)
-        #allnodes = np.vstack((allnodes))
-        #trimesh.Trimesh(vertices = allnodes, process=False).export('allcorres.ply')
-
         for point in points:
-            #print(point)
-            #print("***")
             corres = correspondence_map[point.tobytes()]['corres']
-            #print(corres)
-            #exit()
             allcorrespoints.append(corres)
-
         allcorrespoints = np.vstack(allcorrespoints)
-        #print(allcorrespoints.shape)
-        #exit()
-
         return allcorrespoints
 
     def assign_closest_correspondence(self, points, correspondences):
         correspondences = np.array(correspondences)
         points = np.array(points)
-        #print(points.shape)
-        #print(correspondences.shape)
-        #exit()
 
         diff = np.linalg.norm(correspondences[:,None,:] - points[None,:, :], axis=2)
-        #print(diff)
         label = np.argmin(diff, axis=1)
-        #print(label)
 
         keyframe_correspondence = {}
         for i, p in enumerate(points):
             mask = (label == i)
-            #print("mask = ", mask)
-            #print(correspondences[mask])
-            #exit()
             keyframe_correspondence[p.tobytes()] = {'skelpoint': p, 'corres': correspondences[mask]}
+
+        #print(keyframe_correspondence)
+        
 
         return keyframe_correspondence
 
@@ -107,16 +137,16 @@ class SkeletalSegments():
     def keyframe_and_correspondence(self, segments, orig_correspondence):
         keypoints = []
         new_correspondence = {}
+        seg_keypoints = {}
         count = 1
 
-        for seg in segments:
+        for index,seg in enumerate(segments):
             start = seg[0]
             seglen = 0
             for i in range(1,len(seg)):
                 seglen += np.linalg.norm(seg[i] - seg[i-1])
             #print(seglen)
             numkeypoints = round(seglen*10)
-            #print("num keypoints = ", numkeypoints)
             kps = []
             if numkeypoints <= 2:
                 kps.append(seg[0])
@@ -127,27 +157,11 @@ class SkeletalSegments():
                 new_correspondence.update(kp_corres)
                 count += 1
 
-#                kp_corres = self.collectCorrespondences(kps, orig_correspondence)
-#                ######## TESTING
-#                nodes = kps
-#                nodes = np.concatenate((nodes,kp_corres))
-#                nodes = np.vstack(nodes)
-#
-#                trimesh.Trimesh(vertices = np.array(nodes), process=False).export("keypoint_orig_corres"+str(count)+".ply")
-#                #count += 1
-#                ################################
-#                kp_corres = np.array(kp_corres)
-#                print("kp = ", kps)
-#                print("corres = ", kp_corres)
-#
                 keypoints.append(kps)
-#                new_corres = self.assign_closest_correspondence(kps, kp_corres)
-#                new_correspondence.append(new_corres)
+                seg_keypoints[index] = kps
                 continue
 
             approxdis = seglen/(numkeypoints-2)
-            #print("approx dis = ",approxdis)
-
             kps = [seg[0]]
             seglen = 0
             start = 0
@@ -155,91 +169,25 @@ class SkeletalSegments():
                 seglen += np.linalg.norm(seg[i] - seg[i-1])
                 if seglen >= approxdis:
                     kps.append(seg[i])
-#                    keypoints.append(np.array(kps))
                     seglen = 0
                     
-#                    kp_corres = self.get_correspondence(np.array(seg[start:i+1]), np.array(kps), orig_correspondence)
-#                    new_correspondence.append(kp_corres)
-
-#                    kp_corres = self.collectCorrespondences(seg[start:i+1], orig_correspondence)
-#                    #kp_corres = self.collectCorrespondences(seg, orig_correspondence)
-#                    kp_corres = np.array(kp_corres)
-#                    #print(kp_corres.shape)
-#                    #exit()
-#                    nodes = kps
-#                    nodes = np.concatenate((nodes,kp_corres))
-#                    nodes = np.vstack(nodes)
-#
-#                    trimesh.Trimesh(vertices = np.array(nodes), process=False).export("keypoint_orig_corres"+str(count)+".ply")
-#                    ###################
-#                    new_corres = self.assign_closest_correspondence(kps, kp_corres)
-#                    new_correspondence.append(new_corres)
-#                    nodes = []
-#                    for k,v in new_corres.items():
-#                        nodes.append(v['skelpoint'])
-#                        #count += 1
-#                        print("v = ", v)
-#                        for e in v['corres']:
-#                            nodes.append(e)
-#                            #count += 1
-#                            #edges.append([count-1, count])
-#
-#                    trimesh.Trimesh(vertices = np.array(nodes), process=False).export("keypoint_corres"+str(count)+".ply")
-#                    count += 1
-
-#                    start = i
-#                    kps = []
-
 
             kps.append(seg[len(seg)-1])
             kps = np.array(kps)
             keypoints.append(kps)
+            seg_keypoints[index] = kps
             kp_corres = self.get_correspondence(np.array(seg), kps, orig_correspondence, str(count))
             new_correspondence.update(kp_corres)
             count += 1
 
-#            kp_corres = self.get_correspondence(np.array(seg[start:i+1]), np.array(kps), orig_correspondence)
-#            new_correspondence.append(kp_corres)
-#
-#            kp_corres = self.collectCorrespondences(seg, orig_correspondence)
-#            kp_corres = np.array(kp_corres)
-#            #print(kp_corres.shape)
-#            #exit()
-#            nodes = kps
-#            nodes = np.concatenate((nodes,kp_corres))
-#            nodes = np.vstack(nodes)
-#
-#            trimesh.Trimesh(vertices = np.array(nodes), process=False).export("keypoint_orig_corres"+str(count)+".ply")
-#            ###################
-#            new_corres = self.assign_closest_correspondence(kps, kp_corres)
-#            new_correspondence.append(new_corres)
-#            
-            #count = 1
-#            nodes = []
-#            edges = []
-#            for k,v in new_corres.items():
-#                nodes.append(v['skelpoint'])
-#                #count += 1
-#                print("v = ", v)
-#                for e in v['corres']:
-#                    nodes.append(e)
-#                    #count += 1
-#                    #edges.append([count-1, count])
-#
-#            trimesh.Trimesh(vertices = np.array(nodes), process=False).export("keypoint_corres"+str(count)+".ply")
-#            count += 1
-
-            #curve_viz(nodes, edges)
-
         count = 1
         for kp in keypoints:
-            print(len(kp))
             trimesh.Trimesh(vertices = np.array(kp), process=False).export("keypoints_"+str(count)+".ply")
             count += 1
 
-        print(new_correspondence)
+        #print(seg_keypoints)
 
-        return keypoints, new_correspondence
+        return seg_keypoints, new_correspondence
 
 
     def getKeyframepoints(self, segments, threshold=1.0):
@@ -344,7 +292,7 @@ class SkeletalSegments():
     def get_keyframes_and_reassignCorrespondence(self, segments, orig_correspondence):
         initial_keypoints, initial_correspondence = self.keyframe_and_correspondence(segments, orig_correspondence)
         #initial_keypoints = self.getKeyframepoints(self.initial_segments, threshold=1.0)
-        initial_keypoints = np.vstack(initial_keypoints)
+        #initial_keypoints = np.vstack(initial_keypoints)
         return initial_keypoints, initial_correspondence
 
     def get_initial_keyframes(self):
