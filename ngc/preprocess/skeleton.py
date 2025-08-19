@@ -1,16 +1,69 @@
 import os
 import argparse
 import numpy as np
-from skeleton_utils import _skeletal_segments, _cylinder_radius, _compute_tangents, _keypoints_adder
+from skeleton_utils import _skeletal_segments, _extract_skeletal_info 
 
 
 class Skeleton():
-    def __init__(self, args):
-        self.name = args.name
-        self.skel_file = args.skel_file
-        self.corres_file = args.corres_file
+    def __init__(self, skel_file, corres_file, surface_vertices):
+        #self.name = args.name
+        self.surface_vertices = surface_vertices
+        self.initialize1(skel_file, corres_file)
 
-        self.initialize(args.output_folder)
+    def initialize1(self, skel_file, corres_file):
+        skeletalpoints = _extract_skeletal_info.get_skeletal_points(skel_file)
+        self.branchpoints = skeletalpoints['branchpoints']
+        self.edgepoints = skeletalpoints['edgepoints']
+        self.cornerpoints = skeletalpoints['cornerpoints']
+        self.mappingdict = skeletalpoints['mappingdict']
+
+        vertices = []
+        for b in self.branchpoints:
+            vertices.append(b['id'])
+        for e in self.edgepoints:
+            vertices.append(e['id'])
+        for c in self.cornerpoints:
+            vertices.append(c['id'])
+
+        correspondencepoints = _extract_skeletal_info.get_correspondence_points(vertices, corres_file)
+
+        self.initial_keypoints = skeletalpoints
+        self.initial_correspondence = correspondencepoints
+        #self.corres_file = args.corres_file
+        #self.initialize(args.output_folder)
+
+        self.SkeletalSegments = _skeletal_segments.SkeletalSegments(self.branchpoints, self.mappingdict, self.initial_correspondence)
+
+    def get_keyframe_with_radius(self):
+        self.SkeletalSegments.keyframe_radius()
+
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def getSegments(self):
+        self.segments = _skeletal_segments.get_segments(self.skel_file)
+
+    def getCorrespondence(self):
+        self.segments = _get_correspondence(self.keypoints, self.corres_file)
+
 
     def initialize(self, output_folder):
         '''
