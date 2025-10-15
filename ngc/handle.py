@@ -4,10 +4,9 @@ import os.path as op
 import numpy as np
 from time import time
 from handle_utils import EasyGraph, MCGrid
-from handle_utils.visualize import visualize
 from scipy.spatial.transform import Rotation
-#from curve_handle import CurveHandle
-from curve_handle_oktopus import CurveHandle
+from curve_handle import CurveHandle
+#from curve_handle_oktopus import CurveHandle
 
 
 class Handle():
@@ -93,37 +92,28 @@ class Handle():
         coords = []
         cids = []
 
-        n_s = samples.shape[0]
-        sidx = np.arange(n_s)
-        pcl = []
-        pcl.append({'type':'points', 'vertices': samples})
+        num_samples = samples.shape[0]
+        sidx = np.arange(num_samples)
+        print("number of samples", num_samples)
+        print("number of curves ", len(self.curves))
 
-        for cid, curve in enumerate(self.curves):
-            # find samples that are inside bounding box
-            # of all the cylinder sample bounding box
+        for cid,curve in enumerate(self.curves):
+            # for each curve, find the samples that belong to that curve
             inbbox = curve.find_inbbox(samples)
-            # Get the samples within the bounding box
+            # 3D point cloud samples in that inbox
             samples_bbox = samples[inbbox]
-            # Get the index of the samples within the bounding box
+            # the index of those samples in theat inbox
             sidx_bbox = sidx[inbbox]
-            pcl.append({'type':'points', 'vertices': samples_bbox})
-            #print("samples = ", samples.shape)
-            #print("samples bbox = ", samples_bbox.shape)
-            #exit()
-           
 
+            # Localize the samples for each curve
             curve_data, inside = curve.localize_samples(samples_bbox)
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
             samples_glob.append(curve_data['samples'])
-            #pcl.append({'type':'points', 'vertices': curve_data['samples']})
             samples_local.append(curve_data['samples_local'])
-            #pcl.append({'type':'points', 'vertices': curve_data['samples_local']})
             coords.append(curve_data['coords'])
-            #print(curve_data['coords'])
             cids.append(np.ones(num_inside, dtype=int)*cid)
-        #visualize(pcl)
 
 
         samples_glob = np.concatenate(samples_glob, axis=0)
@@ -251,6 +241,17 @@ class Handle():
             curve.update()
     
     def apply_scaling(self, arg):
+        print(self.curve_dict.keys())
+        for name, val in arg.items():
+            curve = self.curve_dict[name]
+            scales = np.asarray(val['scales'])
+            ts_array = np.asarray(val['coords'])
+            curve.stretch(scales, ts_array)
+            curve.update()
+
+
+    def apply_stretch(self, arg):
+        print(self.curve_dict.keys())
         for name, val in arg.items():
             curve = self.curve_dict[name]
             scales = np.asarray(val['scales'])
@@ -278,8 +279,8 @@ class Handle():
         bmins = np.stack(bmins)
         res_bmax = np.max(bmaxs, axis=0)
         res_bmin = np.min(bmins, axis=0)
-        res_bmax = np.clip(res_bmax, a_min=-1.2, a_max=1.2)
-        res_bmin = np.clip(res_bmin, a_min=-1.2, a_max=1.2)
+        res_bmax = np.clip(res_bmax, a_min=-1., a_max=1.)
+        res_bmin = np.clip(res_bmin, a_min=-1., a_max=1.)
         return res_bmax, res_bmin
 
     def print_info(self):
@@ -340,15 +341,12 @@ class Handle():
         self.num_curve = len(self.curves)
         
     def load(self, data_path):
-        print(data_path)
         with open(data_path, 'rb') as f:
             data = pickle.load(f)
-        #data = np.load(data_path, allow_pickle=True)
 
         self.curves = []
         self.curve_dict = {}
         for cid, curve_data in enumerate(data['curves']):
-        #for cid, curve_data in enumerate(data):
             curve_data['idx'] = cid
             curve = CurveHandle()
             curve.load_data(curve_data)
@@ -382,18 +380,11 @@ def Handle_from_setting():
 
 
 def process_handle():
-    #root_path = f'/data/NGCDataset/Pack50Dataset'
-    root_path = f'../Pack50Dataset'
+    root_path = f'/data/NGCDataset/Pack50Dataset'
     item_file = op.join(root_path, 'data.txt')
     items = np.loadtxt(item_file, dtype=str)    
-    print(items)
-    items = [items]
     for item in items:
-        print("root path = ", root_path)
-        print("item = ", item)
-        item_path = op.join(root_path, str(item))
-        print("item path = ", item_path)
-        ## Curve key points
+        item_path = op.join(root_path, item)
         handle_path = op.join(item_path, 'handle', 'std_handle.pkl')
         handle = Handle()
         handle.load(handle_path)

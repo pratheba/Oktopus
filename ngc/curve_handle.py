@@ -4,9 +4,11 @@ import os.path as op
 import trimesh
 from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
-from handle_utils import CylindersMesh, mesh_viz
-from handle_utils.visualize import visualize
+from handle_utils import CylindersMesh
 
+
+n_sample_curve = 100
+n_sample_circle = 72
 
 class CurveHandle():
     """docstring for CurveHandle."""
@@ -18,8 +20,8 @@ class CurveHandle():
 
     def update(self):
         self.core.update()
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def set_curve(self, arg):
@@ -73,6 +75,7 @@ class CurveHandle():
         )
         self.core.key_radius *= key_radius_scales[:,None]
 
+
     def rot_part(self, idx, axis, angle):
         anchor = self.core.key_points[idx]
         part_pts = self.core.key_points[idx:]
@@ -93,8 +96,10 @@ class CurveHandle():
         self.core.key_points[idx1:] += offset1
         self.core.key_points[:(idx2+1)] += offset2
         # NOTE: do not update, since it will recalculate natural coords
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 20
+        #n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def rot_tilt(self, angles, coords):
@@ -211,8 +216,6 @@ class CurveHandle():
 
         cyl_mesh.add_cap(v0, vidx[0])
         cyl_mesh.add_cap(v1, vidx[-1], flip_face=True)
-
-        mesh_viz(cyl_mesh.vertices, cyl_mesh.faces)
         return cyl_mesh
 
     def generate_samples(self, num_samples):
@@ -234,10 +237,12 @@ class CurveHandle():
     
     def filter_grid_mix(self, mc_grid, mix_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        #ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate_mix(ts, mix_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        #thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -248,10 +253,10 @@ class CurveHandle():
 
     def filter_grid_stretch(self, mc_grid, blend_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl,_ = self.core.interpolate_stretch(ts, blend_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_smaple_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -268,10 +273,10 @@ class CurveHandle():
     
     def calc_global_implicit(self, mc_grid, sigma, return_coords=False):
         # gen blended cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate(ts)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         intpl['level'] = sigma
         cyl_mesh = self.__gen_cyl_mesh(intpl)
@@ -376,7 +381,10 @@ class PWLACurve():
         # self.start_ball_x = self.key_radius[0].mean()
         # self.end_ball_x = None
         # self.start_ball_x = None
-        ball_data = arg['ball']
+        if 'ball' in arg:
+            ball_data = arg['ball']
+        else:
+            ball_data = None
         if ball_data is None:
             self.end_ball_x = None
             self.start_ball_x = None
@@ -528,69 +536,71 @@ class PWLACurve():
         return inside_flag, ts
     
 
-    def curve_projection(self, samples, N_discrete=20, outside=False):
-        td = np.linspace(0., 1., N_discrete, endpoint=False)
-        ii = np.searchsorted(td, self.key_ts)
-        td = np.insert(td, ii, self.key_ts)
-        td = np.unique(td)
+    def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
+        uniform_linear_points = np.linspace(0., 1., N_discrete, endpoint=False)
+        ii = np.searchsorted(uniform_linear_points, self.key_ts)
+        non_uniform_linear_points = np.insert(uniform_linear_points, ii, self.key_ts)
+        non_uniform_linear_points = np.unique(non_uniform_linear_points)
 
-        verts = self.interpolate(td, radius=False, frame=False)['points']
-        tree = KDTree(verts)
+        skeletal_verts = self.interpolate(non_uniform_linear_points, radius=False, frame=False)['points']
+        tree = KDTree(skeletal_verts)
         # not accurate for radius-varying skeleton
         _, vidx = tree.query(samples)
-        ts = -1*np.ones(samples.shape[0])
+        samples3D_to_skeleton = -1*np.ones(samples.shape[0])
         # basically project samples onto the piecewise linear curve
-        num_vert = verts.shape[0]
+        num_vert = skeletal_verts.shape[0]
         for vid in range(num_vert):
-            sidx = np.argwhere(vidx == vid).flatten()
-            if len(sidx) == 0:
+            sample_index = np.argwhere(vidx == vid).flatten()
+            if len(sample_index) == 0:
                 continue
 
-            samples_v = samples[sidx]
+            samples_v = samples[sample_index]
 
             if 0 < vid < num_vert - 1:
                 # middle part
-                ts[sidx] = td[vid]
+                ## The samples which belong to the sample_index is mapped to the nearest keypoints through their index 
+                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
 
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid], td[vid]), 
-                    (verts[vid+1], td[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid-1], td[vid-1]), 
-                    (verts[vid], td[vid])
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid])
                 )
                 in_p = np.logical_xor(in1, in2)
                 px = (in1*px1 + in2*px2)[in_p]
-                ts[sidx[in_p]] = px
+                samples3D_to_skeleton[sample_index[in_p]] = px
 
             elif vid == 0:
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid], td[vid]), 
-                    (verts[vid+1], td[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 # consider halfball+ cylinder
                 # left side of cylinder remain valid
                 if self.start_ball_x is not None or outside:
-                    ts[sidx] = 0.
+                    samples3D_to_skeleton[sample_index] = 0.
 
-                ts[sidx[in1]] = px1[in1]
+                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
 
             else:
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid-1], td[vid-1]), 
-                    (verts[vid], td[vid]), 
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
                 )
                 if self.end_ball_x is not None or outside:
-                    ts[sidx] = 1.
+                    samples3D_to_skeleton[sample_index] = 1.
 
-                ts[sidx[in2]] = px2[in2]
+                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
 
-        return ts
+        #import pdb; pdb.set_trace();
+        return samples3D_to_skeleton
 
     def calc_x_radius(self, ts):
         xrs = np.ones(ts.shape[0])
@@ -615,7 +625,7 @@ class PWLACurve():
 
         # frame: (N, 3,3), vs (N, 3)
         samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
-        samples_local /= (0.01+radius)
+        samples_local /= radius
         norms_cyl = np.linalg.norm(samples_local, axis=1)
         
         vx = 2*ts - 1
@@ -683,25 +693,44 @@ class PWLACurve():
         else:
             return ds*signs
 
-    def localize_samples(self, vs, return_sdf=False):
-        ts = self.curve_projection(vs)
-        ts_range = np.logical_and(ts >= 0., ts <= 1.)
-        sidx = np.arange(vs.shape[0])
-        ts = ts[ts_range]
-        vs = vs[ts_range]
-        sidx = sidx[ts_range]
-        
-        intpl = self.interpolate(ts)
+    def localize_samples(self, pointcloudsamples, return_sdf=False):
+        sample_keypoint_map = self.curve_projection(pointcloudsamples)
+        #print("sample_keypoint_map", sample_keypoint_map)
+
+        sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
+        sample_index = np.arange(pointcloudsamples.shape[0])
+
+        ### Keep only the points that fall within the rane of 0 and 1
+        sample_keypoint_map = sample_keypoint_map[sample_keypoint_map_range]
+        pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
+        sample_index = sample_index[sample_keypoint_map_range]
+
+
+        # interpolate with the new additional non linear skeletal keypoints
+        intpl = self.interpolate(sample_keypoint_map)
+
+        ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
-        yz_rs = intpl['radius']
+        #print("proj vs", proj_vs)
+        #print(self.key_points)
+        #exit()
+        yz_radius = intpl['radius']
         frame_mat = intpl['frame']
 
-        x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_rs], axis=1)
+        # If the end ball is None then x_radius  = 1.0 
+        x_radius = self.calc_x_radius(sample_keypoint_map)
+        radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
+        #print("raidus = ", radius)
 
         # frame: (N, 3,3), vs (N, 3)
-        samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        # The vector of the keypoint to the skeletam point is rotated using the rotation from
+        samples_local = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
+        # And all are bounding to radius
+        #print("samples_local", samples_local)
+        #import pdb; pdb.set_trace()
         samples_local /= radius
+        #print("samples_local normalized", samples_local)
+        #exit()
 
         # in std cylinder
         norms = np.linalg.norm(samples_local, axis=1)
@@ -709,16 +738,20 @@ class PWLACurve():
             return norms - 1, sidx
         
         inside_cyl = norms <= 1
-        inside = sidx[inside_cyl]
+        inside = sample_index[inside_cyl]
 
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
-        vx = 2*ts - 1
+        vx = 2*sample_keypoint_map - 1
+        #import pdb; pdb.set_trace()
+        #print(samples_local, flush=True)
         samples_local[:, 0] += vx
+        #print(samples_local, flush=True)
+        #import pdb; pdb.set_trace()
         return {
-            'samples': vs[inside_cyl],
+            'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],
-            'coords': ts[inside_cyl],
+            'coords': sample_keypoint_map[inside_cyl],
             # 'radius': yz_rs[inside_cyl],
         }, inside
     
@@ -834,9 +867,10 @@ class PWLACurve():
         }
 
 
-    def interpolate(self, ts, points=True, radius=True, frame=True):
+    def interpolate(self, non_uniform_linear_skeletal_points, points=True, radius=True, frame=True):
         res = {}
         # key_points: (N, 3); key_radius: (N, 2)
+        ts = non_uniform_linear_skeletal_points
         if points:
             pts_ts = np.stack([
                 np.interp(ts, self.key_ts, self.key_points[:, 0]),
@@ -886,8 +920,8 @@ class PWLACurve():
         intpl['radius'] = radius
         return intpl
     
-    def interpolate_stretch(self, ts, mix_arg):
-        func = mix_arg['mix_func']
+    def interpolate_stretch(self, ts, stretch_arg):
+        func = stretch_arg['mix_func']
         ts_new = func(ts)
 
         rs1 = np.stack([

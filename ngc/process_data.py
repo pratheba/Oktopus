@@ -5,29 +5,28 @@ import os.path as op
 import pymeshlab as ml
 from time import time
 from tqdm.autonotebook import tqdm
+#from ngc.handle import Handle
 from handle import Handle
-#from .handle import Handle
-from handle_utils.visualize import visualize
 
 def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
-    ms = ml.MeshSet()
-    ms.load_new_mesh(shape_path)
-    ms.generate_sampling_poisson_disk(samplenum=num_samples)
-    mesh = ms.current_mesh()
-    #print(mesh.vertex_matrix())
-    #print(mesh.face_matrix())
-    #trimesh.Trimesh(vertices = np.array(mesh.vertex_matrix()), faces=np.array(mesh.face_matrix())).export("test.ply")
-    #exit()
-
-    verts = mesh.vertex_matrix()
-    vn = mesh.vertex_normal_matrix()
-    vn /= (np.linalg.norm(vn, axis=1, keepdims=True))+1e-7
 
     # add noise 
-    noise = np.random.normal(0, noise_scale, size=verts.shape[0])
-    verts_around = verts + noise[:, None]* vn
+    verts_around = []
+    for ns in noise_scale:
+        ms = ml.MeshSet()
+        ms.load_new_mesh(shape_path)
+        ms.generate_sampling_poisson_disk(samplenum=num_samples)
+        mesh = ms.current_mesh()
+
+        verts = mesh.vertex_matrix()
+        vn = mesh.vertex_normal_matrix()
+        vn /= np.linalg.norm(vn, axis=1, keepdims=True)
+        noise = np.random.normal(0, ns, size=verts.shape[0])
+        verts_around.append(verts + noise[:, None]* vn)
+    verts_around = np.vstack((verts_around))
     
     verts = np.concatenate([verts, verts_around], axis=0)
+    print("verts shape = ", verts.shape)
     return verts
 
 def meshlab_volumetric_sampling(shape_path, num_samples):
@@ -39,8 +38,6 @@ def meshlab_volumetric_sampling(shape_path, num_samples):
     )
     mesh = ms.mesh(1)
     verts = mesh.vertex_matrix()
-    #trimesh.Trimesh(vertices = np.array(verts)).export("test.ply")
-    #exit()
     return verts
 
 def bbox_volumetric_sampling(shape_path, num_samples):
@@ -57,15 +54,9 @@ def bbox_volumetric_sampling(shape_path, num_samples):
 
 
 def meshlab_SDF_eval(shape_path, samples):
-    #print("SDF eval", flush=True)
     ms = ml.MeshSet()
     ms.load_new_mesh(shape_path)
-    #print("load new mesh", flush=True)
-    #print("samples = ", samples, flush=True)
-    samples = np.array(samples)
-    #print(samples.shape, flush=True)
-    pc_mesh = ml.Mesh(vertex_matrix=samples)
-    #print("pc mesh", flush=True)
+    pc_mesh = ml.Mesh(samples)
     ms.add_mesh(pc_mesh, 'pc')
 
     ms.compute_scalar_by_distance_from_another_mesh_per_vertex()
@@ -101,10 +92,9 @@ def ngc_dataset(arg):
             output_path = op.join(item_path, 'train_data')
             os.makedirs(output_path, exist_ok=True)
             output_file = op.join(output_path, file_name)
-            print("output file = ", output_file)
 
             if op.exists(output_file):
-                print('Exists: ', output_file)
+                print('Exists: ', item_path)
                 pbar.update(1)
                 #continue
 
@@ -114,44 +104,32 @@ def ngc_dataset(arg):
             if not op.exists(handle_mesh_file):
                 export_handle_data(handle, output_path, handle_path)
 
-            # the wrapper cylindrical shape surface
+            surface_samples = meshlab_shape_sampling(
+                shape_file, n_surface_samples//2, [0.0001, 0.01]
+            )
+
+            #surface_samples = meshlab_shape_sampling(
+            #    shape_file, n_surface_samples, [0.01]
+            #)
             space_samples = meshlab_volumetric_sampling(
                 handle_mesh_file, n_space_samples
             )
-
-            # original shape surface
-            surface_samples = meshlab_shape_sampling(
-                shape_file, n_surface_samples, 0.01
-            )
-
-
-            #pcl = []
-            #pcl.append({'type': 'points', 'vertices': surface_samples})
-            #pcl.append({'type': 'points', 'vertices': space_samples})
-            #visualize(pcl)
-            #exit()
-
-
             # space_samples = bbox_volumetric_sampling(
             #     handle_mesh_file, n_space_samples
             # )
 
             surface_data = handle.prepare_samples(surface_samples)
-            #print("surface data", flush=True)
             surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
             surface_data['sdf'] = surface_sdf
 
             space_data = handle.prepare_samples(space_samples)
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
-            #print("done1", flush=True)
             space_data['sdf'] = space_sdf
-            #print("done", flush=True)
 
             train_data = {
                 'surface': surface_data,
                 'space': space_data,
             }
-            print("output_file", output_file, flush=True)
 
             with open(output_file, 'wb') as f:
                 pickle.dump(train_data, f)
@@ -165,11 +143,10 @@ if __name__ == "__main__":
 
     #root_path = '/path/to/dataset'
     root_path = '../Pack50Dataset'
-    #item_file = op.join(root_path, 'data.txt')
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 30000,
-        'n_space_samples' : 50000,
+        'n_surface_samples' : 2000000,
+        'n_space_samples' : 1000000,
     }
     ngc_dataset(arg)
