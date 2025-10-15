@@ -2,6 +2,13 @@ import os, argparse
 import os.path as op
 import numpy as np
 import torch
+
+import collections as _collections
+import collections.abc as _abc
+for _name in ("MutableMapping", "MutableSequence", "Mapping", "Sequence", "Set", "MutableSet"):
+            if not hasattr(_collections, _name) and hasattr(_abc, _name):
+                                    setattr(_collections, _name, getattr(_abc, _name))
+
 import training, network, data, utils
 
 
@@ -20,14 +27,13 @@ opt = {
     'config_path': args.config_path,
     'root_path': op.dirname(op.abspath(__file__)),
 }
-#opt = utils.process_options(opt, mode='train')
 opt = utils.process_options(opt, mode='train')
-#print(opt)
-#exit()
 
 ### Train Dataset
 train_dataloader = data.get_dataloader(opt['dataset'], dataset_mode='train')
 opt['training']['train_dataloader'] = train_dataloader
+val_dataloader = data.get_dataloader(opt['dataset'], dataset_mode='val')
+opt['training']['val_dataloader'] = val_dataloader
 
 ### define model
 model = network.define_model(opt['model'])
