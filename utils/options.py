@@ -12,6 +12,10 @@ def process_options(opt, mode='train'):
         train_opt = res['training']
         train_opt['log_path'] = res['log_path']
         train_opt['loss'] = res['loss']
+    if mode == 'val':
+        val_opt = res['val']
+        val_opt['log_path'] = res['log_path']
+        val_opt['loss'] = res['loss']
 
     # res['dataset']['handle_file'] = res['handle_file']
     # res['model']['handle_file'] = res['handle_file']

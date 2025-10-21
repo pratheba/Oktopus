@@ -72,15 +72,6 @@ class Agent():
         embd_model, _ = utils.load_model(device, log_path, 'final')
         self.model.set_embedding(embd_model.encoder.embd)
 
-
-    def apply_stretch(self, arg):
-        handle = arg['handle']
-        
-        # local scaling by changing the key radiuis
-        if 'stretch' in arg:
-            handle.apply_stretch(arg['stretch'])
-
-
     def apply_transform(self, arg):
         handle = arg['handle']
         # curve posing, by setting new pose of current skeleton
@@ -285,8 +276,7 @@ class Agent():
         exp_name = arg['exp_name']
         mc_grid = arg['mc_grid']
         shape_name = arg['shape']
-        config = utils.load_yaml_file(arg['mixing_file'])
-        print(config, flush=True)
+        config = utils.load_yaml_file(arg['stretch_file'])
 
         data_root = arg['data_root']
         handle = self.load_shape_handle(data_root, shape_name)
@@ -304,13 +294,11 @@ class Agent():
                 if new_key == 'None':
                     continue
                 
-                #func1 = utils.define_mix_func(stretch_config, weights_reverse=True)
-                #func2 = utils.define_mix_func(stretch_config, weights_reverse=False)
                 func = utils.define_stretch_func(stretch_config)
 
                 stretch_arg = {
                     'curve_handle': self.curve_from_key(new_key),
-                    'mix_func': func,
+                    'stretch_func': func,
                     'device': self.device,
                     'curve_idx': self.feat_dict[key],
                     'new_idx': self.feat_dict[new_key],

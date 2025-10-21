@@ -9,198 +9,184 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from dotted.collection import DottedDict
 from time import time
+from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint
+from loss import config_loss
+
+import network, data
 
 
-def get_optimizer(opt, model):
-    p = opt.optim
-    res = {}
-    if p.type == 'Adam':
-        #return {
-        optim = torch.optim.Adam(params=model.parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-        #    'epoch_lr': None,
-        #    'step_lr' : None
-        #}
-    elif p.type == 'AdamW':
-        #return {
-        optim =  torch.optim.AdamW(params=model.parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-        #    'epoch_lr': None,
-        #    'step_lr' : None
-        #}
-    elif p.type == 'SGD':
-        #res = {}
-        optim = torch.optim.SGD(model.parameters(), lr=p.lr, momentum=p.momentum)
-    else:
-        raise NotImplementedError('Not implemented optimizer type')
-    res['optimizer'] = optim
-    res['epoch_lr'] = None
-    res['step_lr'] = None
-    if p.lr_scheduler:
-        if p.lr_scheduler == 'MultiStep':
-            lr_sch = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=p.milestones, gamma=p.gamma)
-            res['epoch_lr'] = lr_sch
-        elif p.lr_scheduler == 'ROP':
-            #print(p.factor)
-            #print(p.patience)
-            #print(optim)
-            lr_sch = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, factor=p.factor, patience=p.patience)
-            res['epoch_lr'] = lr_sch
-        elif p.lr_scheduler == 'CLR':
-            lr_sch = torch.optim.lr_scheduler.CyclicLR(optim, base_lr=p.base_lr, max_lr=p.max_lr, step_size_up=p.step)
-            res['step_lr'] = lr_sch
+class Trainer:
+    def __init__(self, opt, device='cuda:0'):
+        self.model =None
+        self.opt = opt
+        self.device = device
+        self.initialize()
+
+    def initialize(self):
+        ### Train Dataset
+        self.train_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='train')
+        #opt['training']['train_dataloader'] = train_dataloader
+        self.val_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='val')
+        #opt['training']['val_dataloader'] = val_dataloader
+
+        ### define model
+        if self.opt['training']['resume']:
+            print("resuming")
+            self.model, _ = utils.load_model(cpu_device, log_path, model_path, checkpoint)
         else:
-            raise NotImplementedError('Not implemented lr scheduler')
-    return res
+            self.model = network.define_model(self.opt['model'])
+        self.model.to(self.device)
 
+        ### define loss
+        self.train_loss_fn = config_loss(self.opt['loss']) 
+        self.val_loss_fn = config_loss(self.opt['val_loss'])
 
-def get_lr_scheduler(optim, opt):
-    sch_type = opt['type']
-    if sch_type == 'MultiStep':
-        lr_sch = torch.optim.lr_scheduler.MultiStepLR(
-        optim, milestones=opt['milestones'], gamma=opt['gamma'])
-    else:
-        raise NotImplementedError
-    
-    return lr_sch
+    def train_model(self):
+        opt = DottedDict(self.opt)
+        res = get_optimizer(opt, self.model)
+        self.optim = res['optimizer']
+        self.scheduler = res['epoch_lr']
 
-def train_model(opt, model):
-    opt = DottedDict(opt)
-    res = get_optimizer(opt, model)
-    optim = res['optimizer']
-    scheduler = res['epoch_lr']
+        model_dir = opt.log_path
 
-    # lr = 0.1*opt['optim']['lr']
-    # optim2 = torch.optim.Adam(params=model.parameters(), lr=lr)
+        os.makedirs(model_dir, exist_ok=True)
+        summaries_dir = os.path.join(model_dir, 'summaries')
+        checkpoints_dir = os.path.join(model_dir, 'checkpoints')
+        os.makedirs(summaries_dir, exist_ok=True)
+        os.makedirs(checkpoints_dir, exist_ok=True)
 
-    model_dir = opt.log_path
-    os.makedirs(model_dir, exist_ok=True)
-    summaries_dir = os.path.join(model_dir, 'summaries')
-    checkpoints_dir = os.path.join(model_dir, 'checkpoints')
-    os.makedirs(summaries_dir, exist_ok=True)
-    os.makedirs(checkpoints_dir, exist_ok=True)
+        writer = SummaryWriter(summaries_dir)
 
-    writer = SummaryWriter(summaries_dir)
-    train_dataloader = opt['train_dataloader']
-    train_loss_fn = opt['train_loss']
+        total_steps = 0
+        best_val_epoch = -1
+        best_train_epoch = -1
+        best_val_loss = np.inf
+        best_train_loss = np.inf
 
-    total_steps = 0
-    with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
-        for epoch in range(opt.num_epochs):
-            if not epoch % opt.epochs_til_ckpt and epoch:
-                torch.save(
-                    model.state_dict(),
-                    os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch)
-                )
+        train_dataloader = self.train_dataloader
+        val_dataloader = self.val_dataloader
 
-            # -----------------------
-            # training
-            # -----------------------
-            epoch_train_loss = 0.0
-            num_items = 0
-            for data in train_dataloader:
-                model_input, gt, info = data
-                model_input = {key: val.cuda() for key,val in model_input.items()}
-                gt = {key: val.cuda() for key,val in gt.items()}
-                model_input['info'] = info
-                gt['info'] = info
-                batch_size = gt['sdf'].shape[0]
-                #print(model_input['samples_local'])
-                #exit()
-                model_output = model(model_input)
-                losses = train_loss_fn(model_output, gt)
+        with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
+            for epoch in range(opt.num_epochs):
+                if not epoch % opt.epochs_til_ckpt and epoch:
+                    print(self.model.state_dict())
+                    exit()
+                    save_checkpoint(self.model, self.optim, self.scheduler, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
 
-                train_loss = 0.
-                for loss_name, loss in losses.items():
-                    factor = opt.loss[loss_name].factor
-                    loss_name = f'{loss_name}(X{factor})'
-                    writer.add_scalar(loss_name, loss, total_steps)
-                    train_loss += loss
-
-                writer.add_scalar("total_train_loss", train_loss, total_steps)
-
-                optim.zero_grad()
-                epoch_train_loss += (train_loss.item() * batch_size)
-                num_items += batch_size
-                train_loss.backward()
-
-                if opt.clip_grad:
-                    if isinstance(opt.clip_grad, bool):
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
-                    else:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=opt.clip_grad)
-
-                optim.step()
-
-                pbar.update(1)
-                # default to be only one parameter group
-                current_lr = optim.param_groups[0]['lr']
-                writer.add_scalar('lr', current_lr, total_steps)
-
-                if not total_steps % opt.steps_til_summary:
-                    message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
-                        epoch, total_steps, train_loss, current_lr)
-                    for name, loss in losses.items():
-                        message = message + '{}(X{}): {:.4f}, '.format(name, opt.loss[name].factor, loss.item())
-                    tqdm.write(message)
-
-
-                total_steps += 1
-                
-            # -----------------------
-            # Validation and epoch lr scheduler
-            # -----------------------
-            vals = {}
-            if opt.val_type == 'None':
-                curr_epoch_loss = epoch_train_loss / num_items
-                #scheduler.step(curr_epoch_loss)
-                if not total_steps % opt.steps_til_summary:
-                    message = "Current Epoch Loss {:0.4f}".format(curr_epoch_loss) # epoch, total_steps, train_loss, current_lr)
-                    tqdm.write(message)
-                continue
-            
-            val_dataloader = opt['val_dataloader']
-            print("val dataloader = ", val_dataloader, flush=True)
-            with torch.no_grad():
-                t1 =time()
-                # print('Validation Start')
-                model.eval()
-                for data in val_dataloader:
+                # -----------------------
+                # training
+                # -----------------------
+                epoch_train_loss = 0.0
+                num_items = 0
+                for data in train_dataloader:
                     model_input, gt, info = data
                     model_input = {key: val.cuda() for key,val in model_input.items()}
                     gt = {key: val.cuda() for key,val in gt.items()}
                     model_input['info'] = info
+                    gt['info'] = info
+                    batch_size = gt['sdf'].shape[0]
+                    #print(model_input['samples_local'])
+                    #exit()
+                    model_output = self.model(model_input)
+                    losses = self.train_loss_fn(model_output, gt)
 
-                    res = model.forward_val(model_input, gt)
-                    if len(vals) == 0:
-                        for key,val in res.items():
-                            vals[key] = [val]
-                    else:
-                        for key,val in res.items():
-                            vals[key].append(val)
+                    train_loss = 0.
+                    for loss_name, loss in losses.items():
+                        factor = opt.loss[loss_name].factor
+                        loss_name = f'{loss_name}(X{factor})'
+                        writer.add_scalar(loss_name, loss, total_steps)
+                        train_loss += loss
 
-                for key,val in vals.items():
-                    writer.add_scalar(f'val_mean_{key}', np.mean(val), epoch)
+                    writer.add_scalar("total_train_loss", train_loss, total_steps)
 
-                if not epoch % opt.epochs_til_showval or epoch == opt.num_epochs-1:
-                    for key,val in vals.items():
-                        val = np.asarray(val)
-                        print('Epoch {} | {} mean:{:.6f}, min:{:.6f}, max:{:.6f}'.format(
-                            epoch, key, val.mean(), val.min(), val.max())  )
+                    self.optim.zero_grad()
+                    epoch_train_loss += (train_loss.item() * batch_size)
+                    num_items += batch_size
+                    train_loss.backward()
 
-                    print(f'Validation Done, time cost: {time()-t1}')
-                    if epoch == opt.num_epochs-1:
-                        val_path = os.path.join(model_dir, 'final_val.pkl')
-                        with open(val_path, 'wb') as f:
-                            pickle.dump(vals, f)
+                    if opt.clip_grad:
+                        if isinstance(opt.clip_grad, bool):
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.)
+                        else:
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=opt.clip_grad)
 
+                    self.optim.step()
+
+                    pbar.update(1)
+                    # default to be only one parameter group
+                    current_lr = self.optim.param_groups[0]['lr']
+                    writer.add_scalar('lr', current_lr, total_steps)
+
+                    #message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
+                    #        epoch, total_steps, train_loss, current_lr)
+                    #tqdm.write(message)
+                    if best_train_loss >= epoch_train_loss:
+                        best_train_loss = epoch_train_loss
+                        best_train_epoch = epoch
+
+                    if not total_steps % opt.steps_til_summary:
+                        message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
+                            epoch, total_steps, epoch_train_loss, current_lr)
+                        for name, loss in losses.items():
+                            message = message + '{}(X{}): {:.4f}, '.format(name, opt.loss[name].factor, loss.item())
+                        tqdm.write(message)
+
+
+                    total_steps += 1
+                    
+                # -----------------------
+                # Validation and epoch lr scheduler
+                # -----------------------
+                vals = {}
+                if opt.val_type == 'None':
+                    continue
                 
-                model.train()
-            scheduler.step(validation_loss)
+                #print("val dataloader = ", val_dataloader, flush=True)
+                epoch_val_loss = 0.0
+                self.model.eval()
+                with torch.no_grad():
+                    t1 =time()
+                    # print('Validation Start')
+                    #model.eval()
+                    num_items = 0
+                    for data in val_dataloader:
+                        model_input, gt, info = data
+                        model_input = {key: val.cuda() for key,val in model_input.items()}
+                        gt = {key: val.cuda() for key,val in gt.items()}
+                        model_input['info'] = info
+                        batch_size = gt['sdf'].shape[0]
 
-        # TODO:final evaluation
-        torch.save(model.state_dict(), 
-            os.path.join(checkpoints_dir, 'model_final.pth'))
+                        model_output = self.model.validation(model_input)
+                        losses = self.val_loss_fn(model_output, gt)
+
+                        val_loss = 0.
+                        for loss_name, loss in losses.items():
+                            factor = opt.loss[loss_name].factor
+                            loss_name = f'{loss_name}(X{factor})'
+                            writer.add_scalar(loss_name, loss, total_steps)
+                            val_loss += loss
+
+                        #writer.add_scalar("total_val_loss", val_loss, total_steps)
+
+                        epoch_val_loss += (val_loss.item() * batch_size)
+                        num_items += batch_size
+
+                    epoch_val_loss /= num_items
+                    if best_val_loss >= epoch_val_loss:
+                        best_val_loss = epoch_val_loss
+                        best_val_epoch = epoch
+                        save_checkpoint(self.model, self.optim, self.scheduler, best_val_epoch, best_val_loss, os.path.join(checkpoints_dir, 'best_model_eval.pth'))
+
+                    #scheduler.step(curr_epoch_loss)
+                    if not total_steps % opt.steps_til_summary:
+                        message = "Current Epoch val Loss {:0.4f}".format(epoch_val_loss) # epoch, total_steps, train_loss, current_lr)
+                        tqdm.write(message)
+
+                    self.scheduler.step(epoch_val_loss)
+                self.model.train()
+
+            # TODO:final evaluation
+            save_checkpoint(self.model, self.optim, self.scheduler, epoch, epoch_train_loss, os.path.join(checkpoints_dir, 'model_final.pth'))
         
 
 def optimize_code(opt, model):
@@ -223,7 +209,8 @@ def optimize_code(opt, model):
 
     writer = SummaryWriter(summaries_dir)
     train_dataloader = opt['train_dataloader']
-    train_loss_fn = opt['train_loss']
+    #train_loss_fn = opt['train_loss']
+    #val_loss_fn = opt['val_loss']
 
     total_steps = 0
     num_epochs = opt['post_epochs'] 
@@ -241,7 +228,7 @@ def optimize_code(opt, model):
                 gt['info'] = info
 
                 model_output = model(model_input)
-                losses = train_loss_fn(model_output, gt)
+                losses = self.train_loss_fn(model_output, gt)
 
                 train_loss = 0.
                 for loss_name, loss in losses.items():

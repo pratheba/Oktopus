@@ -12,6 +12,15 @@ def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
 
     # add noise 
     verts_around = []
+    ms = ml.MeshSet()
+    ms.load_new_mesh(shape_path)
+    ms.generate_sampling_poisson_disk(samplenum=num_samples*2)
+    mesh = ms.current_mesh()
+
+    verts = mesh.vertex_matrix()
+    #print("num vertices = ", len(verts))
+    verts_around = verts
+
     for ns in noise_scale:
         ms = ml.MeshSet()
         ms.load_new_mesh(shape_path)
@@ -19,15 +28,14 @@ def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
         mesh = ms.current_mesh()
 
         verts = mesh.vertex_matrix()
+        #print("num vertices ns = ", len(verts))
         vn = mesh.vertex_normal_matrix()
         vn /= np.linalg.norm(vn, axis=1, keepdims=True)
         noise = np.random.normal(0, ns, size=verts.shape[0])
-        verts_around.append(verts + noise[:, None]* vn)
-    verts_around = np.vstack((verts_around))
-    
-    verts = np.concatenate([verts, verts_around], axis=0)
-    print("verts shape = ", verts.shape)
-    return verts
+        verts_around = np.concatenate((verts_around, verts + noise[:, None]* vn), axis=0)
+        #print("verts shape = ", verts.shape)
+    print("verts shape = ", verts_around.shape)
+    return verts_around
 
 def meshlab_volumetric_sampling(shape_path, num_samples):
     ms = ml.MeshSet()
@@ -72,6 +80,27 @@ def export_handle_data(handle, graph_path, handle_path):
         pickle.dump(graph_data, f)
 
 
+def split_train_test(num_surface, num_space):
+
+    split = 0.8
+
+    surface_ids = np.arange(num_surface)
+    space_ids = np.arange(num_space)
+
+    np.random.shuffle(surface_ids)
+    np.random.shuffle(space_ids)
+
+    num_train_surface = int(split * num_surface)
+    num_train_space = int(split * num_space)
+
+    surface_train_ids = surface_ids[0:num_train_surface]
+    space_train_ids = space_ids[0:num_train_space]
+
+    surface_val_ids = surface_ids[num_train_surface:]
+    space_val_ids = space_ids[num_train_space:]
+
+    return surface_train_ids, surface_val_ids, space_train_ids, space_val_ids
+
 def ngc_dataset(arg):
     root_path = arg['root_path']
     file_name = arg['file_name']
@@ -89,14 +118,18 @@ def ngc_dataset(arg):
             handle_path = op.join(item_path, 'handle')
             handle_file = op.join(handle_path, 'std_handle.pkl')
             handle_mesh_file = op.join(handle_path, 'std_mesh.ply')
-            output_path = op.join(item_path, 'train_data')
-            os.makedirs(output_path, exist_ok=True)
-            output_file = op.join(output_path, file_name)
+            output_train_path = op.join(item_path, 'train_data')
+            output_val_path = op.join(item_path, 'val_data')
+            os.makedirs(output_train_path, exist_ok=True)
+            os.makedirs(output_val_path, exist_ok=True)
 
-            if op.exists(output_file):
-                print('Exists: ', item_path)
-                pbar.update(1)
-                #continue
+            output_train_file = op.join(output_train_path, file_name)
+            output_val_file = op.join(output_val_path, file_name)
+
+            #if op.exists(output_train_file):
+            #    print('Exists: ', item_path)
+            #    pbar.update(1)
+            #    #continue
 
             handle = Handle()
             handle.load(handle_file)
@@ -124,15 +157,40 @@ def ngc_dataset(arg):
 
             space_data = handle.prepare_samples(space_samples)
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
+            truncate_sdf = np.where(space_sdf > 0.1)[0]
+            space_sdf[truncate_sdf] = 0.1
+            truncate_sdf = np.where(space_sdf < -0.1)[0]
+            space_sdf[truncate_sdf] = -0.1
             space_data['sdf'] = space_sdf
 
+
+            surface_train_ids, surface_val_ids, space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0])
+
+            train_surface_data = {key:[] for key in surface_data.keys()}
+            val_surface_data = {key:[] for key in surface_data.keys()}
+            train_space_data = {key:[] for key in surface_data.keys()}
+            val_space_data = {key:[] for key in surface_data.keys()}
+
+            for key in surface_data.keys():
+                train_surface_data[key] = surface_data[key][surface_train_ids]
+                val_surface_data[key] = surface_data[key][surface_val_ids]
+                train_space_data[key] = space_data[key][space_train_ids]
+                val_space_data[key] = space_data[key][space_val_ids]
+
             train_data = {
-                'surface': surface_data,
-                'space': space_data,
+                'surface': train_surface_data,
+                'space': train_space_data,
+            }
+            val_data = {
+                'surface': val_surface_data,
+                'space': val_space_data
             }
 
-            with open(output_file, 'wb') as f:
+            with open(output_train_file, 'wb') as f:
                 pickle.dump(train_data, f)
+
+            with open(output_val_file, 'wb') as f:
+                pickle.dump(val_data, f)
 
             pbar.update(1)
 

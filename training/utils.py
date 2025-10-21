@@ -1,0 +1,57 @@
+import os
+import numpy as np
+import torch
+
+def save_checkpoint(model, optimizer, scheduler, epoch, loss, filename):
+        #print("self model = ", self.model)
+        model_dict = model.model_dict()
+        model_dict['optimizer'] = self.optimizer.state_dict()
+        model_dict['scheduler'] = self.scheduler.state_dict()
+        model_dict['epoch'] = epoch
+        model_dict['loss'] = loss
+        #if withval:
+        #    model_dict['validator'] = self.validator.state_dict()
+
+        torch.save(model_dict, filename)
+
+
+def get_optimizer(opt, model):
+    p = opt.optim
+    res = {}
+    if p.type == 'Adam':
+        optim = torch.optim.Adam(params=model.parameters(), 
+                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+    elif p.type == 'AdamW':
+        optim =  torch.optim.AdamW(params=model.parameters(), 
+                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+    elif p.type == 'SGD':
+        optim = torch.optim.SGD(model.parameters(), lr=p.lr, momentum=p.momentum)
+    else:
+        raise NotImplementedError('Not implemented optimizer type')
+    res['optimizer'] = optim
+    res['epoch_lr'] = None
+    res['step_lr'] = None
+    if p.lr_scheduler:
+        if p.lr_scheduler == 'MultiStep':
+            lr_sch = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=p.milestones, gamma=p.gamma)
+            res['epoch_lr'] = lr_sch
+        elif p.lr_scheduler == 'ROP':
+            lr_sch = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, factor=p.factor, patience=p.patience)
+            res['epoch_lr'] = lr_sch
+        elif p.lr_scheduler == 'CLR':
+            lr_sch = torch.optim.lr_scheduler.CyclicLR(optim, base_lr=p.base_lr, max_lr=p.max_lr, step_size_up=p.step)
+            res['step_lr'] = lr_sch
+        else:
+            raise NotImplementedError('Not implemented lr scheduler')
+    return res
+
+
+def get_lr_scheduler(optim, opt):
+    sch_type = opt['type']
+    if sch_type == 'MultiStep':
+        lr_sch = torch.optim.lr_scheduler.MultiStepLR(
+        optim, milestones=opt['milestones'], gamma=opt['gamma'])
+    else:
+        raise NotImplementedError
+
+

@@ -52,6 +52,25 @@ class NGCNet(nn.Module):
             'sdf': curve_sdf,
             'code': curve_code,
         }
+
+    @torch.no_grad()
+    def validation(self, model_input):
+        curve_input = model_input
+        ci = curve_input
+        curve_code = self.embd(ci['curve_idx'])
+
+        curve_feats = self.encoder(curve_code, ci['coords'])
+        if hasattr(self, 'pos_enc'):
+            samples = self.pos_enc(ci['samples'])
+        else:
+            samples = ci['samples']
+        curve_feats = torch.cat([curve_feats, samples], dim=-1)
+
+        curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+        return {
+            'sdf': curve_sdf,
+            'code': curve_code,
+        }
     
     @torch.no_grad()
     def inference(self, model_input):

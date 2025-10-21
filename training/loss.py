@@ -9,6 +9,30 @@ def calc_gradient(y, x, grad_outputs=None):
     grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
     return grad
 
+
+def config_loss(loss_schedule):
+    loss_handler = loss.LossHandler()
+    loss_handler.parse_config(loss_schedule)
+    return loss_handler
+
+
+def eval_loss(output, gt, loss_schedule):
+    res = {}
+    for name, config in loss_schedule.items():
+        if config.enable:
+            loss_term = getattr(loss, name)(output, gt, config)
+            # print('name: {}, loss: {}'.format(name, loss_term))
+            if isinstance(loss_term, dict):
+                res.update(loss_term)
+            else:
+                res[name] = loss_term
+
+    return res
+
+
+def eval_val_loss(output, gt, output_type, metric='L1'):
+    return getattr(loss, 'val_loss')(output, gt, output_type, metric)
+
 class LossHandler():
     def __init__(self):
         self.metric_types = ['BCE', 'L1', 'L2', 'cos_sim', 'None']

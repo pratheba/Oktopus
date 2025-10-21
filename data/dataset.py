@@ -17,30 +17,24 @@ class NGCDataset(Dataset):
         self.root_path = arg['root']
 
         self.mode = arg['mode']
+        self.n_sample = arg['n_sample']
+        self.data_names = np.loadtxt(
+            op.join(self.root_path, 'data.txt'), dtype=str).tolist()
+        
+        if 'shape_name' in arg:
+            self.data_names = [str(arg['shape_name'])]
+
+        self.file_name = 'sdf_samples.pkl'
+
+        self.handles = self.load_handles()
+        self.inputs = self.load_inputs()
+
         if self.mode == 'train':
-            self.n_sample = arg['n_sample']
-            self.data_names = np.loadtxt(
-                op.join(self.root_path, 'data.txt'), dtype=str).tolist()
-            
-            if 'shape_name' in arg:
-                self.data_names = [str(arg['shape_name'])]
+            self.data_path = 'train_data'
 
-            self.file_name = 'sdf_samples.pkl'
-
-            self.handles = self.load_handles()
-            self.inputs = self.load_inputs()
         if self.mode == 'val':
-            self.n_sample = arg['n_sample']
-            self.data_names = np.loadtxt(
-                op.join(self.root_path, 'data.txt'), dtype=str).tolist()
-            
-            if 'shape_name' in arg:
-                self.data_names = [str(arg['shape_name'])]
+            self.data_path = 'val_data'
 
-            self.file_name = 'sdf_samples.pkl'
-
-            self.handles = self.load_handles()
-            self.inputs = self.load_inputs()
     
     def load_handles(self):
         handles = []
@@ -77,7 +71,9 @@ class NGCDataset(Dataset):
     def __getitem__(self, idx):
         name = self.data_names[idx]
         item_path = op.join(self.root_path, name)
-        data_path = op.join(item_path, 'train_data', self.file_name)
+
+        data_path = op.join(item_path, self.data_path, self.file_name)
+
         with open(data_path, 'rb') as f:
             data = pickle.load(f)
         
@@ -92,6 +88,7 @@ class NGCDataset(Dataset):
         data_gt = {
             'sdf': torch.cat([gt1['sdf'], gt2['sdf']]),
         }
+
         info = {}
 
         return data_input, data_gt, info

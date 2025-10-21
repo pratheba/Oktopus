@@ -24,6 +24,9 @@ class MixFunc():
         elif self.mode == 'part_stretch':
             self.t0 = arg['t0']
             self.t0_new = arg['t0_new']
+        elif self.mode == 'whole_stretch':
+            self.t0 = arg['t0']
+            self.t0_new = arg['t0_new']
         else:
             raise NotImplementedError
 
@@ -96,6 +99,19 @@ class MixFunc():
         print("new_coords = ", new_coords)
         return new_coords
     
+    def whole_stretch(self, coords):
+        new_coords = np.zeros_like(coords)
+        part1 = coords <= self.t0_new
+        part2 = np.logical_not(part1)
+
+        # [0,t0_new]->[0, t0]
+        new_coords[part1] = coords[part1]* (self.t0 / self.t0_new)
+        coef1 = (1 - self.t0) / ((1 - self.t0_new)+1e-7)
+        coef2 = (self.t0 - self.t0_new) / ((1 - self.t0_new) +1e-7)
+        # [t0_new, 1] -> [t0, 1]
+        new_coords[part2] = coef1*coords[part2] + coef2
+        print("new_coords = ", new_coords)
+        return new_coords
 
 def define_mix_func(config, weights_reverse):
     config['weights_reverse'] = weights_reverse

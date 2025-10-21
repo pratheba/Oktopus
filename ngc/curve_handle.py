@@ -256,7 +256,7 @@ class CurveHandle():
         ts = np.linspace(0., 1., n_sample_curve)
         
         intpl,_ = self.core.interpolate_stretch(ts, blend_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, n_smaple_circle, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -921,8 +921,9 @@ class PWLACurve():
         return intpl
     
     def interpolate_stretch(self, ts, stretch_arg):
-        func = stretch_arg['mix_func']
+        func = stretch_arg['stretch_func']
         ts_new = func(ts)
+        print("ts_new = ", ts_new, flush=True)
 
         rs1 = np.stack([
             np.interp(ts_new, self.key_ts, self.key_radius[:, 0]),
@@ -940,7 +941,7 @@ class PWLACurve():
         verts, yz_rs, frame = res['points'], res['radius'], res['frame']
 
         x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_rs], axis=1)
+        rad = np.concatenate([x_rs[:,None], yz_rs], axis=1)
         # F(v - Pv) = (1,ry,rz)*(v_ - (v_x,0,0))
         # i.e. samples_local[:,0] - samples_x
         samples_global = samples_local.copy()
