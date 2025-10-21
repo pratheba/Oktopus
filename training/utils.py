@@ -2,10 +2,10 @@ import os
 import numpy as np
 import torch
 
-def save_checkpoint(model, optimizer, scheduler, epoch, loss, filename):
+def save_checkpoint(self, epoch, loss, filename):
         #print("self model = ", self.model)
-        model_dict = model.model_dict()
-        model_dict['optimizer'] = self.optimizer.state_dict()
+        model_dict = self.model.state_dict()
+        model_dict['optimizer'] = self.optim.state_dict()
         model_dict['scheduler'] = self.scheduler.state_dict()
         model_dict['epoch'] = epoch
         model_dict['loss'] = loss

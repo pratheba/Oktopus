@@ -5,15 +5,15 @@ training:
   num_epochs: 100000
   num_batch_val: 1
   val_type: 1
-  epochs_til_ckpt : 3
-  steps_til_summary : 2
-  epochs_til_showval: 2
+  epochs_til_ckpt : 3000
+  steps_til_summary : 50
+  epochs_til_showval: 50
   clip_grad: False
   resume: False
   optim:
     type: Adam
-    lr: 0.01
-    factor: 0.999
+    lr: 0.001
+    factor: 0.99
     patience: 10
     lr_scheduler: ROP
     beta1: 0.9
@@ -21,11 +21,11 @@ training:
     amsgrad: False
 
 dataset:
-  root: /fast/pselvaraju/Oktopus/Pack50Dataset 
+  root: Pack50Dataset 
   type: NGCDataset
-  num_batch: 5
+  num_batch: 128
   file_name: sdf_samples.pkl
-  n_sample: 40000
+  n_sample: 512
 
 model:
   type: NGCNet

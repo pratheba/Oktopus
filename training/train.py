@@ -43,7 +43,7 @@ class Trainer:
 
     def train_model(self):
         opt = DottedDict(self.opt)
-        res = get_optimizer(opt, self.model)
+        res = get_optimizer(opt['training'], self.model)
         self.optim = res['optimizer']
         self.scheduler = res['epoch_lr']
 
@@ -66,12 +66,17 @@ class Trainer:
         train_dataloader = self.train_dataloader
         val_dataloader = self.val_dataloader
 
+        opt = opt['training']
+
+        #num_epochs = opt['training']['num_epochs']
+        #print(self.model.model_dict())
+
         with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
             for epoch in range(opt.num_epochs):
                 if not epoch % opt.epochs_til_ckpt and epoch:
-                    print(self.model.state_dict())
-                    exit()
-                    save_checkpoint(self.model, self.optim, self.scheduler, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
+                    #print(self.model.state_dict())
+                    #exit()
+                    save_checkpoint(self, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
 
                 # -----------------------
                 # training
@@ -175,7 +180,7 @@ class Trainer:
                     if best_val_loss >= epoch_val_loss:
                         best_val_loss = epoch_val_loss
                         best_val_epoch = epoch
-                        save_checkpoint(self.model, self.optim, self.scheduler, best_val_epoch, best_val_loss, os.path.join(checkpoints_dir, 'best_model_eval.pth'))
+                        save_checkpoint(self, best_val_epoch, best_val_loss, os.path.join(checkpoints_dir, 'best_model_eval.pth'))
 
                     #scheduler.step(curr_epoch_loss)
                     if not total_steps % opt.steps_til_summary:
@@ -186,7 +191,7 @@ class Trainer:
                 self.model.train()
 
             # TODO:final evaluation
-            save_checkpoint(self.model, self.optim, self.scheduler, epoch, epoch_train_loss, os.path.join(checkpoints_dir, 'model_final.pth'))
+            save_checkpoint(self, epoch, epoch_train_loss, os.path.join(checkpoints_dir, 'model_final.pth'))
         
 
 def optimize_code(opt, model):
