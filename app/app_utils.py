@@ -26,7 +26,8 @@ def load_model(device, log_path, model_path, checkpoint='final'):
 
     model = network.define_model(opt['model'])
     checkpoint_path = op.join(log_path, model_path, f'checkpoints/{ckpt_name}')
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model'], strict=False)
     model.to(device)
     model.eval()
     return model, opt

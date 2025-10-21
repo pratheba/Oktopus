@@ -23,9 +23,9 @@ training:
 dataset:
   root: Pack50Dataset 
   type: NGCDataset
-  num_batch: 128
+  num_batch: 512
   file_name: sdf_samples.pkl
-  n_sample: 512
+  n_sample: 4096
 
 model:
   type: NGCNet

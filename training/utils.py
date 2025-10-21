@@ -4,7 +4,8 @@ import torch
 
 def save_checkpoint(self, epoch, loss, filename):
         #print("self model = ", self.model)
-        model_dict = self.model.state_dict()
+        model_dict = {}
+        model_dict['model'] = self.model.state_dict()
         model_dict['optimizer'] = self.optim.state_dict()
         model_dict['scheduler'] = self.scheduler.state_dict()
         model_dict['epoch'] = epoch
