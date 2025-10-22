@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from dotted.collection import DottedDict
 from time import time
-from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint
+from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint, load_model
 from loss import config_loss
 
 import network, data
@@ -30,11 +30,12 @@ class Trainer:
         #opt['training']['val_dataloader'] = val_dataloader
 
         ### define model
+        self.model = network.define_model(self.opt['model'])
         if self.opt['training']['resume']:
             print("resuming")
-            self.model, _ = utils.load_model(cpu_device, log_path, model_path, checkpoint)
-        else:
-            self.model = network.define_model(self.opt['model'])
+            checkpoint_path = self.opt['training']['resume_data']['checkpoint_path']
+            checkpoint = self.opt['training']['resume_data']['checkpoint']
+            self.model = load_model(self.model, self.device, checkpoint_path, checkpoint)
         self.model.to(self.device)
 
         ### define loss

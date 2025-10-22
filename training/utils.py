@@ -15,6 +15,20 @@ def save_checkpoint(self, epoch, loss, filename):
 
         torch.save(model_dict, filename)
 
+def load_model(model, device, checkpoint_path, checkpoint='final'): 
+    cpu_device = torch.device('cpu')
+
+    if checkpoint == 'final' or checkpoint == 'post':
+        ckpt_name = f'model_{checkpoint}.pth'
+    else:
+        #ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
+        ckpt_name = checkpoint 
+
+    checkpoint_path = os.path.join(checkpoint_path, f'checkpoints/{ckpt_name}')
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model'], strict=False)
+    return model
+
 
 def get_optimizer(opt, model):
     p = opt.optim
@@ -44,6 +58,7 @@ def get_optimizer(opt, model):
             res['step_lr'] = lr_sch
         else:
             raise NotImplementedError('Not implemented lr scheduler')
+    print("res = ", res, flush=True)
     return res
 
 
