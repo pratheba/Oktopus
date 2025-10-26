@@ -14,7 +14,7 @@ def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
     verts_around = []
     ms = ml.MeshSet()
     ms.load_new_mesh(shape_path)
-    ms.generate_sampling_poisson_disk(samplenum=num_samples*2)
+    ms.generate_sampling_poisson_disk(samplenum=num_samples)
     mesh = ms.current_mesh()
 
     verts = mesh.vertex_matrix()
@@ -24,7 +24,7 @@ def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
     for ns in noise_scale:
         ms = ml.MeshSet()
         ms.load_new_mesh(shape_path)
-        ms.generate_sampling_poisson_disk(samplenum=num_samples)
+        ms.generate_sampling_poisson_disk(samplenum=num_samples//2)
         mesh = ms.current_mesh()
 
         verts = mesh.vertex_matrix()
@@ -138,7 +138,7 @@ def ngc_dataset(arg):
                 export_handle_data(handle, output_path, handle_path)
 
             surface_samples = meshlab_shape_sampling(
-                shape_file, n_surface_samples//2, [0.0001, 0.01]
+                shape_file, n_surface_samples, [0.0001, 0.01]
             )
 
             #surface_samples = meshlab_shape_sampling(
@@ -157,10 +157,10 @@ def ngc_dataset(arg):
 
             space_data = handle.prepare_samples(space_samples)
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
-            truncate_sdf = np.where(space_sdf > 0.1)[0]
-            space_sdf[truncate_sdf] = 0.1
-            truncate_sdf = np.where(space_sdf < -0.1)[0]
-            space_sdf[truncate_sdf] = -0.1
+            #truncate_sdf = np.where(space_sdf > 0.1)[0]
+            #space_sdf[truncate_sdf] = 0.1
+            #truncate_sdf = np.where(space_sdf < -0.1)[0]
+            #space_sdf[truncate_sdf] = -0.1
             space_data['sdf'] = space_sdf
 
 
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 2000000,
+        'n_surface_samples' : 1000000,
         'n_space_samples' : 1000000,
     }
     ngc_dataset(arg)

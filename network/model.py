@@ -80,7 +80,8 @@ class NGCNet(nn.Module):
 
         curve_feats = self.encoder(curve_code, ci['coords'])
         if hasattr(self, 'pos_enc'):
-            samples = self.pos_enc(ci['samples'])
+            print("positional encoding", flush=True)
+            samples = self.pos_enc.inference(ci['samples'])
         else:
             samples = ci['samples']
         curve_feats = torch.cat([curve_feats, samples], dim=-1)
