@@ -1,5 +1,5 @@
-# Neural Generalized Cylinder
-PyTorch implementation for paper [Controllable Shape Modeling with Neural Generalized Cylinder](https://arxiv.org/abs/2410.03675).
+# Derived from Neural Generalized Cylinder
+Original PyTorch implementation for paper [Controllable Shape Modeling with Neural Generalized Cylinder](https://arxiv.org/abs/2410.03675).
 
 ### [Paper](https://arxiv.org/abs/2410.03675) | [Project](https://uhzoaix.github.io/NeuralGC/)
 
