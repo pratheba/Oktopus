@@ -87,10 +87,10 @@ class Handle():
     
     def prepare_samples(self, samples):
         # samples to train data
-        samples_glob = []
-        samples_local = []
-        coords = []
-        cids = []
+        part_samples_glob = []
+        part_samples_local = []
+        part_coords = []
+        part_cids = []
 
         num_samples = samples.shape[0]
         sidx = np.arange(num_samples)
@@ -110,22 +110,26 @@ class Handle():
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
-            samples_glob.append(curve_data['samples'])
-            samples_local.append(curve_data['samples_local'])
-            coords.append(curve_data['coords'])
-            cids.append(np.ones(num_inside, dtype=int)*cid)
+            part_samples_glob.append(curve_data['samples'])
+            part_samples_local.append(curve_data['samples_local'])
+            part_coords.append(curve_data['coords'])
+            part_cids.append(np.ones(num_inside, dtype=int)*cid)
 
 
-        samples_glob = np.concatenate(samples_glob, axis=0)
-        samples_local = np.concatenate(samples_local, axis=0)
-        coords = np.concatenate(coords)
-        cids = np.concatenate(cids)
+        samples_glob = np.concatenate(part_samples_glob, axis=0)
+        samples_local = np.concatenate(part_samples_local, axis=0)
+        coords = np.concatenate(part_coords)
+        cids = np.concatenate(part_cids)
 
         return {
             'samples': samples_glob,
             'samples_local': samples_local,
             'coords': coords,
             'curve_idx': cids,
+            'part_samples': part_samples_glob,
+            'part_samples_local': part_samples_local,
+            'part_coords': part_coords,
+            'part_cids': part_cids
         }
 
     

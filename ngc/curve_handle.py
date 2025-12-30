@@ -700,7 +700,7 @@ class PWLACurve():
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
-        ### Keep only the points that fall within the rane of 0 and 1
+        ### Keep only the points that fall within the range of 0 and 1
         sample_keypoint_map = sample_keypoint_map[sample_keypoint_map_range]
         pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
         sample_index = sample_index[sample_keypoint_map_range]
@@ -709,7 +709,7 @@ class PWLACurve():
         # interpolate with the new additional non linear skeletal keypoints
         intpl = self.interpolate(sample_keypoint_map)
 
-        ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
+        ## The new keypoints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
         #print("proj vs", proj_vs)
         #print(self.key_points)

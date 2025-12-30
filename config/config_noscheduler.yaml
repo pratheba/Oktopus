@@ -1,6 +1,6 @@
 experiment_name: train
 description: overfitting 2 shapes 
-logging_root: results_resume
+logging_root: results_noscheduler
 training:
   num_epochs: 100000
   num_batch_val: 1
@@ -19,38 +19,21 @@ training:
     beta1: 0.9
     beta2: 0.999
     amsgrad: False
-  resume_data:
-    checkpoint_path: /fast/pselvaraju/Oktopus/results/train/
-    checkpoint: 'best_model_eval.pth'
 
 dataset:
   root: Pack50Dataset 
   type: NGCDataset
-  num_batch: 8
+  num_batch: 512
   file_name: sdf_samples.pkl
-  n_sample: 128
+  n_sample: 4096
 
 model:
   type: NGCNet
   # n_curve is a number larger than the total curve counts in dataset
-
-  curve:
-    n_curve: 300
-    dim_code: 256
-    dim_feat: 256
-
-  surface:
-    learn_posenc: True
-    num_pos_encoding: 32
-    query_dim: 512 
-    context_dim: 1024
-    heads: 6
-    head_dim: 64
-    num_latents: 1024
-    queries_dim: 1024
-    depth: 24
-    output_dim: 1
-
+  n_curve: 300
+  dim_code: 256
+  dim_feat: 256
+  num_pos_encoding: 32
   encoder_curve:
     size: [256, 256, 256, 256]
     activation_type: silu

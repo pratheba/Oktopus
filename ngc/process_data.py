@@ -153,25 +153,51 @@ def ngc_dataset(arg):
 
             surface_data = handle.prepare_samples(surface_samples)
             surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
+            surface_part_sdf = {}
+            for idx, p_samples in enumerate(surface_data['part_samples']):
+                # take only one curve id from the list
+                surface_part_sdf[surface_data['part_cids'][idx][0]] = meshlab_SDF_eval(shape_file, p_samples)
+
+
             surface_data['sdf'] = surface_sdf
+            surface_data['part_sdf'] = surface_part_sdf
+
 
             space_data = handle.prepare_samples(space_samples)
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
+            space_part_sdf = {}
+            for idx, p_samples in enumerate(space_data['part_samples']):
+                space_part_sdf[space_data['part_cids'][idx][0]] = meshlab_SDF_eval(shape_file, p_samples)
+
             #truncate_sdf = np.where(space_sdf > 0.1)[0]
             #space_sdf[truncate_sdf] = 0.1
             #truncate_sdf = np.where(space_sdf < -0.1)[0]
             #space_sdf[truncate_sdf] = -0.1
             space_data['sdf'] = space_sdf
+            space_data['part_sdf'] = space_part_sdf
 
 
             surface_train_ids, surface_val_ids, space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0])
 
+            for idx, part_samples in enumerate(space_data['part_samples']):
+                print("id = ", idx)
+                print(len(part_samples))
+
+            #print(len(surface_train_ids))
+            #print(len(surface_val_ids))
+            #print(len(space_train_ids))
+            #print(surface_data.keys())
+
+
+            #### If we go by parts, then for each part need to split to train and test and do subsampling
             train_surface_data = {key:[] for key in surface_data.keys()}
             val_surface_data = {key:[] for key in surface_data.keys()}
             train_space_data = {key:[] for key in surface_data.keys()}
             val_space_data = {key:[] for key in surface_data.keys()}
 
             for key in surface_data.keys():
+                if 'part' in key:
+                    continue
                 train_surface_data[key] = surface_data[key][surface_train_ids]
                 val_surface_data[key] = surface_data[key][surface_val_ids]
                 train_space_data[key] = space_data[key][space_train_ids]
@@ -204,7 +230,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 1000000,
-        'n_space_samples' : 1000000,
+        'n_surface_samples' : 100000,
+        'n_space_samples' : 100000,
     }
     ngc_dataset(arg)
