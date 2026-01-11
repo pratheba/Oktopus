@@ -92,8 +92,10 @@ class Trainer:
                     gt['info'] = info
                     batch_size = gt['sdf'].shape[0]
                     #print(model_input['samples_local'])
+                    #print(mode_input)
                     #exit()
                     model_output = self.model(model_input)
+
                     losses = self.train_loss_fn(model_output, gt)
 
                     train_loss = 0.
@@ -131,7 +133,7 @@ class Trainer:
                         best_train_epoch = epoch
 
                     if not total_steps % opt.steps_til_summary:
-                        message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
+                        message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}\n".format(
                             epoch, total_steps, epoch_train_loss, current_lr)
                         for name, loss in losses.items():
                             message = message + '{}(X{}): {:.4f}, '.format(name, opt.loss[name].factor, loss.item())
@@ -163,6 +165,7 @@ class Trainer:
                         batch_size = gt['sdf'].shape[0]
 
                         model_output = self.model.validation(model_input)
+
                         losses = self.val_loss_fn(model_output, gt)
 
                         val_loss = 0.

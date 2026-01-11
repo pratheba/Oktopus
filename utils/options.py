@@ -16,6 +16,13 @@ def process_options(opt, mode='train'):
         val_opt = res['val']
         val_opt['log_path'] = res['log_path']
         val_opt['loss'] = res['loss']
+    if mode == 'inference':
+        opt['log_path'] = res['log_path']
+        opt['model'] = res['model']
+        opt['num_samples'] = res['num_samples']
+        opt['model_directory'] = res['logging_root']
+        return opt
+
 
     # res['dataset']['handle_file'] = res['handle_file']
     # res['model']['handle_file'] = res['handle_file']

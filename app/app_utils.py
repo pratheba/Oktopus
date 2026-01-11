@@ -15,17 +15,18 @@ from ngc import Handle, CurveHandle, MCGrid
 from blend_utils import *
 from mix_utils import *
 
-def load_model(device, log_path, model_path, checkpoint='final'):
-    config_path = op.join(log_path, model_path, 'config.yaml')
+def load_model(device, config_path, model_directory, mode='train', checkpoint='best_model_eval'):
     opt = yaml.safe_load(open(config_path))
 
-    if checkpoint == 'final' or checkpoint == 'post':
+    if checkpoint == 'final':
         ckpt_name = f'model_{checkpoint}.pth'
+    elif checkpoint == 'eval':
+        ckpt_name = f'best_model_eval.pth'
     else:
         ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
 
     model = network.define_model(opt['model'])
-    checkpoint_path = op.join(log_path, model_path, f'checkpoints/{ckpt_name}')
+    checkpoint_path = op.join(model_directory, mode, f'checkpoints/{ckpt_name}')
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model'], strict=False)
     model.to(device)

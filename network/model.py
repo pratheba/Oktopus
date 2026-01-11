@@ -23,16 +23,13 @@ class NGCNet(nn.Module):
             arg['decoder_curve']['size'][0] += diff
         self.decoder = MLP(**arg['decoder_curve'])
 
-
     def init_embedding(self, embedding, dim_code):
         nn.init.normal_(embedding.weight.data, 0., 1./ math.sqrt(dim_code))
-
     
     def set_post_mode(self):
         for pname, param in self.core.named_parameters():
             if 'embd' in pname:
                 continue
-
             param.requires_grad = False
 
 
@@ -41,6 +38,11 @@ class NGCNet(nn.Module):
         # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
         curve_code = self.embd(mi['curve_idx'])
         curve_feats = self.encoder(curve_code, mi['coords'])
+        print(mi['samples'].shape, flush=True)
+        #import trimesh
+        #trimesh.Trimesh(vertices = np.array(mi['samples']), process=False).export('samples.ply')
+        #exit()
+
         if hasattr(self, 'pos_enc'):
             samples = self.pos_enc(mi['samples'])
         else:

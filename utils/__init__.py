@@ -4,3 +4,4 @@ sys.path.append(current_path)
 
 from options import *
 from mc_utils import MCGrid
+from dotdict import DotDict

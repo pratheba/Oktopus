@@ -694,6 +694,9 @@ class PWLACurve():
             return ds*signs
 
     def localize_samples(self, pointcloudsamples, return_sdf=False):
+        ## The coordinates on the curve calculated by projecting the
+        ## point cloud samples from the surface of the shape
+        ## Here it is for each curve 
         sample_keypoint_map = self.curve_projection(pointcloudsamples)
         #print("sample_keypoint_map", sample_keypoint_map)
 

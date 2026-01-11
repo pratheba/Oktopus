@@ -20,27 +20,9 @@ from training import Trainer
 # torch.cuda.manual_seed(seed)
 device = torch.device('cuda:0')
 
-def start_trainer(args, opt):
+def start_trainer(opt):
     trainer = Trainer(opt, device)
 
-    ### Train Dataset
-    #train_dataloader = data.get_dataloader(opt['dataset'], dataset_mode='train')
-    #opt['training']['train_dataloader'] = train_dataloader
-    #val_dataloader = data.get_dataloader(opt['dataset'], dataset_mode='val')
-    #opt['training']['val_dataloader'] = val_dataloader
-
-    ### define model
-    #if opt['training']['resume']:
-    #    print("resuming")
-    #    model, _ = utils.load_model(cpu_device, log_path, model_path, checkpoint)
-    #else:
-    #    model = network.define_model(opt['model'])
-    #model.to(device)
-
-    #opt['training']['train_loss'] = training.config_loss(opt['loss'])
-    #opt['training']['val_loss'] = training.config_loss(opt['val_loss'])
-
-    #trainmodel = Model(model, opt['training'])
     trainer.train_model() 
 
     if 'post_epochs' in opt['training']:
@@ -62,5 +44,5 @@ if __name__ == '__main__':
         'root_path': op.dirname(op.abspath(__file__)),
     }
     opt = utils.process_options(opt, mode='train')
-    start_trainer(args, opt)
+    start_trainer(opt)
 

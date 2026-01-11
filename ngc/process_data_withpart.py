@@ -80,31 +80,26 @@ def export_handle_data(handle, graph_path, handle_path):
         pickle.dump(graph_data, f)
 
 
-def split_train_test(num_surface, num_space, num_on_surface):
+def split_train_test(num_surface, num_space):
 
     split = 0.8
 
     surface_ids = np.arange(num_surface)
-    on_surface_ids = np.arange(num_on_surface)
     space_ids = np.arange(num_space)
 
     np.random.shuffle(surface_ids)
     np.random.shuffle(space_ids)
-    np.random.shuffle(on_surface_ids)
 
     num_train_surface = int(split * num_surface)
-    num_train_on_surface = int(split * num_on_surface)
     num_train_space = int(split * num_space)
 
     surface_train_ids = surface_ids[0:num_train_surface]
-    on_surface_train_ids = on_surface_ids[0:num_train_on_surface]
     space_train_ids = space_ids[0:num_train_space]
 
     surface_val_ids = surface_ids[num_train_surface:]
-    on_surface_val_ids = on_surface_ids[num_train_on_surface:]
     space_val_ids = space_ids[num_train_space:]
 
-    return surface_train_ids, surface_val_ids, on_surface_train_ids, on_surface_val_ids, space_train_ids, space_val_ids
+    return surface_train_ids, surface_val_ids, space_train_ids, space_val_ids
 
 def ngc_dataset(arg):
     root_path = arg['root_path']
@@ -162,28 +157,34 @@ def ngc_dataset(arg):
 
             surface_data = handle.prepare_samples(surface_samples)
             surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
+            surface_part_sdf = {}
+            for idx, p_samples in enumerate(surface_data['part_samples']):
+                # take only one curve id from the list
+                surface_part_sdf[surface_data['part_cids'][idx][0]] = meshlab_SDF_eval(shape_file, p_samples)
+
             surface_data['sdf'] = surface_sdf
+            surface_data['part_sdf'] = surface_part_sdf
 
             space_data = handle.prepare_samples(space_samples)
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
-            truncate_sdf = np.where(space_sdf > 0.1)[0]
-            space_sdf[truncate_sdf] = 0.1
-            truncate_sdf = np.where(space_sdf < -0.1)[0]
-            space_sdf[truncate_sdf] = -0.1
+            space_part_sdf = {}
+            for idx, p_samples in enumerate(space_data['part_samples']):
+                space_part_sdf[space_data['part_cids'][idx][0]] = meshlab_SDF_eval(shape_file, p_samples)
+
+            #truncate_sdf = np.where(space_sdf > 0.1)[0]
+            #space_sdf[truncate_sdf] = 0.1
+            #truncate_sdf = np.where(space_sdf < -0.1)[0]
+            #space_sdf[truncate_sdf] = -0.1
             space_data['sdf'] = space_sdf
+            space_data['part_sdf'] = space_part_sdf
 
-            surface_train_ids, surface_val_ids, \
-                    on_surface_train_ids, on_surface_val_ids, \
-                    space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0], on_surface_data['sdf'].shape[0])
 
-            keys = surface_data.keys()
+            surface_train_ids, surface_val_ids, space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0])
 
-            train_surface_data = {key:[] for key in keys}
-            val_surface_data = {key:[] for key in keys}
-            train_on_surface_data = {key:[] for key in keys}
-            val_on_surface_data = {key:[] for key in keys}
-            train_space_data = {key:[] for key in keys}
-            val_space_data = {key:[] for key in keys}
+            train_surface_data = {key:[] for key in surface_data.keys()}
+            val_surface_data = {key:[] for key in surface_data.keys()}
+            train_space_data = {key:[] for key in surface_data.keys()}
+            val_space_data = {key:[] for key in surface_data.keys()}
 
 
             ### the whole shape
@@ -192,10 +193,48 @@ def ngc_dataset(arg):
                     continue
                 train_surface_data[key] = surface_data[key][surface_train_ids]
                 val_surface_data[key] = surface_data[key][surface_val_ids]
-                train_on_surface_data[key] = on_surface_data[key][on_surface_train_ids]
-                val_on_surface_data[key] = on_surface_data[key][on_surface_val_ids]
                 train_space_data[key] = space_data[key][space_train_ids]
                 val_space_data[key] = space_data[key][space_val_ids]
+
+
+            surface_part_train_ids = []
+            space_part_train_ids = []
+            surface_part_val_ids = []
+            space_part_val_ids = []
+
+            for idx in range(len(space_data['part_sdf'])):
+                surface_train_ids, surface_val_ids, space_train_ids, space_val_ids = split_train_test(surface_data['part_sdf'][idx].shape[0], space_data['part_sdf'][idx].shape[0])
+                surface_part_train_ids.append(surface_train_ids)
+                space_part_train_ids.append(space_train_ids)
+                surface_part_val_ids.append(surface_val_ids)
+                space_part_val_ids.append(space_val_ids)
+
+
+            for key in surface_data.keys():
+                if 'part' in key:
+                    train_surface_part_data = []
+                    val_surface_part_data = []
+                    train_space_part_data = []
+                    val_space_part_data = []
+                    #print(surface_part_train_ids)
+                    for idx in range(len(surface_part_train_ids)):
+                        train_surface_part_data.append(surface_data[key][idx][surface_part_train_ids[idx]])
+                        val_surface_part_data.append(surface_data[key][idx][surface_part_val_ids[idx]])
+                        train_space_part_data.append(space_data[key][idx][space_part_train_ids[idx]])
+                        val_space_part_data.append(space_data[key][idx][space_part_val_ids[idx]])
+
+                    train_surface_data[key] = train_surface_part_data
+                    val_surface_data[key] = val_surface_part_data
+                    train_space_data[key] = train_space_part_data
+                    val_space_data[key] = val_space_part_data
+
+            #print(val_surface_data)
+
+
+            #print(len(surface_train_ids))
+            #print(len(surface_val_ids))
+            #print(len(space_train_ids))
+            #print(surface_data.keys())
 
 
             #### If we go by parts, then for each part need to split to train and test and do subsampling
@@ -203,12 +242,11 @@ def ngc_dataset(arg):
             train_data = {
                 'surface': train_surface_data,
                 'space': train_space_data,
-                'on_surface': train_on_surface_data
+                'on_surface': on_surface_data
             }
             val_data = {
                 'surface': val_surface_data,
                 'space': val_space_data,
-                'on_surface': val_on_surface_data
             }
 
             with open(output_train_file, 'wb') as f:
@@ -229,7 +267,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 100000,
-        'n_space_samples' : 100000,
+        'n_surface_samples' : 30000,
+        'n_space_samples' : 50000,
     }
     ngc_dataset(arg)

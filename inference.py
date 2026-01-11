@@ -1,8 +1,8 @@
-import os, pickle, yaml
+import os, pickle, yaml, argparse
 import os.path as op
 import torch
 import numpy as np
-from utils import MCGrid
+from utils import MCGrid, process_options, DotDict
 from app import Agent
 
 seed = 2025
@@ -11,27 +11,51 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 device = torch.device('cuda:0')
 
-agent = Agent()
 
-root_path = op.dirname(op.abspath(__file__))
-exp_name = '4M'
-config_path = op.join(root_path, 'results_resume', 'train') # exp_name)
 
-additional_info = 'freq32_resume'
-output_path = op.join(root_path, 'inference', additional_info,  exp_name)
-os.makedirs(output_path, exist_ok=True)
+def start_inference(opt):
+    agent = Agent()
 
-model_path = ''
-for checkpoint in ['63000']: #'3000', '6000','9000', 'final']:
-    agent.load_model(device, config_path, model_path, checkpoint=checkpoint)#final')
-    mc_grid = MCGrid({
-        'reso': 512,
-        'level': 0.,
-    })
-    arg = {
-        'mc_grid': mc_grid,
-        'data_root': 'Pack50Dataset',
-        'output_folder': output_path,
-        'checkpoint': checkpoint,
+    config_path = op.join(opt.root_path, opt.config_path) # the config is yaml file path
+    output_path = op.join(opt.root_path, 'inference', str(opt.num_samples))
+    os.makedirs(output_path, exist_ok=True)
+
+    model_path = opt.model_directory
+    for checkpoint in opt['checkpoints']:
+        
+        agent.load_model(device, config_path, model_path, checkpoint=checkpoint)
+        mc_grid = MCGrid({
+            'reso': 512,
+            'level': 0.,
+        })
+        arg = {
+            'mc_grid': mc_grid,
+            'data_root': 'Pack50Dataset',
+            'output_folder': output_path,
+            'checkpoint': checkpoint,
+        }
+        agent('ngcnet_inference', arg)
+
+
+if __name__ == '__main__':
+    p = argparse.ArgumentParser(description='Input to inference config file')
+    p.add_argument('-ck', '--checkpoint_path', required=False, default='checkpoints', help='Path to checkpoint directory.')
+    p.add_argument('-ckpt', '--checkpoints', required=False, type=str, nargs="+", default=['eval'], help='checkpoints to evaluate.')
+    p.add_argument('-c', '--config_path', required=True)
+
+    args = p.parse_args()
+    opt = {
+            'checkpoint_path': args.checkpoint_path,
+            'root_path': op.dirname(op.abspath(__file__)),
+            'checkpoints': args.checkpoints,
+            'config_path': args.config_path
     }
-    agent('ngcnet_inference', arg)
+
+    opt = process_options(opt, mode='inference')
+
+    
+
+    opt = DotDict(opt)
+    
+    print(opt)
+    start_inference(opt)

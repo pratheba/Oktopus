@@ -184,12 +184,9 @@ class Agent():
                 temp_grid = utils.create_grid_like(mc_grid)
                 for curve in handle.curves:
                     print("curve_name = ", curve.name)
-                    print("shape name = ", shape_name)
                     key = self.encode_key(shape_name, curve.name)
                     curve_data, kidx = curve.filter_grid(mc_grid)
 
-                    print(curve_data)
-                    trimesh.Trimesh(vertices=curve_data['samples'], process=False).export('mc_grid.ply')
 
                     
                     vals = self.__inference_vals(curve_data, key, batch_size=batch_size)

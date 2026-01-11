@@ -102,7 +102,7 @@ class Handle():
             inbbox = curve.find_inbbox(samples)
             # 3D point cloud samples in that inbox
             samples_bbox = samples[inbbox]
-            # the index of those samples in theat inbox
+            # the index of those samples in that inbox
             sidx_bbox = sidx[inbbox]
 
             # Localize the samples for each curve

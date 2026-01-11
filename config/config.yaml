@@ -2,7 +2,7 @@ experiment_name: train
 description: overfitting 2 shapes 
 logging_root: results_resume
 training:
-  num_epochs: 100000
+  num_epochs: 10000
   num_batch_val: 1
   val_type: None
   epochs_til_ckpt : 3000
