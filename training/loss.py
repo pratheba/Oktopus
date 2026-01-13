@@ -40,11 +40,12 @@ class LossHandler():
     def parse_config(self, loss_schedule):
         self.loss_fn = {}
         for name, loss_config in loss_schedule.items():
-            metric_fn = self.get_metric_fn(loss_config)
-            self.loss_fn[name] = {
-                'metric_fn': metric_fn, 
-                'factor': loss_config['factor']
-            }
+            if loss_config['enable']:
+                metric_fn = self.get_metric_fn(loss_config)
+                self.loss_fn[name] = {
+                    'metric_fn': metric_fn, 
+                    'factor': loss_config['factor']
+                }
 
     def sdf_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']

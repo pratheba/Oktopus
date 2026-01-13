@@ -142,24 +142,8 @@ class NGCNet(nn.Module):
         inputs = self.pack_data(inputs)
         curve_idx = inputs['curve_idx']
         curve_coords = inputs['coords']
-        curve_idx = inputs['curve_idx']
-        curve_coords = inputs['coords']
-
         curve_code = self.curve_embeddings(curve_idx)
         curve_features = self.curve_encoder(curve_code, curve_coords)
-        
-
-        if hasattr(self, 'pos_enc'):
-            print("positional encoding", flush=True)
-            samples = self.pos_enc.inference(ci['samples'])
-        else:
-            samples = ci['samples']
-        curve_feats = torch.cat([curve_feats, samples], dim=-1)
-
-        curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
-        return curve_sdf
-    
-
 
         #print("curve features shape = ", curve_features.shape)
 
@@ -167,41 +151,14 @@ class NGCNet(nn.Module):
 
         surface_samples = inputs['on_surface_samples']
         query_samples = inputs['samples']
-        #print("on surface samples = ", surface_samples.shape)
-        #print("query samples = ", query_samples.shape)
 
         ################ Combine to get sdf output or put the curve info as well to get the sdf output ? #######
         out = self.shapeEncoder(surface_samples, query_samples)
-        #encoder_features = out['encoder_logits']
-        #decoder_features = out['decoder_logits']
         query_features = out['query_features']
-        context_features = out['context_features']
-
-        kl = out['kl']
-        #print("enc features = ", encoder_features.shape)
-        #print("dec features = ", decoder_features.shape)
-
-        #print("query_features = ", query_features.shape)
-        #print("context_features = ", context_features.shape)
-    
         out_query_features = torch.cat([curve_features, query_features], dim=-1)
-        out_context_features = torch.cat([curve_features, context_features], dim=-1)
-        #print("out_features.shape = ", out_features.shape, flush=True)
-        
         
         sdf_query = self.decoder.forward_simple(out_query_features).squeeze(-1)
-        sdf_context = self.decoder.forward_simple(out_context_features).squeeze(-1)
-        #print("sdf query shape = ", sdf_query.shape)
-        #print("sdf context shape = ", sdf_context.shape)
-        sdf = torch.cat([sdf_query, sdf_context],dim=-1)
-        #print("sdf shape = ", sdf.shape)
-        return {
-            'sdf': sdf,
-            #'enc_features': encoder_features,
-            #'dec_features': decoder_features,
-            'curve_code': curve_code,
-            'kl': kl
-        }
+        return sdf_query
 
     @torch.no_grad()
     def mix_curve(self, model_input):
@@ -228,13 +185,16 @@ class NGCNet(nn.Module):
     def pack_data(self, model_input):
         mi = model_input
         device = mi['device']
-
         n_sample = mi['coords'].shape[0]
         curve_idx = mi['curve_idx']*torch.ones(n_sample, dtype=int)
+
         res = {
             'samples': torch.from_numpy(mi['samples_local']).float().to(device),
             'coords': torch.from_numpy(mi['coords']).float().to(device),
-            'curve_idx': curve_idx.to(device)
+            'curve_idx': curve_idx.to(device),
+            'on_surface_samples': mi['on_surface_samples'].float().to(device),
+            'on_coords': mi['on_coords'].float().to(device),
+            'on_curve_idx': mi['on_curve_idx'].to(device)
         }
 
         res = {key:val.unsqueeze(0) for key,val in res.items()}

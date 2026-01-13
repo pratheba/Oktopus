@@ -87,7 +87,7 @@ class NGCDataset(Dataset):
         ### The curve IDS are indexed for all the shapes
         # i.e if first shape has 4 curves, the ids becomes [0, 1, 2, 3]
         # the next shape with 3 curves will have the global curve IDS [ 4, 5, 6]
-        # the local curve ids internally can start from [0, 1, 3]
+        # the local curve ids internally can start from [0, 1, 2]
 
         # here input_curve_idx is the global one
         #print("input_curve_idx = ", input_curve_idx)
@@ -116,21 +116,9 @@ class NGCDataset(Dataset):
 
     def get_curve_data(self, curve_data, input_curve_idx, n_samples=1024):
         samples_local = curve_data['samples_local']
-        #samples_global = curve_data['samples_global']
         samples_coords = curve_data['coords']
         samples_sdf = curve_data['sdf']
-        #part_samples_local = curve_data['part_samples_local']
-        #part_samples_coords = curve_data['part_coords']
-        #part_samples_sdf = curve_data['part_sdf']
-
-        #print(curve_data['curve_idx'])
-        # local curve ids start from index 0
         cids = curve_data['curve_idx'].astype(np.int32)
-        #print(cids.shape)
-        #print(samples_local.shape)
-        #print(cids[0:10])
-        #print(samples_local[0:10])
-        #exit()
 
         num_samples = samples_local.shape[0]
         if n_samples <= 0:
@@ -146,22 +134,13 @@ class NGCDataset(Dataset):
         samples_local = samples_local[sidx]
         samples_coords = samples_coords[sidx]
         cids = cids[sidx]
+
         ### This maps the local curve_ids to global ones
+        ### cids are local curve_ids
         curve_idx = input_curve_idx[cids]
-        #print("curve idx = ", curve_idx)
-        #print("samples_local", samples_local)
-
-
-        #gt_part_sdf = part_samples_sdf[sidx]
-        #part_samples_local = part_samples_local[sidx]
-        #part_samples_coords = part_samples_coords[sidx]
-        #part_curve_idx = input_curve_idx[cids]
-        #print("part curve idx = ", part_curve_idx)
-        #print("part_samples_local", part_samples_local)
 
         model_input = {
             'samples': torch.from_numpy(samples_local).float(),
-            #'samples_global': torch.from_numpy(samples_global).float(),
             'coords': torch.from_numpy(samples_coords).float(),
             'curve_idx': torch.from_numpy(curve_idx).long(),
         }
