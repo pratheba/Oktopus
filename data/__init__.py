@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_path)
 
+#import dataset
 import dataset_part as dataset
 
 def get_dataset(dataset_name):

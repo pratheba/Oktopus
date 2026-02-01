@@ -149,7 +149,7 @@ def ngc_dataset(arg):
                 export_handle_data(handle, output_path, handle_path)
 
             on_surface_samples, surface_samples = meshlab_shape_sampling(
-                shape_file, n_surface_samples, [0.05]
+                shape_file, n_surface_samples, [0.01, 0.001]
             )
 
             #surface_samples = meshlab_shape_sampling(
@@ -237,7 +237,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 2000000,
-        'n_space_samples' : 2000000,
+        'n_surface_samples' : 100000,
+        'n_space_samples' : 100000,
     }
     ngc_dataset(arg)

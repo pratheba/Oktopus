@@ -49,6 +49,8 @@ class LossHandler():
 
     def sdf_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']
+        B, n = out_sdf.shape
+        #gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
         gt_sdf = gt['sdf'].view_as(out_sdf)
         return metric_fn(out_sdf, gt_sdf)
 
@@ -63,7 +65,8 @@ class LossHandler():
         return metric_fn(out_sdf, gt_sdf)
 
     def code_loss(self, output, gt, metric_fn):
-        code = output['curve_code']
+        #code = output['curve_code']
+        code = output['code']
         reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
         return torch.mean(reg_loss)
 

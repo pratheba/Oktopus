@@ -69,6 +69,7 @@ class Attention(nn.Module):
         out = self.drop_path(out)
         out = out.to(x.dtype)
 
+        #print("attn shape = ", out.shape)
         return out
 
 class GatedGELU(nn.Module):
@@ -97,13 +98,15 @@ class PreNorm(nn.Module):
         self.norm = nn.LayerNorm(dim)
         self.norm_context = nn.LayerNorm(context_dim) if exists(context_dim) else None
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, context=None, **kwargs):
+        #print("pre norm shape = ", x.shape)
         x = self.norm(x)
 
         if exists(self.norm_context):
-            context = kwargs['context']
+            #context = kwargs['context']
             normed_context = self.norm_context(context)
             kwargs.update(context = normed_context)
+        #print(kwargs)
 
         x = self.fn(x, **kwargs)
         return x

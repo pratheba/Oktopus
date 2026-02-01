@@ -11,7 +11,6 @@ from dotted.collection import DottedDict
 from time import time
 from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint, load_model
 from loss import config_loss
-
 import network, data
 
 
@@ -91,6 +90,7 @@ class Trainer:
                     model_input['info'] = info
                     gt['info'] = info
                     batch_size = gt['sdf'].shape[0]
+                    #print("batch_size = ", batch_size)
                     #print(model_input['samples_local'])
                     #print(mode_input)
                     #exit()

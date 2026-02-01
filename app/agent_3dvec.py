@@ -48,16 +48,31 @@ class Agent():
         handles = {}
         feat_dict = {}
         fid = 0
-        for shape_name in shapes:
+        self.shape_global_curveids = {}
+        for idx, shape_name in enumerate(shapes):
             item_path = op.join(data_root, f'{shape_name}')
             handle_path = op.join(item_path, 'handle/std_handle.pkl')
             handle = utils.load_handle(handle_path)
             handles[shape_name] = handle
+            shape_curve_ids = []
+            self.shape_global_curveids[idx] = fid
             for curve in handle.curves:
                 key = f'{shape_name}|{curve.name}'
                 key = self.encode_key(shape_name, curve.name)
                 feat_dict[key] = fid
                 fid += 1
+            #print(f'{shape_name}')
+            #print(feat_dict)
+
+        self.model_input = {}
+        for idx, shape_name in enumerate(shapes):
+            item_path = op.join(data_root, f'{shape_name}')
+            data_path = op.join(item_path, 'train_data', 'sdf_samples.pkl')
+            with open(data_path, 'rb') as f:
+                data = pickle.load(f)
+            self.model_input[shape_name] = self.get_curve_data(data['on_surface'], self.shape_global_curveids[idx]) 
+
+        #print(self.model_input['armadillo'])
 
         self.handles = handles
         self.feat_dict = feat_dict
@@ -67,6 +82,27 @@ class Agent():
         handle_path = op.join(item_path, 'handle/std_handle.pkl')
         handle = utils.load_handle(handle_path)
         return handle
+
+    def load_handle(self, handle_path):
+        handle = Handle()
+        handle.load(handle_path)
+        return handle
+
+    def get_curve_data(self, curve_data, global_curveid):
+        samples_local = curve_data['samples_local']
+        samples_coords = curve_data['coords']
+        cids = curve_data['curve_idx'].astype(np.int32)
+        maxid = max(cids)
+
+        model_input = {}
+        for curve_id in range(maxid+1):
+            ids = np.where(cids == curve_id)[0]
+            model_input[global_curveid+curve_id] = {'samples': torch.from_numpy(samples_local[ids]).float(),
+                    'coords': torch.from_numpy(samples_coords[ids]).float(),
+                    'curve_idx': (torch.ones(ids.shape[0])*(global_curveid+curve_id)).long()
+            }
+        return model_input
+
 
     def set_embedding(self, device, log_path):
         embd_model, _ = utils.load_model(device, log_path, 'final')
@@ -93,17 +129,30 @@ class Agent():
             handle.apply_tilt(arg['tilt'])
 
 
-    def __inference_vals(self, curve_data, key, batch_size=None):
+    def __inference_vals(self, curve_data, context_data, key, batch_size=None):
         # use_batch: aim to divide data into batches to save GPU mem
         num_samples = curve_data['samples'].shape[0]
+        num_context_samples = context_data['samples'].shape[0]
+
         if batch_size is not None and num_samples > batch_size:
             N = num_samples // batch_size + 1
             vals = []
             batches = np.array_split(np.arange(num_samples), N)
-            for batch in batches:
+            for idx, batch in enumerate(batches):
                 batch_curve_data = {key: val[batch] for key,val in curve_data.items()}
                 batch_curve_data['device'] = self.device
                 batch_curve_data['curve_idx'] = self.feat_dict[key]
+
+                r = np.random.choice(num_context_samples, size=4096, replace=False)
+
+                batch_curve_data['on_curve_idx'] = context_data['curve_idx'][r]
+                batch_curve_data['on_coords'] = context_data['coords'][r]
+                batch_curve_data['on_surface_samples'] = context_data['samples'][r]
+
+
+                #trimesh.Trimesh(vertices=batch_curve_data['on_surface_samples'].numpy(), process = False).export(str(self.feat_dict[key])+'_onsurface.ply')
+                #trimesh.Trimesh(vertices=batch_curve_data['samples_local'], process = False).export(str(self.feat_dict[key])+'_'+str(idx)+'_query.ply')
+
                 vals_batch = self.model.inference(batch_curve_data).squeeze()
                 vals.append(vals_batch.detach().cpu().numpy())
             
@@ -161,12 +210,15 @@ class Agent():
         ))
 
 
+
+
     @torch.no_grad()
     def action_ngcnet_inference(self, arg):
         data_root = arg['data_root']
         self.load_data(data_root)
         mc_grid = arg['mc_grid']
         output_folder = arg['output_folder']
+        checkpoint = arg['checkpoint']
 
         num_shapes = len(self.handles)
         err_res = {}
@@ -181,15 +233,28 @@ class Agent():
                     continue
 
                 temp_grid = utils.create_grid_like(mc_grid)
+                context_input = self.model_input[shape_name]
+
                 for curve in handle.curves:
+                    #print("curve_name = ", curve.name)
+                    #print("shape name = ", shape_name)
                     key = self.encode_key(shape_name, curve.name)
+                    #print("key = ", key)
+                    #print("feat dict = ", self.feat_dict[key])
                     curve_data, kidx = curve.filter_grid(mc_grid)
+                    #print(curve_data)
+                    context_data = context_input[self.feat_dict[key]]
+
+
+                    #trimesh.Trimesh(vertices=curve_data['samples'], process=False).export(shape_name+'_'+curve.name+'mc_grid.ply')
+                    #trimesh.Trimesh(vertices=curve_data['samples_local'], process=False).export(shape_name+'_'+curve.name+'_query.ply')
+                    #trimesh.Trimesh(vertices=context_data['samples'].numpy(), process=False).export(shape_name+'_'+curve.name+'context.ply')
                     
-                    vals = self.__inference_vals(curve_data, key, batch_size=batch_size)
+                    vals = self.__inference_vals(curve_data, context_data, key, batch_size=batch_size)
                     temp_grid.update_grid(vals, kidx, mode='minimum')
                 
                 mesh = temp_grid.extract_mesh()
-                mesh_file = op.join(output_folder, shape_name, f'mesh{reso}.ply')
+                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_{checkpoint}_mesh{reso}.ply')
                 os.makedirs(op.dirname(mesh_file), exist_ok=True)
                 mesh.export(mesh_file)
                 temp_grid = None
@@ -267,6 +332,57 @@ class Agent():
 
         mesh = mc_grid.extract_mesh()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
+        mesh.export(mesh_file)
+
+    @torch.no_grad()
+    def action_shape_stretch(self, arg):
+        output_folder = arg['output_folder']
+        exp_name = arg['exp_name']
+        mc_grid = arg['mc_grid']
+        shape_name = arg['shape']
+        config = utils.load_yaml_file(arg['stretch_file'])
+
+        data_root = arg['data_root']
+        handle = self.load_shape_handle(data_root, shape_name)
+        # out_name = exp_name
+        out_name = f'{exp_name}_{shape_name}'
+
+        batch_size = 64**3
+        for curve in handle.curves:
+            key = self.encode_key(shape_name, curve.name)
+
+            if key in config:
+                stretch_config = config[key]
+                new_key = stretch_config['new_key']
+
+                if new_key == 'None':
+                    continue
+                
+                func = utils.define_stretch_func(stretch_config)
+
+                stretch_arg = {
+                    'curve_handle': self.curve_from_key(new_key),
+                    'stretch_func': func,
+                    'device': self.device,
+                    'curve_idx': self.feat_dict[key],
+                    'new_idx': self.feat_dict[new_key],
+                }
+
+                curve_data, kidx = curve.filter_grid_stretch(mc_grid, stretch_arg)
+                #vals = self.__inference_vals(curve_data, key, batch_size)
+                vals = self.__mix_inference(curve_data, stretch_arg, batch_size)
+                #curve_data, kidx = curve.filter_grid_mix(mc_grid, stretch_arg)
+                #vals = self.__mix_inference(curve_data, stretch_arg, batch_size)
+            else:
+                curve_data, kidx = curve.filter_grid(mc_grid)
+                vals = self.__inference_vals(curve_data, key, batch_size)
+
+            mc_grid.update_grid(vals, kidx, mode='minimum')
+
+        print(mc_grid.grid_config)
+        mesh = mc_grid.extract_mesh()
+        mesh_file = op.join(output_folder, f'{out_name}.ply')
+        os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
 
 

@@ -4,27 +4,45 @@ import torch.nn as nn
 
 from mlp import *
 from pos_encoding import PosEncoding
+from periodic_encoding import PeriodicEncoding
 
 
 class NGCNet(nn.Module):
     """docstring for NGCNet ."""
     def __init__(self, arg):
         super().__init__()
+        self.device = arg['device']
         self.dim_code = arg['dim_code']
         self.dim_feat = arg['dim_feat']
-        
+        self.dim_type = arg['dim_type']
+
+        self.pos_enc = PosEncoding(arg['num_pos_encoding'])
+        self.periodic_enc = PeriodicEncoding(arg['num_period_encoding'])
+
         self.embd = nn.Embedding(arg['n_curve'], self.dim_code)
+        self.type_embd = nn.Embedding(2, self.dim_type)
         self.init_embedding(self.embd, self.dim_code)
+        self.init_embedding(self.type_embd, self.dim_type)
         
-        self.encoder = FeatCurveEncoder(arg)
-        if arg['num_pos_encoding'] > 0:
-            self.pos_enc = PosEncoding(arg['num_pos_encoding'])
-            diff = self.pos_enc.d_out - self.pos_enc.d_in
-            arg['decoder_curve']['size'][0] += diff
+        self.curveencoder = FeatCurveEncoder(arg)
+
+        self.sampleencoder1 = FeatSampleEncoder((arg['num_pos_encoding']*2 +1)*3, arg['dim_sample_feat'])
+        self.sampleencoder2 = FeatSampleEncoder(arg['dim_sample_feat'], arg['dim_sample_feat'])
+
+        self.film1 = FiLM(arg)
+        self.film2 = FiLM(arg)
+
+
+        #if arg['num_pos_encoding'] > 0:
+        #    self.pos_enc = PosEncoding(arg['num_pos_encoding'])
+        #    diff = self.pos_enc.d_out - self.pos_enc.d_in
+            #print("diff = ", diff)
         self.decoder = MLP(**arg['decoder_curve'])
+
 
     def init_embedding(self, embedding, dim_code):
         nn.init.normal_(embedding.weight.data, 0., 1./ math.sqrt(dim_code))
+
     
     def set_post_mode(self):
         for pname, param in self.core.named_parameters():
@@ -33,63 +51,70 @@ class NGCNet(nn.Module):
             param.requires_grad = False
 
 
-    def forward(self, model_input):
+    def forwardsimple(self, model_input, istrain=True):
         mi = model_input
         # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
         curve_code = self.embd(mi['curve_idx'])
-        curve_feats = self.encoder(curve_code, mi['coords'])
-        print(mi['samples'].shape, flush=True)
-        #import trimesh
-        #trimesh.Trimesh(vertices = np.array(mi['samples']), process=False).export('samples.ply')
-        #exit()
+        B = curve_code.shape[0]
+
+        type_curve  = self.type_embd(torch.zeros(B, dtype=torch.long, device=self.device)).unsqueeze(1)
+        type_sample = self.type_embd(torch.ones(B, dtype=torch.long, device=self.device)).unsqueeze(1)
 
         if hasattr(self, 'pos_enc'):
-            samples = self.pos_enc(mi['samples'])
+            if istrain:
+                samples_posenc = self.pos_enc(mi['samples'])
+                curve_coords_posenc = self.pos_enc(mi['coords'].unsqueeze(-1))
+            else:
+                samples_posenc = self.pos_enc.inference(mi['samples'])
+                curve_coords_posenc = self.pos_enc.inference(mi['coords'].unsqueeze(-1))
         else:
-            samples = mi['samples']
-        curve_feats = torch.cat([curve_feats, samples], dim=-1)
-        
-        curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+            samples_posenc = mi['samples']
+            curve_coords_posenc = mi['coords'].unsqueeze(-1)
+
+        #print(curve_code.shape)
+        #print(curve_coords_posenc.shape)
+
+        #print(samples_posenc.shape)
+
+        curve_code_coords = torch.cat([curve_code, curve_coords_posenc], dim=-1)
+        #curve_feats = torch.cat([self.curveencoder(curve_code_coords), self.type_curve], dim=-1)
+        curve_feats = self.curveencoder(curve_code_coords) + type_curve
+
+
+        #x = torch.cat([self.sampleencoder1(samples_posenc), self.type_sample], dim=-1)
+        x = self.sampleencoder1(samples_posenc) + type_sample
+        #print(x.shape)
+        x = self.film1(curve_feats, x)
+        #print(x.shape)
+        res = x
+        x = self.sampleencoder2(x)
+        #print(x.shape)
+        x = self.film2(curve_feats, x) + res
+        #print(x.shape)
+
+        #curve_feats = torch.cat([curve_feats, samples], dim=-1)
+
+
+        curve_sdf = self.decoder.forward_simple(x).squeeze(-1)
+        #curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+
         return {
             'sdf': curve_sdf,
             'code': curve_code,
         }
+
+    def forward(self, model_input):
+        return self.forwardsimple(model_input)
 
     @torch.no_grad()
     def validation(self, model_input):
-        curve_input = model_input
-        ci = curve_input
-        curve_code = self.embd(ci['curve_idx'])
-
-        curve_feats = self.encoder(curve_code, ci['coords'])
-        if hasattr(self, 'pos_enc'):
-            samples = self.pos_enc(ci['samples'])
-        else:
-            samples = ci['samples']
-        curve_feats = torch.cat([curve_feats, samples], dim=-1)
-
-        curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
-        return {
-            'sdf': curve_sdf,
-            'code': curve_code,
-        }
+        return self.forwardsimple(model_input, False)
     
     @torch.no_grad()
     def inference(self, model_input):
         curve_input = self.pack_data(model_input)
-        ci = curve_input
-        curve_code = self.embd(ci['curve_idx'])
-
-        curve_feats = self.encoder(curve_code, ci['coords'])
-        if hasattr(self, 'pos_enc'):
-            print("positional encoding", flush=True)
-            samples = self.pos_enc.inference(ci['samples'])
-        else:
-            samples = ci['samples']
-        curve_feats = torch.cat([curve_feats, samples], dim=-1)
-
-        curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
-        return curve_sdf
+        out = self.forwardsimple(curve_input, False)
+        return out['sdf']
 
     @torch.no_grad()
     def mix_curve(self, model_input):
@@ -128,8 +153,66 @@ class NGCNet(nn.Module):
         res = {key:val.unsqueeze(0) for key,val in res.items()}
         return res
 
+class FiLM(nn.Module):
+    def __init__(self, arg):
+        super(FiLM, self).__init__()
+        self.dim_curve_feat = arg['dim_curve_feat']
+        self.dim_sample_feat = arg['dim_sample_feat']
+        self.gamma = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+        self.beta = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+
+        self.initialize()
+
+    def initialize(self):
+        self.gamma.weight.data.zero_()
+        self.gamma.bias.data.fill_(1.0)
+        self.beta.weight.data.zero_()
+        self.beta.bias.data.fill_(0.0)
+
+    def forward(self, curve_feat, sample_feat):
+        gamma = self.gamma(curve_feat)
+        beta = self.beta(curve_feat)
+        
+        return sample_feat + (gamma * sample_feat + beta)
+        
+
+class FeatSampleEncoder(nn.Module):
+    """docstring for FeatCurveEncoder."""
+    def __init__(self, dim, out_dim):
+        super(FeatSampleEncoder, self).__init__()
+        self.fc = nn.Linear(dim, out_dim)
+        self.act = nn.SiLU()
+    
+    def forward(self, x):
+        # code(Nb, Ns, N_code); coords(Nb, Ns)
+        return self.act(self.fc(x))
 
 class FeatCurveEncoder(nn.Module):
+    """docstring for FeatCurveEncoder."""
+    def __init__(self, arg):
+        super(FeatCurveEncoder, self).__init__()
+
+        posenc = arg['num_pos_encoding'] * 2 + 1
+        diff =  arg['dim_code'] + posenc
+        arg['encoder_curve']['size'].insert(0, diff)
+        self.mlp_t = MLP(**arg['encoder_curve'])
+    
+    def forward(self, code_coords):
+        # code(Nb, Ns, N_code); coords(Nb, Ns)
+        return self.mlp_t.forward_simple(code_coords)
+   
+    def mix_feats(self, code1, code2, coords, arg):
+        func1 = arg['mix_func1']
+        func2 = arg['mix_func2']
+
+        ts1, weights1 = func1(coords)
+        ts2, weights2 = func2(coords)
+        feat1 = self.forward(code1, ts1)
+        feat2 = self.forward(code2, ts2)
+        feat = feat1*weights1[...,None] + feat2*weights2[...,None]
+        return feat
+
+class FeatCurveEncoder_old(nn.Module):
     """docstring for FeatCurveEncoder."""
     def __init__(self, arg):
         super(FeatCurveEncoder, self).__init__()

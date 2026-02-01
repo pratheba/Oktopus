@@ -22,8 +22,13 @@ def start_inference(opt):
 
     model_path = opt.model_directory
     for checkpoint in opt['checkpoints']:
-        
-        agent.load_model(device, config_path, model_path, checkpoint=checkpoint)
+        #print(checkpoint) 
+        #checkpoint = 3000
+        #agent.load_model(device, config_path, model_path, checkpoint=checkpoint)
+        agent.load_model(device, config_path, model_path, mode='train', checkpoint=checkpoint)
+        #print(model_path)
+        #config_path = 'train'
+        #agent.load_model(device,  model_path, config_path, checkpoint=checkpoint)
         mc_grid = MCGrid({
             'reso': 512,
             'level': 0.,
@@ -52,7 +57,11 @@ if __name__ == '__main__':
     }
 
     opt = process_options(opt, mode='inference')
-
+    print(opt)
+    #opt['checkpoint_path'] = args.checkpoint_path
+    #opt['root_path']= op.dirname(op.abspath(__file__))
+    #opt['checkpoints']= args.checkpoints
+    #opt['config_path']= args.config_path
     
 
     opt = DotDict(opt)

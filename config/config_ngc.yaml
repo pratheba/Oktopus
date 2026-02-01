@@ -1,19 +1,19 @@
 experiment_name: train
 description: overfitting 2 shapes 
-logging_root: results_3dvec
-num_samples: 30k
+logging_root: results_resume_1e5
+num_samples: 100k
 training:
-  num_epochs: 10000
+  num_epochs: 100000
   num_batch_val: 1
   val_type: None
   epochs_til_ckpt : 3000
   steps_til_summary : 50
   epochs_til_showval: 50
   clip_grad: False
-  resume: True
+  resume: False
   optim:
     type: Adam
-    lr: 0.000002
+    lr: 0.00001
     factor: 0.99
     patience: 20
     lr_scheduler: ROP
@@ -21,34 +21,29 @@ training:
     beta2: 0.999
     amsgrad: False
   resume_data:
-    checkpoint_path: /fast/pselvaraju/Oktopus_now/results_3dvec/train/
-    checkpoint: 'final'
+    checkpoint_path: /fast/pselvaraju/Oktopus/results_resume/train/
+    checkpoint: 'model_epoch_42000.pth'
 
 dataset:
-  root: /fast/pselvaraju/Oktopus_now/Pack50Dataset 
+  root: Pack50Dataset 
   type: NGCDataset
-  num_batch: 5
+  num_batch: 8
   file_name: sdf_samples.pkl
   n_sample: 2048
-  n_surface_sample: 2048
 
 model:
   type: NGCNet
   # n_curve is a number larger than the total curve counts in dataset
-  device: 'cuda'
   n_curve: 300
-  curvecode_dim: 1024
-  curvefeature_dim: 1024
-  num_pos_encoding: 24
+  dim_code: 256
+  dim_feat: 256
+  num_pos_encoding: 32
   encoder_curve:
-    size: [1024, 1024, 1024, 1024]
+    size: [256, 256, 256, 256]
     activation_type: silu
   decoder_curve:
-    #size: [768, 512, 256, 256, 256, 1]
-    size: [512, 256, 256, 256, 256, 1]
+    size: [259, 256, 256, 256, 256, 1]
     activation_type: silu
-  shape_model: kl_d512_m512_f24_l128
-  surface_point_size: 2048
   
 loss:
   sdf_loss:
@@ -61,23 +56,12 @@ loss:
     factor: 0.0001
     metric: L2
 
-  kl_loss:
-    enable: False
-    factor: 0.001
-    metric: L2
-
 val_loss:
   sdf_loss:
     enable: True
     factor: 1
     metric: L1
-
   code_loss:
     enable: True
     factor: 0.0001
-    metric: L2
-
-  kl_loss:
-    enable: False
-    factor: 0.001
     metric: L2

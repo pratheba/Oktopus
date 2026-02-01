@@ -5,12 +5,10 @@ import numpy as np
 
 
 class PointEmbed(nn.Module):
-    def __init__(self, hidden_dim=48, dim=128):
+    def __init__(self, num_freq=6, dim=128):
         super().__init__()
 
-        assert hidden_dim % 6 == 0
-
-        self.embedding_dim = hidden_dim
+        self.embedding_dim = num_freq * 6
 
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
         e = torch.stack([
@@ -27,13 +25,13 @@ class PointEmbed(nn.Module):
     def embed(x, basis):
         projections = torch.einsum(
                 'bnd, de -> bne', x, basis)
-        embeddings = torch.cat([projections.sin(), projections.cos()], dim=2)
+        embeddings = torch.cat([projections.sin(), projections.cos()], dim=-1)
         return embeddings
 
 
     def forward(self, x):
         # x : B X N 3
 
-        embed = self.mlp(torch.cat([self.embed(x, self.basis), x], dim=2))
+        embed = self.mlp(torch.cat([self.embed(x, self.basis), x], dim=-1))
         return embed
 

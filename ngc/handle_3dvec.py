@@ -6,6 +6,7 @@ from time import time
 from handle_utils import EasyGraph, MCGrid
 from scipy.spatial.transform import Rotation
 from curve_handle import CurveHandle
+#from curve_handle_oktopus import CurveHandle
 
 
 class Handle():
@@ -86,39 +87,49 @@ class Handle():
     
     def prepare_samples(self, samples):
         # samples to train data
-        samples_glob = []
-        samples_local = []
-        coords = []
-        cids = []
+        part_samples_glob = []
+        part_samples_local = []
+        part_coords = []
+        part_cids = []
 
-        n_s = samples.shape[0]
-        sidx = np.arange(n_s)
+        num_samples = samples.shape[0]
+        sidx = np.arange(num_samples)
+        print("number of samples", num_samples)
+        print("number of curves ", len(self.curves))
 
         for cid,curve in enumerate(self.curves):
+            # for each curve, find the samples that belong to that curve
             inbbox = curve.find_inbbox(samples)
+            # 3D point cloud samples in that inbox
             samples_bbox = samples[inbbox]
+            # the index of those samples in that inbox
             sidx_bbox = sidx[inbbox]
 
+            # Localize the samples for each curve
             curve_data, inside = curve.localize_samples(samples_bbox)
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
-            samples_glob.append(curve_data['samples'])
-            samples_local.append(curve_data['samples_local'])
-            coords.append(curve_data['coords'])
-            cids.append(np.ones(num_inside, dtype=int)*cid)
+            part_samples_glob.append(curve_data['samples'])
+            part_samples_local.append(curve_data['samples_local'])
+            part_coords.append(curve_data['coords'])
+            part_cids.append(np.ones(num_inside, dtype=int)*cid)
 
 
-        samples_glob = np.concatenate(samples_glob, axis=0)
-        samples_local = np.concatenate(samples_local, axis=0)
-        coords = np.concatenate(coords)
-        cids = np.concatenate(cids)
+        samples_glob = np.concatenate(part_samples_glob, axis=0)
+        samples_local = np.concatenate(part_samples_local, axis=0)
+        coords = np.concatenate(part_coords)
+        cids = np.concatenate(part_cids)
 
         return {
             'samples': samples_glob,
             'samples_local': samples_local,
             'coords': coords,
             'curve_idx': cids,
+            'part_samples': part_samples_glob,
+            'part_samples_local': part_samples_local,
+            'part_coords': part_coords,
+            'part_cids': part_cids
         }
 
     
@@ -234,6 +245,17 @@ class Handle():
             curve.update()
     
     def apply_scaling(self, arg):
+        print(self.curve_dict.keys())
+        for name, val in arg.items():
+            curve = self.curve_dict[name]
+            scales = np.asarray(val['scales'])
+            ts_array = np.asarray(val['coords'])
+            curve.stretch(scales, ts_array)
+            curve.update()
+
+
+    def apply_stretch(self, arg):
+        print(self.curve_dict.keys())
         for name, val in arg.items():
             curve = self.curve_dict[name]
             scales = np.asarray(val['scales'])

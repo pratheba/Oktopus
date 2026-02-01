@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 
 from mlp import *
-#from pos_encoding import PosEncoding
-from pos_encoding_fromokto import PosEncoding
+from pos_encoding import PosEncoding
 import shape_encoder
 
 
@@ -24,9 +23,8 @@ class NGCNet(nn.Module):
         self.curve_encoder = CurveEncoder(arg)
 
         ############## SHAPE #########################
-        self.shapeEncoder = shape_encoder.__dict__[arg['shape_model']](N=arg['surface_point_size'], output_dim=1)
-        #self.shapeEncoder = shape_encoder.__dict__[arg['shape_model']](N=arg['surface_point_size'], output_dim=1)
-        #self.shapeEncoder.to(self.device)
+        self.shapeEncoder = shape_encoder.__dict__[arg['shape_model']](N=arg['surface_point_size'], output_dim=None)
+        self.shapeEncoder.to(self.device)
 
         self.decoder = MLP(**arg['decoder_curve'])
 
@@ -40,84 +38,118 @@ class NGCNet(nn.Module):
                 continue
             param.requires_grad = False
 
-    def forwardabs(self, inputs, isinference=False):
+
+    def forward(self, inputs):
         curve_idx = inputs['curve_idx']
         # The coordinates on the curve obtained by projecting samples from surface to obtain
         # lot of keypoints
         curve_coords = inputs['coords']
-
         # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
         curve_code = self.curve_embeddings(curve_idx)
-
-
-
-        
         curve_features = self.curve_encoder(curve_code, curve_coords)
-        #print("curve_features =", curve_features.shape)
-        #index_curve_coords = curve_idx + curve_coords
 
-
-        #curve_context_idx = inputs['on_curve_idx']
-        #curve_context_coords = inputs['on_coords']
-        #curve_context_code = self.curve_embeddings(curve_context_idx)
-        #curve_context_features = self.curve_encoder(curve_context_code, curve_context_coords)
+        curve_context_idx = inputs['on_curve_idx']
+        curve_context_coords = inputs['on_coords']
+        curve_context_code = self.curve_embeddings(curve_context_idx)
+        curve_context_features = self.curve_encoder(curve_context_code, curve_context_coords)
 
 
         ######### Auto encoder for shapes ############
 
-        #context_samples = inputs['on_surface_samples']
+        context_samples = inputs['on_surface_samples']
         query_samples = inputs['samples']
-        #print(query_samples.shape, flush=True)
 
         ################ Combine to get sdf output or put the curve info as well to get the sdf output ? #######
-        #out = self.shapeEncoder(context_samples, query_samples)
-        #out = self.shapeEncoder(curve_coords.unsqueeze(-1), query_samples)
-        out = self.shapeEncoder(curve_features, query_samples)
-        #print(curve_coords.shape)
+        out = self.shapeEncoder(context_samples, query_samples)
         query_features = out['query_features']
-        #context_features = out['context_features']
+        context_features = out['context_features']
 
-        #kl = out['kl']
+        kl = out['kl']
     
-        #out_query_features = torch.cat([curve_features, query_features], dim=-1)
-        #out_context_features = torch.cat([curve_context_features, context_features], dim=-1)
+        out_query_features = torch.cat([curve_features, query_features], dim=-1)
+        out_context_features = torch.cat([curve_context_features, context_features], dim=-1)
         #print("out_features.shape = ", out_features.shape, flush=True)
         
         
-        #out_query_features = torch.cat([curve_features, query_samples], dim=-1)
-        #print(out_query_features)
-        #sdf_query = self.decoder.forward_simple(out_query_features).squeeze(-1)
-        sdf_query = query_features
-        #sdf_context = self.decoder.forward_simple(out_context_features).squeeze(-1)
+        sdf_query = self.decoder.forward_simple(out_query_features).squeeze(-1)
+        sdf_context = self.decoder.forward_simple(out_context_features).squeeze(-1)
         #print("sdf query shape = ", sdf_query.shape)
         #print("sdf context shape = ", sdf_context.shape)
-        #sdf = torch.cat([sdf_query, sdf_context],dim=-1)
-        #all_curve_code = torch.cat([curve_code, curve_context_code], dim=-1) 
+        sdf = torch.cat([sdf_query, sdf_context],dim=-1)
+        all_curve_code = torch.cat([curve_code, curve_context_code], dim=-1) 
         #print("sdf shape = ", sdf.shape)
-        kl = None
-        sdf = sdf_query
-        #sdf = out_query_features['query_logits']
         return {
             'sdf': sdf,
             #'enc_features': encoder_features,
             #'dec_features': decoder_features,
-            #'curve_code': all_curve_code,
-            'curve_code': curve_code,
+            'curve_code': all_curve_code,
             'kl': kl
         }
 
-    def forward(self, inputs):
-        return self.forwardabs(inputs)
-
     @torch.no_grad()
     def validation(self, inputs):
-        return self.forwardabs(inputs)
+        curve_idx = inputs['curve_idx']
+        curve_coords = inputs['coords']
+        # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
+        curve_code = self.curve_embeddings(curve_idx)
+        curve_features = self.curve_encoder(curve_code, curve_coords)
+
+        curve_context_idx = inputs['on_curve_idx']
+        curve_context_coords = inputs['on_coords']
+        curve_context_code = self.curve_embeddings(curve_context_idx)
+        curve_context_features = self.curve_encoder(curve_context_code, curve_context_coords)
+
+        #print("curve features shape = ", curve_features.shape)
+
+        ######### Auto encoder for shapes ############
+
+        surface_samples = inputs['on_surface_samples']
+        query_samples = inputs['samples']
+        #print("on surface samples = ", surface_samples.shape)
+        #print("query samples = ", query_samples.shape)
+
+        ################ Combine to get sdf output or put the curve info as well to get the sdf output ? #######
+        out = self.shapeEncoder(surface_samples, query_samples)
+        query_features = out['query_features']
+        context_features = out['context_features']
+
+        kl = out['kl']
+    
+        out_query_features = torch.cat([curve_features, query_features], dim=-1)
+        out_context_features = torch.cat([curve_context_features, context_features], dim=-1)
+        
+        sdf_query = self.decoder.forward_simple(out_query_features).squeeze(-1)
+        sdf_context = self.decoder.forward_simple(out_context_features).squeeze(-1)
+        sdf = torch.cat([sdf_query, sdf_context],dim=-1)
+        all_curve_code = torch.cat([curve_code, curve_context_code], dim=-1) 
+        return {
+            'sdf': sdf,
+            'curve_code': all_curve_code,
+            'kl': kl
+        }
     
     @torch.no_grad()
     def inference(self, inputs):
         inputs = self.pack_data(inputs)
-        out = self.forwardabs(inputs, isinference=True)
-        return out['sdf']
+        curve_idx = inputs['curve_idx']
+        curve_coords = inputs['coords']
+        curve_code = self.curve_embeddings(curve_idx)
+        curve_features = self.curve_encoder(curve_code, curve_coords)
+
+        #print("curve features shape = ", curve_features.shape)
+
+        ######### Auto encoder for shapes ############
+
+        surface_samples = inputs['on_surface_samples']
+        query_samples = inputs['samples']
+
+        ################ Combine to get sdf output or put the curve info as well to get the sdf output ? #######
+        out = self.shapeEncoder(surface_samples, query_samples)
+        query_features = out['query_features']
+        out_query_features = torch.cat([curve_features, query_features], dim=-1)
+        
+        sdf_query = self.decoder.forward_simple(out_query_features).squeeze(-1)
+        return sdf_query
 
     @torch.no_grad()
     def mix_curve(self, model_input):
@@ -151,9 +183,9 @@ class NGCNet(nn.Module):
             'samples': torch.from_numpy(mi['samples_local']).float().to(device),
             'coords': torch.from_numpy(mi['coords']).float().to(device),
             'curve_idx': curve_idx.to(device),
-            #'on_surface_samples': mi['on_surface_samples'].float().to(device),
-            #'on_coords': mi['on_coords'].float().to(device),
-            #'on_curve_idx': mi['on_curve_idx'].to(device)
+            'on_surface_samples': mi['on_surface_samples'].float().to(device),
+            'on_coords': mi['on_coords'].float().to(device),
+            'on_curve_idx': mi['on_curve_idx'].to(device)
         }
 
         res = {key:val.unsqueeze(0) for key,val in res.items()}

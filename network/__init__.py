@@ -4,7 +4,8 @@ sys.path.append(current_path)
 
 import os.path as op
 import yaml, torch
-import model3dvec as model
+#import model3dvec as model
+import model as model
 
 
 def define_model(opt):

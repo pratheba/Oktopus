@@ -18,7 +18,7 @@ class NGCDataset(Dataset):
 
         self.mode = arg['mode']
         self.n_sample = arg['n_sample'] # default 1024
-        self.n_surface_sample = arg['n_surface_sample'] # default 2048
+        self.n_surface_sample = self.n_sample * 2 #arg['n_surface_sample'] # default 2048
 
         self.data_names = np.loadtxt(
             op.join(self.root_path, 'data.txt'), dtype=str).tolist()
@@ -36,6 +36,9 @@ class NGCDataset(Dataset):
 
         if self.mode == 'val':
             self.data_path = 'val_data'
+
+        if self.mode == 'all':
+            self.data_path = 'all_data'
 
         if self.mode == 'inference':
             self.data_path = 'val_data'
@@ -97,13 +100,10 @@ class NGCDataset(Dataset):
         input2, gt2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
         input3, gt3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
         data_input = {
-            'samples': torch.cat([input1['samples'], input2['samples']], dim=0),
+            'samples': torch.cat([input1['samples'], input2['samples'], input3['samples']], dim=0),
             #'part_samples': torch.cat([input1['part_samples'], input2['part_samples']], dim=0),
-            'coords': torch.cat([input1['coords'], input2['coords']]),
-            'curve_idx': torch.cat([input1['curve_idx'], input2['curve_idx']]),
-            'on_surface_samples': input3['samples'],
-            'on_coords': input3['coords'],
-            'on_curve_idx': input3['curve_idx']
+            'coords': torch.cat([input1['coords'], input2['coords'], input3['coords']]),
+            'curve_idx': torch.cat([input1['curve_idx'], input2['curve_idx'], input3['curve_idx']]),
         }
         data_gt = {
             'sdf': torch.cat([gt1['sdf'], gt2['sdf'], gt3['sdf']]),
@@ -116,18 +116,31 @@ class NGCDataset(Dataset):
 
     def get_curve_data(self, curve_data, input_curve_idx, n_samples=1024):
         samples_local = curve_data['samples_local']
+        #samples_global = curve_data['samples_global']
+        #print("sample local = ", samples_local[0:10])
         samples_coords = curve_data['coords']
+        #print("samples coords = ", samples_coords.shape)
+        #print("sample coords = ", samples_coords[0:10])
+        #print("samples_local = ",samples_local.shape)
+        #exit()
+        
         samples_sdf = curve_data['sdf']
+        #print(samples_sdf.shape)
         cids = curve_data['curve_idx'].astype(np.int32)
+        #print("cids", cids, flush=True)
+        #exit()
 
         num_samples = samples_local.shape[0]
+        #print(f"{num_samples} AND {n_samples}", flush=True)
         if n_samples <= 0:
             sidx = np.arange(num_samples)
         else:
             n_s = n_samples
             if n_s <= num_samples:
                 sidx = np.random.choice(num_samples, size=n_s, replace=False)
+                #sidx = np.random.choice(num_samples, size=n_s, replace=True)
             else:
+                #sidx = np.random.choice(num_samples, size=n_s, replace=True)
                 raise ValueError(f'num of samples{num_samples} smaller than the threshold {n_s}')
         
         gt_sdf = samples_sdf[sidx]
@@ -141,6 +154,7 @@ class NGCDataset(Dataset):
 
         model_input = {
             'samples': torch.from_numpy(samples_local).float(),
+            #'samples_global': torch.from_numpy(samples_global).float(),
             'coords': torch.from_numpy(samples_coords).float(),
             'curve_idx': torch.from_numpy(curve_idx).long(),
         }
