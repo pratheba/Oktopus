@@ -7,13 +7,12 @@ class PosEncoding(torch.nn.Module):
     Implementation of NeRF's positional encoding from Pixel-Nerf
     """
 
-    def __init__(self, num_freqs=6, d_in=3, dim=128, freq_factor=np.pi, include_input=True):
+    def __init__(self, num_freqs=6, start= 0, d_in=3, dim=128, freq_factor=np.pi, include_input=True):
         super().__init__()
         self.num_freqs = num_freqs
         self.d_in = d_in
-        self.freqs = freq_factor * 2.0 ** torch.arange(0, num_freqs)
-        #self.inference_freqs = freq_factor * 2.0 ** torch.arange(0, num_freqs)
-        #self.inference_freqs[0] = freq_factor * 1.5
+        #self.freqs = freq_factor * 2.0 ** torch.arange(0, num_freqs)
+        self.freqs = freq_factor * 2.0 ** torch.arange(start, start+num_freqs)
 
         self.d_out = self.num_freqs * 2 * d_in
         self.include_input = include_input

@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 
 from mlp import *
-from pos_encoding import PosEncoding
+#from pos_encoding import PosEncoding
+from pos_encoding_fromokto import PosEncoding
 from periodic_encoding import PeriodicEncoding
 
 
@@ -16,8 +17,17 @@ class NGCNet(nn.Module):
         self.dim_feat = arg['dim_feat']
         self.dim_type = arg['dim_type']
 
-        self.pos_enc = PosEncoding(arg['num_pos_encoding'])
-        self.periodic_enc = PeriodicEncoding(arg['num_period_encoding'])
+        self.issplit = arg['split']
+        if self.issplit:
+            self.details_level = arg['details_level']
+            self.pos_enc_sample_base = PosEncoding(arg['num_pos_encoding_base'], d_in=3)
+            self.pos_enc_sample_detail = PosEncoding(arg['num_pos_encoding_detail'], start=4, d_in=3)
+        else:
+            self.num_film_layers = arg['num_film_layers']
+            self.pos_enc_sample = PosEncoding(arg['num_pos_encoding'], d_in=3)
+
+        self.pos_enc_curve = PosEncoding(arg['num_pos_encoding'], d_in=1)
+        self.period_enc = PeriodicEncoding(arg['num_period_encoding'])
 
         self.embd = nn.Embedding(arg['n_curve'], self.dim_code)
         self.type_embd = nn.Embedding(2, self.dim_type)
@@ -26,18 +36,52 @@ class NGCNet(nn.Module):
         
         self.curveencoder = FeatCurveEncoder(arg)
 
-        self.sampleencoder1 = FeatSampleEncoder((arg['num_pos_encoding']*2 +1)*3, arg['dim_sample_feat'])
-        self.sampleencoder2 = FeatSampleEncoder(arg['dim_sample_feat'], arg['dim_sample_feat'])
+        dim_sample_in = (arg['num_pos_encoding']* 2 +1)*3 + (arg['num_period_encoding'] * 2 + 1)*1
+        #self.sampleencoder1 = FeatSampleEncoder(dim_sample_in , arg['dim_sample_feat'])
+        #self.sampleencoder2 = FeatSampleEncoder(arg['dim_sample_feat'], arg['dim_sample_feat'])
 
-        self.film1 = FiLM(arg)
-        self.film2 = FiLM(arg)
+        #self.film1 = FiLM(arg)
+        #self.film2 = FiLM(arg)
 
+        #self.dim_curve_feat = arg['dim_curve_feat']
+        #self.dim_sample_feat = arg['dim_sample_feat']
+        #self.gamma = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+        #self.beta = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+        #self.decoder = MLP(**arg['decoder_curve'])
+        
+        if self.issplit:
+            ######## BASE ###########################
+            dim_in_base = (arg['num_pos_encoding_base']* 2 +1)*3 #+ (arg['num_period_encoding'] * 2 + 1)*1
+            dim_out = arg['dim_sample_feat']
+            dim_cond = arg['dim_curve_feat']
 
-        #if arg['num_pos_encoding'] > 0:
-        #    self.pos_enc = PosEncoding(arg['num_pos_encoding'])
-        #    diff = self.pos_enc.d_out - self.pos_enc.d_in
-            #print("diff = ", diff)
-        self.decoder = MLP(**arg['decoder_curve'])
+            self.filmenc_base1 = FiLMEncoder(dim_in_base, dim_out, dim_cond) # arg['dim_sample_feat'], arg[''])
+            self.filmenc_base2 = FiLMEncoder(dim_out, dim_out, dim_cond)
+        
+            self.decoder_base = MLP(**arg['decoder_curve'])
+
+            ############# DETAIL ################
+
+            dim_in_detail = (arg['num_pos_encoding_detail']* 2 +1)*3 + (arg['num_period_encoding'] * 2 + 1)*1
+            dim_out = arg['dim_sample_feat']
+            dim_cond = arg['dim_curve_feat']
+
+            self.filmenc_detail1 = FiLMEncoder(dim_in_detail, dim_out, dim_cond) # arg['dim_sample_feat'], arg[''])
+            self.filmenc_detail2 = FiLMEncoder(dim_out, dim_out, dim_cond)
+            self.filmenc_detail3 = FiLMEncoder(dim_out, dim_out, dim_cond)
+        
+            self.decoder_detail = MLP(**arg['decoder_curve'])
+        else:
+            dim_in = (arg['num_pos_encoding']* 2 +1)*3 + (arg['num_period_encoding'] * 2 + 1)*1
+            dim_out = arg['dim_sample_feat']
+            dim_cond = arg['dim_curve_feat']
+
+            self.filmenc1 = FiLMEncoder(dim_in, dim_out, dim_cond) # arg['dim_sample_feat'], arg[''])
+            self.filmenc2 = FiLMEncoder(dim_out, dim_out, dim_cond)
+            if self.num_film_layers == 3:
+                self.filmenc3 = FiLMEncoder(dim_out, dim_out, dim_cond)
+        
+            self.decoder = MLP(**arg['decoder_curve'])
 
 
     def init_embedding(self, embedding, dim_code):
@@ -51,7 +95,7 @@ class NGCNet(nn.Module):
             param.requires_grad = False
 
 
-    def forwardsimple(self, model_input, istrain=True):
+    def forwardsimple(self, model_input, curr_epoch=0, istrain=True):
         mi = model_input
         # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
         curve_code = self.embd(mi['curve_idx'])
@@ -60,60 +104,112 @@ class NGCNet(nn.Module):
         type_curve  = self.type_embd(torch.zeros(B, dtype=torch.long, device=self.device)).unsqueeze(1)
         type_sample = self.type_embd(torch.ones(B, dtype=torch.long, device=self.device)).unsqueeze(1)
 
-        if hasattr(self, 'pos_enc'):
-            if istrain:
-                samples_posenc = self.pos_enc(mi['samples'])
-                curve_coords_posenc = self.pos_enc(mi['coords'].unsqueeze(-1))
+        #if hasattr(self, 'pos_enc_sample'):
+        if istrain:
+            if self.issplit:
+                samples_posenc_base = self.pos_enc_sample_base(mi['samples'])
+                samples_posenc_detail = self.pos_enc_sample_detail(mi['samples'])
             else:
-                samples_posenc = self.pos_enc.inference(mi['samples'])
-                curve_coords_posenc = self.pos_enc.inference(mi['coords'].unsqueeze(-1))
+                samples_posenc = self.pos_enc_sample(mi['samples'])
+
+            sample_angle_periodenc = self.period_enc(mi['angles'].unsqueeze(-1))
+            curve_coords_posenc = self.pos_enc_curve(mi['coords'].unsqueeze(-1))
+            radii_y_posenc = self.pos_enc_curve(torch.log(mi['radius'][:,:,0]).unsqueeze(-1))
+            radii_z_posenc = self.pos_enc_curve(torch.log(mi['radius'][:,:,1]).unsqueeze(-1))
         else:
-            samples_posenc = mi['samples']
-            curve_coords_posenc = mi['coords'].unsqueeze(-1)
+            if self.issplit:
+                samples_posenc_base = self.pos_enc_sample_base.inference(mi['samples'])
+                samples_posenc_detail = self.pos_enc_sample_detail.inference(mi['samples'])
+            else:
+                samples_posenc = self.pos_enc_sample.inference(mi['samples'])
 
-        #print(curve_code.shape)
-        #print(curve_coords_posenc.shape)
+            sample_angle_periodenc = self.period_enc.inference(mi['angles'].unsqueeze(-1))
+            curve_coords_posenc = self.pos_enc_curve.inference(mi['coords'].unsqueeze(-1))
+            radii_y_posenc = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,0]).unsqueeze(-1))
+            radii_z_posenc = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,1]).unsqueeze(-1))
+#        else:
+#            if self.issplit:
+#                samples_posenc_base = mi['samples']
+#                samples_posenc_detail = mi['samples']
+#            else:
+#                samples_posenc = mi['samples']
+#            sample_angle_periodenc = mi['angles'].unsqueeze(-1)
+#            curve_coords_posenc = mi['coords'].unsqueeze(-1)
+#            radii_y_posenc = torch.log(mi['radius'][:,:,0]).unsqueeze(-1)
+#            radii_z_posenc = torch.log(mi['radius'][:,:,1]).unsqueeze(-1)
 
-        #print(samples_posenc.shape)
-
-        curve_code_coords = torch.cat([curve_code, curve_coords_posenc], dim=-1)
-        #curve_feats = torch.cat([self.curveencoder(curve_code_coords), self.type_curve], dim=-1)
-        curve_feats = self.curveencoder(curve_code_coords) + type_curve
-
-
-        #x = torch.cat([self.sampleencoder1(samples_posenc), self.type_sample], dim=-1)
-        x = self.sampleencoder1(samples_posenc) + type_sample
-        #print(x.shape)
-        x = self.film1(curve_feats, x)
-        #print(x.shape)
-        res = x
-        x = self.sampleencoder2(x)
-        #print(x.shape)
-        x = self.film2(curve_feats, x) + res
-        #print(x.shape)
-
-        #curve_feats = torch.cat([curve_feats, samples], dim=-1)
+        curve_code_coords = torch.cat([curve_code, curve_coords_posenc, radii_y_posenc, radii_z_posenc], dim=-1)
+        curve_feats = self.curveencoder(curve_code_coords) 
+        curve_feats = curve_feats + type_curve
 
 
-        curve_sdf = self.decoder.forward_simple(x).squeeze(-1)
-        #curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+        ########## ALL #####################
+        if not self.issplit:
+            y = torch.cat([samples_posenc, sample_angle_periodenc], dim=-1)
+            x = self.filmenc1(y, curve_feats) + type_sample
+            res = x
+            x = self.filmenc2(x, curve_feats)
+            x = x + res
+            if self.num_film_layers == 3:
+                res = x
+                x = self.filmenc3(x, curve_feats)
+                x = x + res
+            curve_sdf = self.decoder.forward_simple(x).squeeze(-1)
+        else:
+            ############ BASE ################
+            x = self.filmenc_base1(samples_posenc_base, curve_feats) + type_sample
+            res = x
+            x = self.filmenc_base2(x, curve_feats)
+            x = x + res
+            curve_sdf_base = self.decoder_base.forward_simple(x).squeeze(-1)
+            #curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+            ############ DETAILS ################
+
+            y = torch.cat([samples_posenc_detail, sample_angle_periodenc], dim=-1)
+            x = self.filmenc_detail1(y, curve_feats) + type_sample
+            res = x
+            x = self.filmenc_detail2(x, curve_feats)
+            x = x + res
+            res = x
+            x = self.filmenc_detail3(x, curve_feats)
+            x = x + res
+            curve_sdf_detail = self.decoder_detail.forward_simple(x).squeeze(-1)
+            ############ Final ###########
+
+            if istrain:
+                if curr_epoch < 200:
+                    curve_sdf = curve_sdf_base
+                elif curr_epoch < 1000:
+                    alpha = (curr_epoch % 1000)/1000
+                    curve_sdf = curve_sdf_base + alpha * curve_sdf_detail
+                else:
+                    curve_sdf = curve_sdf_base + curve_sdf_detail
+            else:
+                    #curve_sdf = curve_sdf_base + curve_sdf_detail
+                    if self.details_level == 0: 
+                        curve_sdf = curve_sdf_base
+                    elif self.details_level == 1: 
+                        curve_sdf = curve_sdf_detail
+                    else:
+                        curve_sdf = curve_sdf_base + curve_sdf_detail
+
 
         return {
             'sdf': curve_sdf,
             'code': curve_code,
         }
 
-    def forward(self, model_input):
-        return self.forwardsimple(model_input)
+    def forward(self, model_input, curr_epoch=0):
+        return self.forwardsimple(model_input, curr_epoch)
 
     @torch.no_grad()
     def validation(self, model_input):
-        return self.forwardsimple(model_input, False)
+        return self.forwardsimple(model_input, istrain=False)
     
     @torch.no_grad()
     def inference(self, model_input):
         curve_input = self.pack_data(model_input)
-        out = self.forwardsimple(curve_input, False)
+        out = self.forwardsimple(curve_input, istrain=False)
         return out['sdf']
 
     @torch.no_grad()
@@ -147,19 +243,40 @@ class NGCNet(nn.Module):
         res = {
             'samples': torch.from_numpy(mi['samples_local']).float().to(device),
             'coords': torch.from_numpy(mi['coords']).float().to(device),
+            'rho': torch.from_numpy(mi['rho']).float().to(device),
+            'angles': torch.from_numpy(mi['angles']).float().to(device),
+            'radius': torch.from_numpy(mi['radius']).float().to(device),
             'curve_idx': curve_idx.to(device)
         }
 
         res = {key:val.unsqueeze(0) for key,val in res.items()}
         return res
 
+
+class FiLMEncoder(nn.Module):
+    """docstring for FiLMEncoder."""
+    def __init__(self, dim, out_dim, cond_dim):
+        super(FiLMEncoder, self).__init__()
+        self.fc = nn.Linear(dim, out_dim)
+        self.film = FiLM(cond_dim, out_dim)
+        self.act = nn.SiLU()
+    
+    def forward(self, x, cond):
+        # code(Nb, Ns, N_code); coords(Nb, Ns)
+        x = self.fc(x)
+        x = self.film(x, cond)
+        return self.act(x)
+
 class FiLM(nn.Module):
-    def __init__(self, arg):
+    def __init__(self, cond_dim, out_dim):
         super(FiLM, self).__init__()
-        self.dim_curve_feat = arg['dim_curve_feat']
-        self.dim_sample_feat = arg['dim_sample_feat']
-        self.gamma = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
-        self.beta = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+        #self.dim_curve_feat = arg['dim_curve_feat']
+        #self.dim_sample_feat = arg['dim_sample_feat']
+        #self.gamma = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+        #self.beta = nn.Linear(self.dim_curve_feat, self.dim_sample_feat)
+
+        self.gamma = nn.Linear(cond_dim, out_dim)
+        self.beta = nn.Linear(cond_dim, out_dim)
 
         self.initialize()
 
@@ -169,11 +286,12 @@ class FiLM(nn.Module):
         self.beta.weight.data.zero_()
         self.beta.bias.data.fill_(0.0)
 
-    def forward(self, curve_feat, sample_feat):
+    def forward(self, sample_feat, curve_feat):
         gamma = self.gamma(curve_feat)
         beta = self.beta(curve_feat)
         
-        return sample_feat + (gamma * sample_feat + beta)
+        #return sample_feat + (gamma * sample_feat + beta)
+        return gamma * sample_feat + beta
         
 
 class FeatSampleEncoder(nn.Module):
@@ -192,8 +310,10 @@ class FeatCurveEncoder(nn.Module):
     def __init__(self, arg):
         super(FeatCurveEncoder, self).__init__()
 
-        posenc = arg['num_pos_encoding'] * 2 + 1
-        diff =  arg['dim_code'] + posenc
+        t_posenc = arg['num_pos_encoding'] * 2 + 1
+        radii_y_posenc = arg['num_y_pos_encoding'] * 2 + 1
+        radii_z_posenc = arg['num_z_pos_encoding'] * 2 + 1
+        diff =  arg['dim_code'] + t_posenc + radii_y_posenc + radii_z_posenc
         arg['encoder_curve']['size'].insert(0, diff)
         self.mlp_t = MLP(**arg['encoder_curve'])
     
