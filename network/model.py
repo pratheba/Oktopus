@@ -6,6 +6,7 @@ from mlp import *
 #from pos_encoding import PosEncoding
 from pos_encoding_fromokto import PosEncoding
 from periodic_encoding import PeriodicEncoding
+from mask import *
 
 
 class NGCNet(nn.Module):
@@ -127,16 +128,6 @@ class NGCNet(nn.Module):
             curve_coords_posenc = self.pos_enc_curve.inference(mi['coords'].unsqueeze(-1))
             radii_y_posenc = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,0]).unsqueeze(-1))
             radii_z_posenc = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,1]).unsqueeze(-1))
-#        else:
-#            if self.issplit:
-#                samples_posenc_base = mi['samples']
-#                samples_posenc_detail = mi['samples']
-#            else:
-#                samples_posenc = mi['samples']
-#            sample_angle_periodenc = mi['angles'].unsqueeze(-1)
-#            curve_coords_posenc = mi['coords'].unsqueeze(-1)
-#            radii_y_posenc = torch.log(mi['radius'][:,:,0]).unsqueeze(-1)
-#            radii_z_posenc = torch.log(mi['radius'][:,:,1]).unsqueeze(-1)
 
         curve_code_coords = torch.cat([curve_code, curve_coords_posenc, radii_y_posenc, radii_z_posenc], dim=-1)
         curve_feats = self.curveencoder(curve_code_coords) 
@@ -199,6 +190,99 @@ class NGCNet(nn.Module):
             'code': curve_code,
         }
 
+    def forwardstretch(self, model_input):
+        mi = model_input
+        # curve_idx:(Nb, Ns); coords:(Nb, Ns); samples(Nb,Ns,3)
+        curve_code = self.embd(mi['curve_idx'])
+        B = curve_code.shape[0]
+
+        type_curve  = self.type_embd(torch.zeros(B, dtype=torch.long, device=self.device)).unsqueeze(1)
+        type_sample = self.type_embd(torch.ones(B, dtype=torch.long, device=self.device)).unsqueeze(1)
+        m = make_detail_mask(mi['coords'], 0.0, 0.2, eps=0.03)
+        #print(m)
+
+        #if hasattr(self, 'pos_enc_sample'):
+        samples_posenc_base = self.pos_enc_sample_base.inference(mi['samples'])
+        #radii_z_posenc_detail = self.pos_enc_curve.inference(torch.log(mi['radius_detail'][:,:,1]).unsqueeze(-1))
+        #x_period = torch.sin(2*torch.pi*k*coords.squeeze(-1) if coords.ndim==3 else 2*torch.pi*k*coords)
+
+        #samples_detail = mi['samples'].clone()
+        #vx_stretch = 2.0 * mi['coords'] - 1.0
+        #vx_tile = 2.0 * (torch.frac(2 * mi['coords'])) - 1.0   
+        #samples_detail[..., 0] = mi['samples'][..., 0] - vx_stretch #+ vx_tile
+        #print(samples_detail.shape)
+        #samples_detail[..., 0] = 0.0
+        #print(samples_detail.shape)
+        m1 = (m * mi['seam']).unsqueeze(-1)  
+        #x_used    = (1.0 - m1) * mi['samples_detail_notile'][...,0:1] + m1 * mi['samples_detail'][...,0:1]
+        #samples_detail = mi['samples'].clone()
+
+        #samples_detail[...,0:1] = x_used
+
+        samples_posenc_detail = self.pos_enc_sample_detail.inference(mi['samples_detail'])
+        #samples_posenc_detail = self.pos_enc_sample_detail.inference(samples_detail)
+
+        sample_angle_periodenc = self.period_enc.inference(mi['angles'].unsqueeze(-1))
+
+        curve_coords_posenc = self.pos_enc_curve.inference(mi['coords'].unsqueeze(-1))
+        curve_coords_posenc_detail = self.pos_enc_curve.inference(mi['coords_detail'].unsqueeze(-1))
+        #curve_coords_posenc_detail = self.pos_enc_curve.inference((2*mi['coords']).unsqueeze(-1))
+        curve_coords_used_posenc   = (1.0 - m).unsqueeze(-1) * curve_coords_posenc + m.unsqueeze(-1) * curve_coords_posenc_detail
+        #curve_coords_used_posenc   = (1.0 - m1).unsqueeze(-1) * curve_coords_posenc + m1.unsqueeze(-1) * curve_coords_posenc_detail
+
+        radii_y_posenc_base = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,0]).unsqueeze(-1))
+        radii_z_posenc_base = self.pos_enc_curve.inference(torch.log(mi['radius'][:,:,1]).unsqueeze(-1))
+        radii_y_posenc_detail = self.pos_enc_curve.inference(torch.log(mi['radius_detail'][:,:,0]).unsqueeze(-1))
+        radii_z_posenc_detail = self.pos_enc_curve.inference(torch.log(mi['radius_detail'][:,:,1]).unsqueeze(-1))
+        #radii_y_posenc_detail = self.pos_enc_curve.inference((torch.log(mi['radius_detail'][:,:,0]) - torch.log(mi['radius'][:,:,0])).unsqueeze(-1))
+        #radii_z_posenc_detail = self.pos_enc_curve.inference((torch.log(mi['radius_detail'][:,:,1]) - torch.log(mi['radius'][:,:,1])).unsqueeze(-1))
+
+        curve_code_coords = torch.cat([curve_code, curve_coords_posenc, radii_y_posenc_base, radii_z_posenc_base], dim=-1)
+        curve_feats = self.curveencoder.inference(curve_code_coords) 
+        curve_feats = curve_feats + type_curve
+
+        #curve_code_coords_detail = torch.cat([curve_code, curve_coords_posenc_detail, radii_y_posenc_detail, radii_z_posenc_detail], dim=-1)
+        curve_code_coords_detail = torch.cat([curve_code, curve_coords_used_posenc, radii_y_posenc_detail, radii_z_posenc_detail], dim=-1)
+        #curve_code_coords_detail = torch.cat([curve_code, curve_coords_used_posenc, radii_y_posenc_detail, radii_z_posenc_detail], dim=-1)
+        #curve_code_coords_detail = torch.cat([curve_code, curve_coords_posenc_detail, radii_y_posenc_base, radii_z_posenc_base], dim=-1)
+        #curve_code_coords_detail = torch.cat([curve_code, curve_coords_posenc_detail, radii_y_posenc, radii_z_posenc_], dim=-1)
+        curve_feats_detail = self.curveencoder.inference(curve_code_coords_detail) 
+        curve_feats_detail = curve_feats_detail + type_curve
+
+
+        ############ BASE ################
+        x = self.filmenc_base1.inference(samples_posenc_base, curve_feats) + type_sample
+        res = x
+        x = self.filmenc_base2.inference(x, curve_feats)
+        x = x + res
+        curve_sdf_base = self.decoder_base.forward_simple(x).squeeze(-1)
+        #curve_sdf = self.decoder.forward_simple(curve_feats).squeeze(-1)
+        ############ DETAILS ################
+
+        y = torch.cat([samples_posenc_detail, sample_angle_periodenc], dim=-1)
+        x = self.filmenc_detail1.inference(y, curve_feats_detail) + type_sample
+        #x = self.filmenc_detail1(y, curve_feats) + type_sample
+        res = x
+        x = self.filmenc_detail2.inference(x, curve_feats_detail)
+        #x = self.filmenc_detail2(x, curve_feats)
+        x = x + res
+        res = x
+        x = self.filmenc_detail3.inference(x, curve_feats_detail)
+        #x = self.filmenc_detail3(x, curve_feats)
+        x = x + res
+        curve_sdf_detail = self.decoder_detail.forward_simple(x).squeeze(-1)
+        ############ Final ###########
+        
+        curve_sdf = curve_sdf_base + curve_sdf_detail
+        #curve_sdf = 0.8*curve_sdf_base + m * curve_sdf_detail
+        #curve_sdf = curve_sdf_base
+
+
+        return {
+            'sdf': curve_sdf,
+            'code': curve_code,
+        }
+
     def forward(self, model_input, curr_epoch=0):
         return self.forwardsimple(model_input, curr_epoch)
 
@@ -207,9 +291,13 @@ class NGCNet(nn.Module):
         return self.forwardsimple(model_input, istrain=False)
     
     @torch.no_grad()
-    def inference(self, model_input):
-        curve_input = self.pack_data(model_input)
-        out = self.forwardsimple(curve_input, istrain=False)
+    def inference(self, model_input, transform=None):
+        if transform == 'stretch':
+            curve_input = self.pack_data_stretch(model_input)
+            out = self.forwardstretch(curve_input)
+        else:
+            curve_input = self.pack_data(model_input)
+            out = self.forwardsimple(curve_input, istrain=False)
         return out['sdf']
 
     @torch.no_grad()
@@ -240,12 +328,37 @@ class NGCNet(nn.Module):
 
         n_sample = mi['coords'].shape[0]
         curve_idx = mi['curve_idx']*torch.ones(n_sample, dtype=int)
+        
         res = {
             'samples': torch.from_numpy(mi['samples_local']).float().to(device),
             'coords': torch.from_numpy(mi['coords']).float().to(device),
-            'rho': torch.from_numpy(mi['rho']).float().to(device),
+            #'rho': torch.from_numpy(mi['rho']).float().to(device),
             'angles': torch.from_numpy(mi['angles']).float().to(device),
             'radius': torch.from_numpy(mi['radius']).float().to(device),
+            'curve_idx': curve_idx.to(device)
+        }
+
+        res = {key:val.unsqueeze(0) for key,val in res.items()}
+        return res
+
+    def pack_data_stretch(self, model_input):
+        mi = model_input
+        device = mi['device']
+
+        n_sample = mi['coords'].shape[0]
+        curve_idx = mi['curve_idx']*torch.ones(n_sample, dtype=int)
+        
+        res = {
+            'samples': torch.from_numpy(mi['samples_local']).float().to(device),
+            'seam': torch.from_numpy(mi['seam']).float().to(device),
+            'samples_detail': torch.from_numpy(mi['samples_detail']).float().to(device),
+            'samples_detail_notile': torch.from_numpy(mi['samples_detail_notile']).float().to(device),
+            'coords': torch.from_numpy(mi['coords']).float().to(device),
+            'coords_detail': torch.from_numpy(mi['coords_detail']).float().to(device),
+            #'rho': torch.from_numpy(mi['rho']).float().to(device),
+            'angles': torch.from_numpy(mi['angles']).float().to(device),
+            'radius': torch.from_numpy(mi['radius']).float().to(device),
+            'radius_detail': torch.from_numpy(mi['radius_detail']).float().to(device),
             'curve_idx': curve_idx.to(device)
         }
 
@@ -263,6 +376,12 @@ class FiLMEncoder(nn.Module):
     
     def forward(self, x, cond):
         # code(Nb, Ns, N_code); coords(Nb, Ns)
+        x = self.fc(x)
+        x = self.film(x, cond)
+        return self.act(x)
+
+    @torch.no_grad()
+    def inference(self, x, cond):
         x = self.fc(x)
         x = self.film(x, cond)
         return self.act(x)
@@ -289,10 +408,15 @@ class FiLM(nn.Module):
     def forward(self, sample_feat, curve_feat):
         gamma = self.gamma(curve_feat)
         beta = self.beta(curve_feat)
-        
         #return sample_feat + (gamma * sample_feat + beta)
         return gamma * sample_feat + beta
-        
+    
+    @torch.no_grad()
+    def inference(self, sample_feat, curve_feat):
+        gamma = self.gamma(curve_feat)
+        beta = self.beta(curve_feat)
+        #return sample_feat + (gamma * sample_feat + beta)
+        return gamma * sample_feat + beta
 
 class FeatSampleEncoder(nn.Module):
     """docstring for FeatCurveEncoder."""
@@ -303,6 +427,10 @@ class FeatSampleEncoder(nn.Module):
     
     def forward(self, x):
         # code(Nb, Ns, N_code); coords(Nb, Ns)
+        return self.act(self.fc(x))
+
+    @torch.no_grad()
+    def inference(self, code_coords):
         return self.act(self.fc(x))
 
 class FeatCurveEncoder(nn.Module):
@@ -320,6 +448,11 @@ class FeatCurveEncoder(nn.Module):
     def forward(self, code_coords):
         # code(Nb, Ns, N_code); coords(Nb, Ns)
         return self.mlp_t.forward_simple(code_coords)
+
+    @torch.no_grad()
+    def inference(self, code_coords):
+        return self.mlp_t.forward_simple(code_coords)
+
    
     def mix_feats(self, code1, code2, coords, arg):
         func1 = arg['mix_func1']

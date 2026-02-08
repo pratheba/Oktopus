@@ -6,7 +6,8 @@ import torch
 from time import time
 from tqdm.autonotebook import tqdm
 
-import app_utils as utils
+#import app_utils as utils
+import app_utils_3dvec as utils
 
 class Agent():
     """docstring for Agent."""
@@ -64,15 +65,16 @@ class Agent():
             #print(f'{shape_name}')
             #print(feat_dict)
 
-        self.model_input = {}
-        for idx, shape_name in enumerate(shapes):
-            item_path = op.join(data_root, f'{shape_name}')
-            data_path = op.join(item_path, 'train_data', 'sdf_samples.pkl')
-            with open(data_path, 'rb') as f:
-                data = pickle.load(f)
-            self.model_input[shape_name] = self.get_curve_data(data['on_surface'], self.shape_global_curveids[idx]) 
+#        self.model_input = {}
+#        for idx, shape_name in enumerate(shapes):
+#            item_path = op.join(data_root, f'{shape_name}')
+#            data_path = op.join(item_path, 'train_data', 'sdf_samples.pkl')
+#            with open(data_path, 'rb') as f:
+#                data = pickle.load(f)
+#            self.model_input[shape_name] = self.get_curve_data(data['on_surface'], self.shape_global_curveids[idx], shape_name) 
 
         #print(self.model_input['armadillo'])
+        #exit()
 
         self.handles = handles
         self.feat_dict = feat_dict
@@ -88,8 +90,9 @@ class Agent():
         handle.load(handle_path)
         return handle
 
-    def get_curve_data(self, curve_data, global_curveid):
+    def get_curve_data(self, curve_data, global_curveid, shape_name=""):
         samples_local = curve_data['samples_local']
+        samples_global = curve_data['samples']
         samples_coords = curve_data['coords']
         cids = curve_data['curve_idx'].astype(np.int32)
         maxid = max(cids)
@@ -98,9 +101,12 @@ class Agent():
         for curve_id in range(maxid+1):
             ids = np.where(cids == curve_id)[0]
             model_input[global_curveid+curve_id] = {'samples': torch.from_numpy(samples_local[ids]).float(),
+                    'samples_global': torch.from_numpy(samples_global[ids]).float(),
                     'coords': torch.from_numpy(samples_coords[ids]).float(),
                     'curve_idx': (torch.ones(ids.shape[0])*(global_curveid+curve_id)).long()
             }
+            #trimesh.Trimesh(vertices=model_input[global_curveid+curve_id]['samples_global'] ,process = False).export(str(shape_name)+"_"+str(global_curveid+curve_id)+'_onsurface.ply')
+            #trimesh.Trimesh(vertices=model_input[global_curveid+curve_id]['samples'],process = False).export(str(shape_name)+"_"+str(global_curveid+curve_id)+'_onsurface_local.ply')
         return model_input
 
 
@@ -129,10 +135,10 @@ class Agent():
             handle.apply_tilt(arg['tilt'])
 
 
-    def __inference_vals(self, curve_data, context_data, key, batch_size=None):
+    def __inference_vals(self, curve_data, key, batch_size=None):
         # use_batch: aim to divide data into batches to save GPU mem
         num_samples = curve_data['samples'].shape[0]
-        num_context_samples = context_data['samples'].shape[0]
+        #num_context_samples = context_data['samples'].shape[0]
 
         if batch_size is not None and num_samples > batch_size:
             N = num_samples // batch_size + 1
@@ -143,14 +149,15 @@ class Agent():
                 batch_curve_data['device'] = self.device
                 batch_curve_data['curve_idx'] = self.feat_dict[key]
 
-                r = np.random.choice(num_context_samples, size=4096, replace=False)
+                #r = np.random.choice(num_context_samples, size=2048, replace=False)
 
-                batch_curve_data['on_curve_idx'] = context_data['curve_idx'][r]
-                batch_curve_data['on_coords'] = context_data['coords'][r]
-                batch_curve_data['on_surface_samples'] = context_data['samples'][r]
+                #batch_curve_data['on_curve_idx'] = context_data['curve_idx'][r]
+                #batch_curve_data['on_coords'] = context_data['coords'][r]
+                #batch_curve_data['on_surface_samples'] = context_data['samples'][r]
+                #batch_curve_data['on_surface_samples_global'] = context_data['samples_global'][r]
 
 
-                #trimesh.Trimesh(vertices=batch_curve_data['on_surface_samples'].numpy(), process = False).export(str(self.feat_dict[key])+'_onsurface.ply')
+                #trimesh.Trimesh(vertices=batch_curve_data['on_surface_samples_gloabl'].numpy(), process = False).export(str(self.feat_dict[key])+'_onsurface.ply')
                 #trimesh.Trimesh(vertices=batch_curve_data['samples_local'], process = False).export(str(self.feat_dict[key])+'_'+str(idx)+'_query.ply')
 
                 vals_batch = self.model.inference(batch_curve_data).squeeze()
@@ -225,7 +232,7 @@ class Agent():
         reso = mc_grid.reso
         shapes = os.listdir(data_root)
         # max number of query points for Marching Cubes
-        batch_size = 32**3
+        batch_size = 16**3
         with tqdm(total=num_shapes) as pbar:
             for shape_name,handle in self.handles.items():
                 if shape_name not in shapes:
@@ -233,7 +240,7 @@ class Agent():
                     continue
 
                 temp_grid = utils.create_grid_like(mc_grid)
-                context_input = self.model_input[shape_name]
+                #context_input = self.model_input[shape_name]
 
                 for curve in handle.curves:
                     #print("curve_name = ", curve.name)
@@ -243,14 +250,15 @@ class Agent():
                     #print("feat dict = ", self.feat_dict[key])
                     curve_data, kidx = curve.filter_grid(mc_grid)
                     #print(curve_data)
-                    context_data = context_input[self.feat_dict[key]]
+                    #context_data = context_input[self.feat_dict[key]]
 
 
                     #trimesh.Trimesh(vertices=curve_data['samples'], process=False).export(shape_name+'_'+curve.name+'mc_grid.ply')
                     #trimesh.Trimesh(vertices=curve_data['samples_local'], process=False).export(shape_name+'_'+curve.name+'_query.ply')
                     #trimesh.Trimesh(vertices=context_data['samples'].numpy(), process=False).export(shape_name+'_'+curve.name+'context.ply')
                     
-                    vals = self.__inference_vals(curve_data, context_data, key, batch_size=batch_size)
+                    #vals = self.__inference_vals(curve_data, context_data, key, batch_size=batch_size)
+                    vals = self.__inference_vals(curve_data, key, batch_size=batch_size)
                     temp_grid.update_grid(vals, kidx, mode='minimum')
                 
                 mesh = temp_grid.extract_mesh()

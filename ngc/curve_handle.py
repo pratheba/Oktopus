@@ -5,6 +5,7 @@ import trimesh
 from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
 from handle_utils import CylindersMesh
+from curve_mask import *
 
 
 n_sample_curve = 100
@@ -251,19 +252,21 @@ class CurveHandle():
         kidx = kidx[inside]
         return samples_data, kidx
 
-    def filter_grid_stretch(self, mc_grid, blend_arg):
+    def filter_grid_stretch(self, mc_grid, stretch_arg):
         # gen mixed cyl mesh 
+        #points, ts_new = self.core.localize_stretch(stretch_arg)
+        self.core.localize_stretch(stretch_arg)
         ts = np.linspace(0., 1., n_sample_curve)
-        
-        intpl,_ = self.core.interpolate_stretch(ts, blend_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, n_smaple_circle, endpoint=False)
+        intpl,_ = self.core.interpolate_stretch(ts, stretch_arg)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
         samples, kidx = cyl_mesh.filter_grid(mc_grid)
-        samples_data, inside = self.core.localize_samples_stretch(samples, blend_arg)
+        samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
         kidx = kidx[inside]
         return samples_data, kidx
+
 
     def calc_cylinder_SDF(self, mc_grid):
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid, extend_bbox=True)
@@ -423,14 +426,16 @@ class PWLACurve():
         self.key_points = points
         self.flag_points = True
 
+
     def set_resamples(self, points, z_axis0):
         if z_axis0 is None:
             z_axis0 = self.z_axis[0]
         # new points can be different in number
-        edge_vec = points[1:] - points[:-1]
-        edge_lengths = np.linalg.norm(edge_vec, axis=1)
-        curve_length = np.sum(edge_lengths)
-        ts = np.cumsum(np.r_[0., edge_lengths]) / curve_length
+        ts = self.keypoints_segment_length(points)
+        #edge_vec = points[1:] - points[:-1]
+        #edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        #curve_length = np.sum(edge_lengths)
+        #ts = np.cumsum(np.r_[0., edge_lengths]) / curve_length
 
         new_rs = self.interpolate(ts, radius=True)['radius']
         self.key_points = points
@@ -720,7 +725,6 @@ class PWLACurve():
         # If the end ball is None then x_radius  = 1.0 
         x_radius = self.calc_x_radius(sample_keypoint_map)
         radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
-        #print("raidus = ", radius)
 
         # frame: (N, 3,3), vs (N, 3)
         # The vector of the keypoint to the skeletam point is rotated using the rotation from
@@ -728,9 +732,17 @@ class PWLACurve():
         # And all are bounding to radius
         #print("samples_local", samples_local)
         #import pdb; pdb.set_trace()
+        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
+        rho = np.sqrt(v**2 + u**2)
+        theta = np.arctan2(v, u)
+#        samples_local_n = samples_local.copy()
+#        samples_local_n[:, 1] /= radius[:, 1]
+#        samples_local_n[:, 2] /= radius[:, 2]
         samples_local /= radius
-        #print("samples_local normalized", samples_local)
-        #exit()
+        
+#        print("samples_local normalized", samples_local[0:10])
+#        print("samples_local normalized N", samples_local_n[0:10])
+#        exit()
 
         # in std cylinder
         norms = np.linalg.norm(samples_local, axis=1)
@@ -746,12 +758,17 @@ class PWLACurve():
         #import pdb; pdb.set_trace()
         #print(samples_local, flush=True)
         samples_local[:, 0] += vx
+        #samples_local_n[:, 0] += vx
         #print(samples_local, flush=True)
         #import pdb; pdb.set_trace()
         return {
             'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],
+            #'samples_local_n': samples_local_n[inside_cyl],
             'coords': sample_keypoint_map[inside_cyl],
+            'rho': rho[inside_cyl],
+            'angles': theta[inside_cyl],
+            'radius': yz_radius[inside_cyl]
             # 'radius': yz_rs[inside_cyl],
         }, inside
     
@@ -792,6 +809,9 @@ class PWLACurve():
 
         # frame: (N, 3,3), vs (N, 3)
         samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
+        rho = np.sqrt(v**2 + u**2)
+        theta = np.arctan2(v, u)
         samples_local /= radius
 
         # in std cylinder
@@ -810,7 +830,64 @@ class PWLACurve():
             # 'radius': yz_rs[inside_cyl],
         }, inside
 
-    def localize_samples_stretch(self, vs, blend_arg):
+    def keypoints_segment_length(self, points):
+        edge_vec = points[1:] - points[:-1]
+        edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        curve_length = np.sum(edge_lengths)
+        s = np.concatenate([[0.0], np.cumsum(edge_lengths)])
+        ts = s / (s[-1] + 1e-12)
+        return ts
+
+    def calc_curve_length(self):
+        pts = self.key_points
+        edge_vec = pts[1:] - pts[:-1]
+        edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        curve_length = np.sum(edge_lengths)
+        return curve_length
+
+    def stretch_from_ends(self, stretch_arg):
+        points = self.key_points.copy()
+        anchor = stretch_arg['anchor']
+        stretch_length = stretch_arg['length']
+
+        flipped = False
+        if anchor == 'end':
+            points = points[::-1].copy()
+            flipped = True
+
+        curve_length = self.calc_curve_length()
+        delta_length = (stretch_length - 1.0) * curve_length
+
+        ts = self.keypoints_segment_length(points)
+        # smooth curve
+        w = ts*ts*(3 - 2*ts)
+        w = w[:, None]
+
+        t_end = points[-1] - points[-2]
+        t_end /= (np.linalg.norm(t_end) + 1e-12)
+
+        points = points + w * (delta_length * t_end)
+        if flipped:
+            points = points[::-1].copy()
+        return points
+
+
+
+    def localize_stretch(self, stretch_arg):
+        self.key_ts0 = self.key_ts.copy()
+        self.key_radius0 = self.key_radius.copy()
+
+        points = self.stretch_from_ends(stretch_arg)
+        self.key_points = points
+
+        self.update_coords()
+        self.update_frame()
+
+        #self.key_ts = self.keypoints_segment_length(points)
+        self.key_detail_ts = (stretch_arg['length'] * self.key_ts) % 1
+
+
+    def localize_samples_stretch(self, vs, stretch_arg):
         # for stretch or offset 
         ts = self.curve_projection(vs)
         ts_range = np.logical_and(ts >= 0., ts <= 1.)
@@ -819,17 +896,28 @@ class PWLACurve():
         vs = vs[ts_range]
         sidx = sidx[ts_range]
         
-        intpl, ts_new = self.interpolate_stretch(ts, blend_arg)
+        intpl, ts_new = self.interpolate_stretch(ts, stretch_arg)
+
+        #intpl['radius_detail'] = np.stack([radius_y, radius_z], axis=1)
+        #ts_detail = intpl['detail'] #(stretch_arg['length'] * ts_new) % 1.0
+        ts_detail = np.mod(stretch_arg['length'] * ts_new, 1.0)
+        intpl['coords_detail'] = ts_detail
+
         proj_vs = intpl['points']
         frame_mat = intpl['frame']
         # for yz radius use ts_new(stretch or offset)
-        yz_rs = intpl['radius']
+        #yz_rs = intpl['radius']
+        yz_radius = intpl['radius']
 
         x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_rs], axis=1)
+        radius = np.concatenate([x_rs[:,None], yz_radius], axis=1)
 
         # frame: (N, 3,3), vs (N, 3)
         samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
+        rho = np.sqrt(v**2 + u**2)
+        theta = np.arctan2(v, u)
+
         samples_local /= radius
 
         # in std cylinder
@@ -840,12 +928,62 @@ class PWLACurve():
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
         vx = 2*ts_new - 1
+        samples_detail_notile  = samples_local.copy()
+        samples_detail  = samples_local.copy()
         samples_local[:, 0] += vx
+        samples_detail_notile[:, 0] += vx
+
+        dist_to_seam = np.minimum(ts_detail, 1.0 - ts_detail)
+        eps = 0.03
+        x = np.clip(dist_to_seam / eps, 0.0, 1.0)
+        w = x*x*(3 - 2*x)  # smoothstep
+        m = make_detail_mask(ts_new, 0.0, 0.2, eps=0.03)
+        m_tile = m * w
+        ts_blend = m_tile * ts_detail + (1.0 - m_tile) * ts_new
+        #ts_blend = w * ts_detail + (1.0 - w) * ts_new 
+
+        #ts_detail_col = ts_detail[:, None]   # (N,1)
+        #ts_new_col    = ts_new[:, None]      # (N,1)
+        #w_col         = w[:, None]           # (N,1)
+
+        #vx_tile = 2.0 * (w_col * ts_detail_col + (1.0 - w_col) * ts_new_col) - 1.0  # (N,1)
+
+
+        #t1d = ts_new[...,0] if (ts_new.ndim>0 and ts_new.shape[-1]==1) else t
+
+        #tau = torch.clamp((t1d - 0.1) / (0.5 - 0.1 + 1e-8), 0.0, 1.0)  # local in [0,1]
+        #ts_detail = torch.frac(arg['length'] * tau)   
+
+        ts_new    = ts_new.reshape(-1)
+        ts_detail = ts_detail.reshape(-1)
+        ts_blend = ts_blend.reshape(-1)
+        w         = w.reshape(-1)
+
+        vx_tile = 2*(w*ts_detail + (1-w)*ts_new) - 1
+        vx_tile = vx_tile.reshape(-1)
+        vx_used = 2.0 * ts_blend - 1.0
+
+
+        #vx_tile = 2*(w[:,None]*ts_detail + ((1-w)[:,None]*ts_new)) - 1
+        #samples_detail[:,0] += vx_tile
+        samples_detail[:,0] += vx_used
+        #samples_detail = samples_detail_notile
+        #samples_detail  = samples_local.copy()
+        #vx3 = vx.unsqueeze(-1) if vx.ndim == 2 else vx
+        #samples_detail[..., 0:1] = samples_detail[..., 0:1] - vx3
         return {
-            'samples': vs[inside_cyl],
+            #'samples': vs[inside_cyl],
             'samples_local': samples_local[inside_cyl],
+            'samples_detail': samples_detail[inside_cyl],
+            'samples_detail_notile': samples_detail_notile[inside_cyl],
             'coords': ts_new[inside_cyl],
+            'coords_detail': ts_detail[inside_cyl], 
+            'seam': w,
             # 'radius': yz_rs[inside_cyl],
+            'rho': rho[inside_cyl],
+            'angles': theta[inside_cyl],
+            'radius': yz_radius[inside_cyl],
+            'radius_detail': intpl['radius_detail'][inside_cyl]
         }, inside
 
 
@@ -919,19 +1057,50 @@ class PWLACurve():
         intpl = self.interpolate(ts, radius=False)
         intpl['radius'] = radius
         return intpl
+
+    def periodic_interpolate(self, ts_detail, ts, radius):
+        x = np.mod(ts_detail, 1.0)
+
+        ts_periodic = np.concatenate([ts, ts[1:]])
+        radius_periodic = np.concatenate([radius, radius[1:]])
+
+        x_copy = x.copy()
+        x_copy[x_copy < ts_periodic[0]] += 1.0
+
+        return np.interp(x_copy, ts_periodic, radius_periodic)
+
     
     def interpolate_stretch(self, ts, stretch_arg):
-        func = stretch_arg['mix_func']
-        ts_new = func(ts)
-
-        rs1 = np.stack([
-            np.interp(ts_new, self.key_ts, self.key_radius[:, 0]),
-            np.interp(ts_new, self.key_ts, self.key_radius[:, 1])
+        #func = stretch_arg['mix_func']
+        #ts_new = func(ts)
+        radius = np.stack([
+            np.interp(ts, self.key_ts, self.key_radius[:, 0]),
+            np.interp(ts, self.key_ts, self.key_radius[:, 1])
         ]).T
 
+        length = stretch_arg['length']
         intpl = self.interpolate(ts, radius=False)
-        intpl['radius'] = rs1
-        return intpl, ts_new
+        ts_detail = np.mod((length * ts), 1.0)
+
+        radius_y = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,0])
+        radius_z = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,1])
+        radius_detail = np.stack([radius_y, radius_z], axis=1)
+        ## Smoothening near seam
+        ## Give weight of 0 at near seam, so it takes from ts or base
+        ## Give weight of 1 away from seam so it picks up from the details
+        dist_to_seam = np.minimum(ts_detail, 1.0 - ts_detail)
+        eps = 0.05
+        x = np.clip(dist_to_seam /eps, 0.0, 1.0)
+        w = x * x*(3 - 2*x)
+
+        radius_detail = w[:,None]*radius_detail + (1-w)[:,None]*radius
+
+        intpl['radius_detail'] = radius_detail
+        intpl['detail'] = ts_detail
+        intpl['radius'] = radius 
+        intpl['seam'] = w
+        return intpl, ts
+
 
 
     def inverse_transform(self, samples_local, ts):
