@@ -4,9 +4,12 @@ import os.path as op
 import trimesh
 from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
-from handle_utils import CylindersMesh, mesh_viz
-from handle_utils.visualize import visualize
+from handle_utils import CylindersMesh
+from curve_mask import *
 
+
+n_sample_curve = 200
+n_sample_circle = 120
 
 class CurveHandle():
     """docstring for CurveHandle."""
@@ -18,8 +21,8 @@ class CurveHandle():
 
     def update(self):
         self.core.update()
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def set_curve(self, arg):
@@ -73,6 +76,7 @@ class CurveHandle():
         )
         self.core.key_radius *= key_radius_scales[:,None]
 
+
     def rot_part(self, idx, axis, angle):
         anchor = self.core.key_points[idx]
         part_pts = self.core.key_points[idx:]
@@ -93,8 +97,10 @@ class CurveHandle():
         self.core.key_points[idx1:] += offset1
         self.core.key_points[:(idx2+1)] += offset2
         # NOTE: do not update, since it will recalculate natural coords
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 20
+        #n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def rot_tilt(self, angles, coords):
@@ -211,8 +217,6 @@ class CurveHandle():
 
         cyl_mesh.add_cap(v0, vidx[0])
         cyl_mesh.add_cap(v1, vidx[-1], flip_face=True)
-
-        mesh_viz(cyl_mesh.vertices, cyl_mesh.faces)
         return cyl_mesh
 
     def generate_samples(self, num_samples):
@@ -234,10 +238,12 @@ class CurveHandle():
     
     def filter_grid_mix(self, mc_grid, mix_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        #ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate_mix(ts, mix_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        #thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -246,19 +252,21 @@ class CurveHandle():
         kidx = kidx[inside]
         return samples_data, kidx
 
-    def filter_grid_stretch(self, mc_grid, blend_arg):
+    def filter_grid_stretch(self, mc_grid, stretch_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
-        
-        intpl,_ = self.core.interpolate_stretch(ts, blend_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        #points, ts_new = self.core.localize_stretch(stretch_arg)
+        self.core.localize_stretch(stretch_arg)
+        ts = np.linspace(0., 1., n_sample_curve)
+        intpl,_ = self.core.interpolate_stretch(ts, stretch_arg)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
         samples, kidx = cyl_mesh.filter_grid(mc_grid)
-        samples_data, inside = self.core.localize_samples_stretch(samples, blend_arg)
+        samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
         kidx = kidx[inside]
         return samples_data, kidx
+
 
     def calc_cylinder_SDF(self, mc_grid):
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid, extend_bbox=True)
@@ -268,10 +276,10 @@ class CurveHandle():
     
     def calc_global_implicit(self, mc_grid, sigma, return_coords=False):
         # gen blended cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate(ts)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         intpl['level'] = sigma
         cyl_mesh = self.__gen_cyl_mesh(intpl)
@@ -376,7 +384,10 @@ class PWLACurve():
         # self.start_ball_x = self.key_radius[0].mean()
         # self.end_ball_x = None
         # self.start_ball_x = None
-        ball_data = arg['ball']
+        if 'ball' in arg:
+            ball_data = arg['ball']
+        else:
+            ball_data = None
         if ball_data is None:
             self.end_ball_x = None
             self.start_ball_x = None
@@ -415,14 +426,16 @@ class PWLACurve():
         self.key_points = points
         self.flag_points = True
 
+
     def set_resamples(self, points, z_axis0):
         if z_axis0 is None:
             z_axis0 = self.z_axis[0]
         # new points can be different in number
-        edge_vec = points[1:] - points[:-1]
-        edge_lengths = np.linalg.norm(edge_vec, axis=1)
-        curve_length = np.sum(edge_lengths)
-        ts = np.cumsum(np.r_[0., edge_lengths]) / curve_length
+        ts = self.keypoints_segment_length(points)
+        #edge_vec = points[1:] - points[:-1]
+        #edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        #curve_length = np.sum(edge_lengths)
+        #ts = np.cumsum(np.r_[0., edge_lengths]) / curve_length
 
         new_rs = self.interpolate(ts, radius=True)['radius']
         self.key_points = points
@@ -528,69 +541,71 @@ class PWLACurve():
         return inside_flag, ts
     
 
-    def curve_projection(self, samples, N_discrete=20, outside=False):
-        td = np.linspace(0., 1., N_discrete, endpoint=False)
-        ii = np.searchsorted(td, self.key_ts)
-        td = np.insert(td, ii, self.key_ts)
-        td = np.unique(td)
+    def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
+        uniform_linear_points = np.linspace(0., 1., N_discrete, endpoint=False)
+        ii = np.searchsorted(uniform_linear_points, self.key_ts)
+        non_uniform_linear_points = np.insert(uniform_linear_points, ii, self.key_ts)
+        non_uniform_linear_points = np.unique(non_uniform_linear_points)
 
-        verts = self.interpolate(td, radius=False, frame=False)['points']
-        tree = KDTree(verts)
+        skeletal_verts = self.interpolate(non_uniform_linear_points, radius=False, frame=False)['points']
+        tree = KDTree(skeletal_verts)
         # not accurate for radius-varying skeleton
         _, vidx = tree.query(samples)
-        ts = -1*np.ones(samples.shape[0])
+        samples3D_to_skeleton = -1*np.ones(samples.shape[0])
         # basically project samples onto the piecewise linear curve
-        num_vert = verts.shape[0]
+        num_vert = skeletal_verts.shape[0]
         for vid in range(num_vert):
-            sidx = np.argwhere(vidx == vid).flatten()
-            if len(sidx) == 0:
+            sample_index = np.argwhere(vidx == vid).flatten()
+            if len(sample_index) == 0:
                 continue
 
-            samples_v = samples[sidx]
+            samples_v = samples[sample_index]
 
             if 0 < vid < num_vert - 1:
                 # middle part
-                ts[sidx] = td[vid]
+                ## The samples which belong to the sample_index is mapped to the nearest keypoints through their index 
+                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
 
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid], td[vid]), 
-                    (verts[vid+1], td[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid-1], td[vid-1]), 
-                    (verts[vid], td[vid])
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid])
                 )
                 in_p = np.logical_xor(in1, in2)
                 px = (in1*px1 + in2*px2)[in_p]
-                ts[sidx[in_p]] = px
+                samples3D_to_skeleton[sample_index[in_p]] = px
 
             elif vid == 0:
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid], td[vid]), 
-                    (verts[vid+1], td[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 # consider halfball+ cylinder
                 # left side of cylinder remain valid
                 if self.start_ball_x is not None or outside:
-                    ts[sidx] = 0.
+                    samples3D_to_skeleton[sample_index] = 0.
 
-                ts[sidx[in1]] = px1[in1]
+                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
 
             else:
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (verts[vid-1], td[vid-1]), 
-                    (verts[vid], td[vid]), 
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
                 )
                 if self.end_ball_x is not None or outside:
-                    ts[sidx] = 1.
+                    samples3D_to_skeleton[sample_index] = 1.
 
-                ts[sidx[in2]] = px2[in2]
+                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
 
-        return ts
+        #import pdb; pdb.set_trace();
+        return samples3D_to_skeleton
 
     def calc_x_radius(self, ts):
         xrs = np.ones(ts.shape[0])
@@ -615,7 +630,7 @@ class PWLACurve():
 
         # frame: (N, 3,3), vs (N, 3)
         samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
-        samples_local /= (0.01+radius)
+        samples_local /= radius
         norms_cyl = np.linalg.norm(samples_local, axis=1)
         
         vx = 2*ts - 1
@@ -683,25 +698,54 @@ class PWLACurve():
         else:
             return ds*signs
 
-    def localize_samples(self, vs, return_sdf=False):
-        ts = self.curve_projection(vs)
-        ts_range = np.logical_and(ts >= 0., ts <= 1.)
-        sidx = np.arange(vs.shape[0])
-        ts = ts[ts_range]
-        vs = vs[ts_range]
-        sidx = sidx[ts_range]
-        
-        intpl = self.interpolate(ts)
+    def localize_samples(self, pointcloudsamples, return_sdf=False):
+        sample_keypoint_map = self.curve_projection(pointcloudsamples)
+        #print("sample_keypoint_map", sample_keypoint_map)
+
+        sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
+        sample_index = np.arange(pointcloudsamples.shape[0])
+
+        ### Keep only the points that fall within the rane of 0 and 1
+        sample_keypoint_map = sample_keypoint_map[sample_keypoint_map_range]
+        pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
+        sample_index = sample_index[sample_keypoint_map_range]
+
+
+        # interpolate with the new additional non linear skeletal keypoints
+        intpl = self.interpolate(sample_keypoint_map)
+
+        ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
-        yz_rs = intpl['radius']
+        #print("proj vs", proj_vs)
+        #print(self.key_points)
+        #exit()
+        yz_radius = intpl['radius']
         frame_mat = intpl['frame']
 
-        x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_rs], axis=1)
+        # If the end ball is None then x_radius  = 1.0 
+        x_radius = self.calc_x_radius(sample_keypoint_map)
+        radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
 
         # frame: (N, 3,3), vs (N, 3)
-        samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        # The vector of the keypoint to the skeletam point is rotated using the rotation from
+        samples_local = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
+        # And all are bounding to radius
+        #print("samples_local", samples_local)
+        #import pdb; pdb.set_trace()
+        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
+#        samples_local_n = samples_local.copy()
+#        samples_local_n[:, 1] /= radius[:, 1]
+#        samples_local_n[:, 2] /= radius[:, 2]
+        rho = np.sqrt(v**2 + u**2)
         samples_local /= radius
+        u_n = u / (radius[:,1] + 1e-12)
+        v_n = v / (radius[:,2] + 1e-12)
+        angle = np.arctan2(v_n, u_n)
+        rho_n = np.sqrt(v_n**2 + u_n**2)
+        
+#        print("samples_local normalized", samples_local[0:10])
+#        print("samples_local normalized N", samples_local_n[0:10])
+#        exit()
 
         # in std cylinder
         norms = np.linalg.norm(samples_local, axis=1)
@@ -709,16 +753,26 @@ class PWLACurve():
             return norms - 1, sidx
         
         inside_cyl = norms <= 1
-        inside = sidx[inside_cyl]
+        inside = sample_index[inside_cyl]
 
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
-        vx = 2*ts - 1
+        vx = 2*sample_keypoint_map - 1
+        #import pdb; pdb.set_trace()
+        #print(samples_local, flush=True)
         samples_local[:, 0] += vx
+        #samples_local_n[:, 0] += vx
+        #print(samples_local, flush=True)
+        #import pdb; pdb.set_trace()
         return {
-            'samples': vs[inside_cyl],
+            'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],
-            'coords': ts[inside_cyl],
+            #'samples_local_n': samples_local_n[inside_cyl],
+            'coords': sample_keypoint_map[inside_cyl],
+            'rho': rho[inside_cyl],
+            'rho_n': rho_n[inside_cyl],
+            'angles': angle[inside_cyl],
+            'radius': yz_radius[inside_cyl]
             # 'radius': yz_rs[inside_cyl],
         }, inside
     
@@ -759,7 +813,14 @@ class PWLACurve():
 
         # frame: (N, 3,3), vs (N, 3)
         samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
+        rho = np.sqrt(v**2 + u**2)
+        #angle = np.arctan2(v, u)
         samples_local /= radius
+        u_n = u / (radius[:,1] + 1e-12)
+        v_n = v / (radius[:,2] + 1e-12)
+        angle = np.arctan2(v_n, u_n)
+        rho_n = np.sqrt(v_n**2 + u_n**2)
 
         # in std cylinder
         norms = np.linalg.norm(samples_local, axis=1)
@@ -777,7 +838,62 @@ class PWLACurve():
             # 'radius': yz_rs[inside_cyl],
         }, inside
 
-    def localize_samples_stretch(self, vs, blend_arg):
+    def keypoints_segment_length(self, points):
+        edge_vec = points[1:] - points[:-1]
+        edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        curve_length = np.sum(edge_lengths)
+        s = np.concatenate([[0.0], np.cumsum(edge_lengths)])
+        ts = s / (s[-1] + 1e-12)
+        return ts
+
+    def calc_curve_length(self):
+        pts = self.key_points
+        edge_vec = pts[1:] - pts[:-1]
+        edge_lengths = np.linalg.norm(edge_vec, axis=1)
+        curve_length = np.sum(edge_lengths)
+        return curve_length
+
+    def stretch_from_ends(self, stretch_arg):
+        points = self.key_points.copy()
+        anchor = stretch_arg['anchor']
+        stretch_length = stretch_arg['length']
+
+        flipped = False
+        if anchor == 'end':
+            points = points[::-1].copy()
+            flipped = True
+
+        curve_length = self.calc_curve_length()
+        delta_length = (stretch_length - 1.0) * curve_length
+
+        ts = self.keypoints_segment_length(points)
+        # smooth curve
+        w = ts*ts*(3 - 2*ts)
+        w = w[:, None]
+
+        t_end = points[-1] - points[-2]
+        t_end /= (np.linalg.norm(t_end) + 1e-12)
+
+        points = points + w * (delta_length * t_end)
+        if flipped:
+            points = points[::-1].copy()
+        return points
+
+    def localize_stretch(self, stretch_arg):
+        self.key_ts0 = self.key_ts.copy()
+        self.key_radius0 = self.key_radius.copy()
+
+        points = self.stretch_from_ends(stretch_arg)
+        self.key_points = points
+
+        self.update_coords()
+        self.update_frame()
+
+        #self.key_ts = self.keypoints_segment_length(points)
+        #self.key_detail_ts = (stretch_arg['length'] * self.key_ts) % 1
+
+
+    def localize_samples_stretch(self, vs, stretch_arg):
         # for stretch or offset 
         ts = self.curve_projection(vs)
         ts_range = np.logical_and(ts >= 0., ts <= 1.)
@@ -786,33 +902,95 @@ class PWLACurve():
         vs = vs[ts_range]
         sidx = sidx[ts_range]
         
-        intpl, ts_new = self.interpolate_stretch(ts, blend_arg)
+        intpl, ts_new = self.interpolate_stretch(ts, stretch_arg)
         proj_vs = intpl['points']
         frame_mat = intpl['frame']
-        # for yz radius use ts_new(stretch or offset)
-        yz_rs = intpl['radius']
+        yz_radius = intpl['radius']
 
         x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_rs], axis=1)
-
+        radius = np.concatenate([x_rs[:,None], yz_radius], axis=1)
         # frame: (N, 3,3), vs (N, 3)
-        samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
-        samples_local /= radius
-
+        samples_local0 = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
+        w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
+        rho = np.sqrt(v**2 + u**2)
+        u_n = u / (radius[:,1] + 1e-12)
+        v_n = v / (radius[:,2] + 1e-12)
+        angle = np.arctan2(v_n, u_n)
+        rho_n = np.sqrt(v_n**2 + u_n**2)
+        #angle = np.arctan2(v, u)
+        #samples_local0 /= radius
         # in std cylinder
-        norms = np.linalg.norm(samples_local, axis=1)
+        norms = np.linalg.norm(samples_local0, axis=1)
         inside_cyl = norms <= 1
         inside = sidx[inside_cyl]
 
+        vx_base = 2*ts_new - 1
+        samples_local = samples_local0.copy()
+        samples_local /= radius
+        samples_local[:, 0] += vx_base
+
+
+        samples_detail_notile = samples_local0.copy()
+        samples_detail_notile /= radius
+        samples_detail_notile[:, 0] += vx_base
+
+
+        #intpl['radius_detail'] = np.stack([radius_y, radius_z], axis=1)
+        #ts_detail = intpl['detail'] #(stretch_arg['length'] * ts_new) % 1.0
+        #mask_region = np.zeros(ts.shape)#
+        #mask_region[(mask_region >= stretch_arg['t0']) & (mask_region <= stretch_arg['t1'])] = 1.0
+        length = stretch_arg['length']
+        t0 = stretch_arg['t0']
+        t1 = stretch_arg['t1']
+        eps_region = stretch_arg.get('eps_region', 0.03)
+        eps_seam = stretch_arg.get('eps_seam', 0.05)
+      
+        ts_detail = np.asarray(ts_new).reshape(-1)
+        w_region = make_detail_mask(ts_detail, t0, t1, eps_region)
+        eps = 1e-12
+        tau = np.clip((ts_detail - t0)/((t1 - t0)+eps), 0.0, 1.0)
+        ts_detail = np.mod((length * tau), 1.0)
+
+        w_seam = seam_fade(ts_detail, eps_seam)
+        w_wrap = w_region * w_seam
+
+        ts_wrapped = t0 + (t1-t0)*ts_detail
+        ts_used = (1.0 - w_wrap) * ts_new + w_wrap * ts_wrapped
+        vx_used = 2.0 * ts_used - 1.0
+
+        #ts_detail = np.mod(stretch_arg['length'] * ts_new, 1.0)
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
-        vx = 2*ts_new - 1
-        samples_local[:, 0] += vx
+        samples_detail  = samples_local0.copy()
+        samples_detail /= radius
+        #x_radius_detail = self.calc_x_radius(ts_detail)
+        #r_detail = np.concatenate([x_rs[:,None], intpl['radius_detail']], axis=1)
+        #samples_detail /= r_detail #intpl['radius_detail']
+        samples_detail[:,0] += vx_used
+
+        intpl['coords_detail'] = ts_detail
+
+
+        #vx_tile = 2*(w[:,None]*ts_detail + ((1-w)[:,None]*ts_new)) - 1
+        #samples_detail[:,0] += vx_tile
+        #samples_detail = samples_detail_notile
+        #samples_detail  = samples_local.copy()
+        #vx3 = vx.unsqueeze(-1) if vx.ndim == 2 else vx
+        #samples_detail[..., 0:1] = samples_detail[..., 0:1] - vx3
         return {
-            'samples': vs[inside_cyl],
+            #'samples': vs[inside_cyl],
             'samples_local': samples_local[inside_cyl],
+            'samples_detail': samples_detail[inside_cyl],
+            'samples_detail_notile': samples_detail_notile[inside_cyl],
             'coords': ts_new[inside_cyl],
+            'coords_detail': ts_detail[inside_cyl], 
+            'w_seam': w_seam,
             # 'radius': yz_rs[inside_cyl],
+            'rho': rho[inside_cyl],
+            'rho_n': rho_n[inside_cyl],
+            'angles': angle[inside_cyl],
+            'radius': yz_radius[inside_cyl],
+            'radius_detail': intpl['radius_detail'][inside_cyl]
         }, inside
 
 
@@ -834,9 +1012,10 @@ class PWLACurve():
         }
 
 
-    def interpolate(self, ts, points=True, radius=True, frame=True):
+    def interpolate(self, non_uniform_linear_skeletal_points, points=True, radius=True, frame=True):
         res = {}
         # key_points: (N, 3); key_radius: (N, 2)
+        ts = non_uniform_linear_skeletal_points
         if points:
             pts_ts = np.stack([
                 np.interp(ts, self.key_ts, self.key_points[:, 0]),
@@ -885,19 +1064,73 @@ class PWLACurve():
         intpl = self.interpolate(ts, radius=False)
         intpl['radius'] = radius
         return intpl
+
+    def periodic_interpolate(self, ts_detail, ts, radius):
+        x = np.mod(ts_detail, 1.0)
+
+        ts_periodic = np.concatenate([ts, ts[1:]])
+        radius_periodic = np.concatenate([radius, radius[1:]])
+
+        x_copy = x.copy()
+        x_copy[x_copy < ts_periodic[0]] += 1.0
+
+        return np.interp(x_copy, ts_periodic, radius_periodic)
+
     
-    def interpolate_stretch(self, ts, mix_arg):
-        func = mix_arg['mix_func']
-        ts_new = func(ts)
-
-        rs1 = np.stack([
-            np.interp(ts_new, self.key_ts, self.key_radius[:, 0]),
-            np.interp(ts_new, self.key_ts, self.key_radius[:, 1])
+    def interpolate_stretch(self, ts, stretch_arg):
+        #func = stretch_arg['mix_func']
+        #ts_new = func(ts)
+        radius = np.stack([
+            np.interp(ts, self.key_ts, self.key_radius[:, 0]),
+            np.interp(ts, self.key_ts, self.key_radius[:, 1])
         ]).T
-
         intpl = self.interpolate(ts, radius=False)
-        intpl['radius'] = rs1
-        return intpl, ts_new
+
+        length = stretch_arg['length']
+        t0 = stretch_arg['t0']
+        t1 = stretch_arg['t1']
+        eps_region = stretch_arg.get('eps_region', 0.03)
+        eps_seam = stretch_arg.get('eps_seam', 0.05)
+      
+        ts_detail = np.asarray(ts).reshape(-1)
+
+        w_region = make_detail_mask(ts_detail, t0, t1, eps_region)
+
+        #mask_region[(mask_region >= stretch_arg['t0']) & (mask_region <= stretch_arg['t1'])] = 1.0
+        eps = 1e-12
+        tau = np.clip((ts_detail - t0)/((t1 - t0)+eps), 0.0, 1.0)
+        ts_detail = np.mod((length * tau), 1.0)
+
+        w_seam = seam_fade(ts_detail, eps_seam)
+
+        #ts_detail = np.mod((length * ts), 1.0)
+
+        radius_y = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,0])
+        radius_z = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,1])
+        radius_periodic = np.stack([radius_y, radius_z], axis=1)
+
+        ## Smoothening near seam
+        ## Give weight of 0 at near seam, so it takes from ts or base
+        ## Give weight of 1 away from seam so it picks up from the details
+        radius_detail_seam = (w_seam[:, None] * radius_periodic) + ((1.0 - w_seam)[:, None] * radius)
+        radius_detail = ((1.0 - w_region)[:, None] * radius) + (w_region[:, None] * radius_detail_seam)
+
+        #dist_to_seam = np.minimum(ts_detail, 1.0 - ts_detail)
+        #eps = 0.01
+        #x = np.clip(dist_to_seam /eps, 0.0, 1.0)
+        #w = x * x*(3 - 2*x)
+
+        #radius_detail = w[:,None]*radius_detail + (1-w)[:,None]*radius
+        #radius_detail = w[:,None]*radius_detail + (1-w)[:,None]*radius
+        #radius_detail = (1-mask_region)*radius + mask_region(w[:,None]*radius_detail + (1-w)*radius)
+
+        intpl['radius_detail'] = radius_detail
+        intpl['detail'] = ts_detail
+        intpl['radius'] = radius 
+        intpl['w_seam'] = w_seam
+        intpl['w_region'] = w_region
+        return intpl, ts
+
 
 
     def inverse_transform(self, samples_local, ts):

@@ -1,0 +1,84 @@
+experiment_name: train
+description: overfitting 2 shapes 
+logging_root: results_sdf_split_tiling
+num_samples: 4M
+training:
+  num_epochs: 20000
+  num_batch_val: 1
+  val_type: None
+  epochs_til_ckpt : 3000
+  steps_til_summary : 50
+  epochs_til_showval: 50
+  clip_grad: False
+  resume: False
+  optim:
+    type: Adam
+    lr: 0.001
+    factor: 0.99
+    patience: 20
+    lr_scheduler: ROP
+    beta1: 0.9
+    beta2: 0.999
+    amsgrad: False
+
+dataset:
+  root: /fast/pselvaraju/Oktopus_now/Pack50Dataset 
+  type: NGCDataset
+  num_batch: 5
+  file_name: sdf_samples.pkl
+  n_sample: 40000
+
+model:
+  type: NGCNet
+  device: 'cuda'
+  # n_curve is a number larger than the total curve counts in dataset
+  split: True
+  n_curve: 300
+  dim_code: 256
+  #curvecode_dim: 256
+  dim_feat: 256
+  #curvefeature_dim: 256
+  dim_type: 256
+  dim_curve_feat: 256
+  dim_sample_feat: 256
+  num_pos_encoding: 24
+  num_pos_encoding_base: 4
+  num_pos_encoding_detail: 20
+  num_pos_encoding_tile: 20
+  details_level: 2
+  tiling: True
+  num_y_pos_encoding: 24
+  num_z_pos_encoding: 24
+  num_period_encoding: 8
+  encoder_curve:
+    size: [256, 256, 256, 256]
+    activation_type: silu
+  encoder_sample:
+    size: [256, 256, 256, 256]
+    activation_type: silu
+  decoder_curve:
+    size: [256, 256, 256, 256, 256, 1]
+    activation_type: silu
+  
+loss:
+  sdf_loss:
+    enable: True
+    factor: 1
+    metric: L1
+
+  code_loss:
+    enable: True
+    factor: 0.0001
+    metric: L2
+
+
+val_loss:
+  sdf_loss:
+    enable: True
+    factor: 1
+    metric: L1
+
+  code_loss:
+    enable: True
+    factor: 0.0001
+    metric: L2

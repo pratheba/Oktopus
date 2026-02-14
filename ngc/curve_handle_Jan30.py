@@ -7,6 +7,9 @@ from scipy.spatial.transform import Rotation, Slerp
 from handle_utils import CylindersMesh
 
 
+n_sample_curve = 100
+n_sample_circle = 72
+
 class CurveHandle():
     """docstring for CurveHandle."""
     def __init__(self, arg=None):
@@ -17,8 +20,8 @@ class CurveHandle():
 
     def update(self):
         self.core.update()
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def set_curve(self, arg):
@@ -93,8 +96,10 @@ class CurveHandle():
         self.core.key_points[idx1:] += offset1
         self.core.key_points[:(idx2+1)] += offset2
         # NOTE: do not update, since it will recalculate natural coords
-        n_sample_curve = 20
-        n_sample_circle = 12
+        #n_sample_curve = 20
+        #n_sample_circle = 12
+        #n_sample_curve = 100
+        #n_sample_circle = 360
         self.cyl_mesh = self.gen_cylinder_mesh(n_sample_curve, n_sample_circle)
 
     def rot_tilt(self, angles, coords):
@@ -232,10 +237,12 @@ class CurveHandle():
     
     def filter_grid_mix(self, mc_grid, mix_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        #ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate_mix(ts, mix_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        #thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -246,10 +253,10 @@ class CurveHandle():
 
     def filter_grid_stretch(self, mc_grid, blend_arg):
         # gen mixed cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl,_ = self.core.interpolate_stretch(ts, blend_arg)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_smaple_circle, endpoint=False)
         intpl['thetas'] = thetas
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
@@ -266,10 +273,10 @@ class CurveHandle():
     
     def calc_global_implicit(self, mc_grid, sigma, return_coords=False):
         # gen blended cyl mesh 
-        ts = np.linspace(0., 1., 20)
+        ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate(ts)
-        thetas = (2*np.pi)* np.linspace(0, 1, 12, endpoint=False)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
         intpl['thetas'] = thetas
         intpl['level'] = sigma
         cyl_mesh = self.__gen_cyl_mesh(intpl)
@@ -529,19 +536,19 @@ class PWLACurve():
         return inside_flag, ts
     
 
-    def curve_projection(self, samples, N_discrete=20, outside=False):
+    def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
         uniform_linear_points = np.linspace(0., 1., N_discrete, endpoint=False)
         ii = np.searchsorted(uniform_linear_points, self.key_ts)
         non_uniform_linear_points = np.insert(uniform_linear_points, ii, self.key_ts)
         non_uniform_linear_points = np.unique(non_uniform_linear_points)
 
-        keypoint_verts = self.interpolate(non_uniform_linear_points, radius=False, frame=False)['points']
-        tree = KDTree(keypoint_verts)
+        skeletal_verts = self.interpolate(non_uniform_linear_points, radius=False, frame=False)['points']
+        tree = KDTree(skeletal_verts)
         # not accurate for radius-varying skeleton
         _, vidx = tree.query(samples)
-        keypoint_samples = -1*np.ones(samples.shape[0])
+        samples3D_to_skeleton = -1*np.ones(samples.shape[0])
         # basically project samples onto the piecewise linear curve
-        num_vert = keypoint_verts.shape[0]
+        num_vert = skeletal_verts.shape[0]
         for vid in range(num_vert):
             sample_index = np.argwhere(vidx == vid).flatten()
             if len(sample_index) == 0:
@@ -552,47 +559,48 @@ class PWLACurve():
             if 0 < vid < num_vert - 1:
                 # middle part
                 ## The samples which belong to the sample_index is mapped to the nearest keypoints through their index 
-                keypoint_samples[sample_index] = non_uniform_linear_points[vid]
+                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
 
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (keypoint_verts[vid], non_uniform_linear_points[vid]), 
-                    (keypoint_verts[vid+1], non_uniform_linear_points[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (keypoint_verts[vid-1], non_uniform_linear_points[vid-1]), 
-                    (keypoint_verts[vid], non_uniform_linear_points[vid])
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid])
                 )
                 in_p = np.logical_xor(in1, in2)
                 px = (in1*px1 + in2*px2)[in_p]
-                keypoint_samples[sample_index[in_p]] = px
+                samples3D_to_skeleton[sample_index[in_p]] = px
 
             elif vid == 0:
                 in1, px1 = self.is_points_in_edge(
                     samples_v, 
-                    (keypoint_verts[vid], non_uniform_linear_points[vid]), 
-                    (keypoint_verts[vid+1], non_uniform_linear_points[vid+1])
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 # consider halfball+ cylinder
                 # left side of cylinder remain valid
                 if self.start_ball_x is not None or outside:
-                    keypoint_samples[sample_index] = 0.
+                    samples3D_to_skeleton[sample_index] = 0.
 
-                keypoint_samples[sample_index[in1]] = px1[in1]
+                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
 
             else:
                 in2, px2 = self.is_points_in_edge(
                     samples_v, 
-                    (keypoint_verts[vid-1], non_uniform_linear_points[vid-1]), 
-                    (keypoint_verts[vid], non_uniform_linear_points[vid]), 
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
                 )
                 if self.end_ball_x is not None or outside:
-                    keypoint_samples[sample_index] = 1.
+                    samples3D_to_skeleton[sample_index] = 1.
 
-                keypoint_samples[sample_index[in2]] = px2[in2]
+                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
 
-        return keypoint_samples
+        #import pdb; pdb.set_trace();
+        return samples3D_to_skeleton
 
     def calc_x_radius(self, ts):
         xrs = np.ones(ts.shape[0])
@@ -719,6 +727,7 @@ class PWLACurve():
         samples_local = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
         # And all are bounding to radius
         #print("samples_local", samples_local)
+        #import pdb; pdb.set_trace()
         samples_local /= radius
         #print("samples_local normalized", samples_local)
         #exit()
@@ -734,7 +743,11 @@ class PWLACurve():
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
         vx = 2*sample_keypoint_map - 1
+        #import pdb; pdb.set_trace()
+        #print(samples_local, flush=True)
         samples_local[:, 0] += vx
+        #print(samples_local, flush=True)
+        #import pdb; pdb.set_trace()
         return {
             'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],

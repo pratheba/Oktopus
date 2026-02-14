@@ -256,17 +256,18 @@ class Handle():
             curve.set_resamples(sk['vertices'], z_axis)
             curve.update()
     
-    def apply_stretching(self, arg):
+    def apply_scaling(self, arg):
         print(self.curve_dict.keys())
         for name, val in arg.items():
             curve = self.curve_dict[name]
             scales = np.asarray(val['scales'])
             ts_array = np.asarray(val['coords'])
-            curve.apply_stretch(scales, ts_array)
+            curve.stretch(scales, ts_array)
             curve.update()
 
 
-    def apply_scaling(self, arg):
+    def apply_stretch(self, arg):
+        print(self.curve_dict.keys())
         for name, val in arg.items():
             curve = self.curve_dict[name]
             scales = np.asarray(val['scales'])

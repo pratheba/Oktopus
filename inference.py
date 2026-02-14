@@ -14,20 +14,25 @@ device = torch.device('cuda:0')
 agent = Agent()
 
 root_path = op.dirname(op.abspath(__file__))
-exp_name = 'demo'
+exp_name = 'train/30k/freq24/train'
 log_path = op.join(root_path, 'results', exp_name)
 
-output_path = op.join(root_path, 'inference', exp_name)
+additional_info = 'freq24'
+output_path = op.join(root_path, 'inference', additional_info,  exp_name)
 os.makedirs(output_path, exist_ok=True)
 
-agent.load_model(device, log_path, checkpoint='final')
-mc_grid = MCGrid({
-    'reso': 256,
-    'level': 0.,
-})
-arg = {
-    'mc_grid': mc_grid,
-    'data_root': '/path/to/your/dataset',
-    'output_folder': output_path,
-}
-agent('ngcnet_inference', arg)
+model_path = ''
+#for checkpoint in ['3000','6000','final']:
+for checkpoint in ['3000']:
+    agent.load_model(device, log_path, model_path, checkpoint=checkpoint)#final')
+    mc_grid = MCGrid({
+        'reso': 256,
+        'level': 0.,
+    })
+    arg = {
+        'mc_grid': mc_grid,
+        'data_root': 'Pack50Dataset',
+        'output_folder': output_path,
+        'checkpoint': checkpoint,
+    }
+    agent('ngcnet_inference', arg)
