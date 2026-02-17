@@ -1,4 +1,5 @@
 import torch
+import math
 from functools import wraps
 
 def cache_fn(f):
@@ -20,3 +21,9 @@ def exists(val):
 
 def default(val, default_val):
     return val if exists(val) else default_val
+
+def wrap01(x):
+   return x - torch.floor(x)
+
+def wrap_theta(theta):
+    return (theta + math.pi) % (2.0 * math.pi) - math.pi

@@ -54,6 +54,16 @@ class CurveThetaMultiResGrid(nn.Module):
             grid_feat.append(grid_sample(feat, grid))
         return torch.cat(grid_feat, dim=-1)
 
+    def forward_levels(self, ts, theta, ts_min=0.0, ts_max=1.0, start=0, end=3):
+        grid = curvetheta_to_grid(ts, theta, ts_min, ts_max)
+        grid_feat = []
+        for idx, g in enumerate(self.grids):
+            if idx >= start and idx <= end:
+                #print("{} {} {}", idx, start, end)
+                feat = g.expand(ts.shape[0], -1, -1, -1)
+                grid_feat.append(grid_sample(feat, grid))
+        return torch.cat(grid_feat, dim=-1)
+
     def forward(self, ts, theta, ts_min=0.0, ts_max=1.0):
         return self.forwardbase(ts, theta, ts_min, ts_max)
 
@@ -61,6 +71,9 @@ class CurveThetaMultiResGrid(nn.Module):
     def inference(self, ts, theta, ts_min=0.0, ts_max=1.0):
         return self.forwardbase(ts, theta, ts_min, ts_max)
 
+    @torch.no_grad()
+    def inference_stretch(self, ts, theta, ts_min=0.0, ts_max=1.0, start=0, end=3):
+        return self.forward_levels(ts, theta, ts_min, ts_max, start, end)
 
 class CurveRhoMultiResGrid(nn.Module):
     def __init__(self, base_hw=(64, 256), levels=4, dim=32):
@@ -89,4 +102,4 @@ class CurveRhoMultiResGrid(nn.Module):
 
     @torch.no_grad()
     def inference(self, ts, rho, ts_min=0.0, ts_max=1.0):
-        return self.forwardbase(ts, theta, ts_min, ts_max)
+        return self.forwardbase(ts, rho, ts_min, ts_max)

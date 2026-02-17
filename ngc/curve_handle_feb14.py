@@ -255,9 +255,7 @@ class CurveHandle():
     def filter_grid_stretch(self, mc_grid, stretch_arg):
         # gen mixed cyl mesh 
         #points, ts_new = self.core.localize_stretch(stretch_arg)
-        print("stretch arg ", stretch_arg)
         self.core.localize_stretch(stretch_arg)
-        #try:
         ts = np.linspace(0., 1., n_sample_curve)
         intpl,_ = self.core.interpolate_stretch(ts, stretch_arg)
         thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
@@ -265,31 +263,9 @@ class CurveHandle():
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
         samples, kidx = cyl_mesh.filter_grid(mc_grid)
-        #samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
-        #sd1, inside1 = self.core.localize_samples(samples)
-        sd0, inside0 = self.core.localize_samples_stretch(samples, stretch_arg)
-        #print("inside counts:", inside0.shape[0], inside1.shape[0])
-        #print("coords range:", sd0["coords"].min(), sd0["coords"].max(),
-        #            sd1["coords"].min(), sd1["coords"].max())
-        #print("angle range:",  sd0["angles"].min(), sd0["angles"].max(),
-        #            sd1["angles"].min(), sd1["angles"].max())
-
-        # Key: compare distributions of normalized coords
-        #print("samples_local mean abs (w,u,v):",
-        #   np.mean(np.abs(sd0["samples_local"]), axis=0),
-        #   np.mean(np.abs(sd1["samples_local"]), axis=0))
-        #exit()
-
-        kidx = kidx[inside0]
-        #kidx = kidx[inside1]
-        #return samples_data, kidx
-        #return sd1, kidx
-        return sd0, kidx
-        #finally:
-        #    return
-        #    self.core.restore_stretch()
-        #    self.core.update_coords()
-        #    self.core.update_frame()
+        samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
+        kidx = kidx[inside]
+        return samples_data, kidx
 
 
     def calc_cylinder_SDF(self, mc_grid):
@@ -909,35 +885,35 @@ class PWLACurve():
     def stretch_uniform(self, stretch_arg):
         anchor = stretch_arg['anchor']
         stretch_length = stretch_arg['length']
-        points = self.key_points.copy()
 
+        points = self.key_points.copy()
         if anchor == "start":
-            out = points.copy()
-            out[0] = points[0]
-            for k in range(len(points)-1):
-                out[k+1] = out[k] + stretch_length * (points[k+1] - points[k])
-            return out
+			out = points.copy()
+			out[0] = points[0]
+			for k in range(len(points)-1):
+				out[k+1] = out[k] + stretch_length * (points[k+1] - points[k])
+			return out
 
         if anchor == "end":
-            points_reverse = points[::-1].copy()
-            out = points_reverse
-            out[0] = points_reverse[0]
-            for k in range(len(points_reverse)-1):
-                out[k+1] = out[k] + stretch_length * (points_reverse[k+1] - points_reverse[k])
-            return out[::-1].copy()
+			points_reverse = points[::-1].copy()
+			out = points_reverse
+			out[0] = points_reverse[0]
+			for k in range(len(points_reverse)-1):
+				out[k+1] = out[k] + stretch_length * (points_reverse[k+1] - points_reverse[k])
+			return out[::-1].copy()
 
-        if anchor == "center":
-            # stretch about mid index (keeps center fixed, stretches both directions)
-            m = len(points)//2
-            out = points.copy()
-            out[m] = points[m]
-            # forward
-            for k in range(m, len(points)-1):
-                out[k+1] = out[k] + stretch_length * (points[k+1] - points[k])
-            # backward
-            for k in range(m, 0, -1):
-                out[k-1] = out[k] - stretch_length * (points[k] - points[k-1])
-            return out
+		if anchor == "center":
+			# stretch about mid index (keeps center fixed, stretches both directions)
+			m = len(points)//2
+			out = points.copy()
+			out[m] = points[m]
+			# forward
+			for k in range(m, len(points)-1):
+				out[k+1] = out[k] + stretch_length * (points[k+1] - points[k])
+			# backward
+			for k in range(m, 0, -1):
+				out[k-1] = out[k] - stretch_length * (points[k] - points[k-1])
+			return out
 
 
     def localize_stretch(self, stretch_arg):
@@ -945,11 +921,10 @@ class PWLACurve():
         self.key_radius0 = self.key_radius.copy()
         self.key_points0 = self.key_points.copy()
         self.key_frame0 = self.key_frame.copy()
-        #self.rotation0 = self.rotation.copy()
-        #self.rot_slerp0 = self.rot_slerp.copy()
+        self.rotation0 = self.rotation.copy()
+        self.rot_slerp0 = self.rot_slerp.copy()
 
-        #points = self.stretch_uniform(stretch_arg)
-        points = self.stretch_from_end_smooth_nonuniform(stretch_arg)
+        points = self.stretch_uniform(stretch_arg)
         self.key_points = points
         self.update_coords()
         self.update_frame()
@@ -959,95 +934,72 @@ class PWLACurve():
         self.key_radius = self.key_radius0.copy()
         self.key_points = self.key_points0.copy()
         self.key_frame = self.key_frame0.copy()
-        #self.rotation = self.rotation0.copy()
-        #self.rot_slerp = self.rot_slerp0.copy()
+        self.rotation = self.rotation0.copy()
+        self.rot_slerp = self.rot_slerp0.copy()
 
 
-    def localize_samples_stretch(self, vs, stretch_arg, return_sdf=False):
+    def localize_samples_stretch(self, vs, stretch_arg):
         # for stretch or offset 
-        # Project samples from surface onto the curve to get ts - they key points
-        #return self.localize_samples(vs)
         ts = self.curve_projection(vs)
-        valid_range = np.logical_and(ts >= 0., ts <= 1.)
-
+        ts_range = np.logical_and(ts >= 0., ts <= 1.)
         sidx = np.arange(vs.shape[0])
-        ts = ts[valid_range]
-        vs = vs[valid_range]
-        sidx = sidx[valid_range]
+        ts = ts[ts_range]
+        vs = vs[ts_range]
+        sidx = sidx[ts_range]
         
-
-        # Interpolate the keypoints (points on curve), radius and frame
         intpl, ts_new = self.interpolate_stretch(ts, stretch_arg)
-        #intpl, ts_new = self.interpolate(ts) #, stretch_arg)
-        #intpl = self.interpolate(ts) #, stretch_arg)
-        #ts_new = ts.copy()
         proj_vs = intpl['points']
         frame_mat = intpl['frame']
         yz_radius = intpl['radius']
 
-
-        # Build local coordinate system
-        x_rs = self.calc_x_radius(ts_new)
+        x_rs = self.calc_x_radius(ts)
         radius = np.concatenate([x_rs[:,None], yz_radius], axis=1)
         # frame: (N, 3,3), vs (N, 3)
         samples_local0 = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
         w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
-        #samples_local = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
-        #w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
         rho = np.sqrt(v**2 + u**2)
-        theta = np.arctan2(v, u)
-
-
-        samples_local = samples_local0.copy()
-        samples_local /= (radius + 1e-12)
-        #samples_local /= radius
-        norms = np.linalg.norm(samples_local, axis=1)
-        inside_cyl = norms <= 1.0
-        inside = sidx[inside_cyl]
-        #u_n = samples_local[:,1] # u / (radius[:,1] + 1e-12)
-        #v_n = samples_local[:,2] # v / (radius[:,2] + 1e-12)
-        u_n = u / (radius[:,1]**2 + 1e-12)
-        v_n = v / (radius[:,2]**2 + 1e-12)
+        u_n = u / (radius[:,1] + 1e-12)
+        v_n = v / (radius[:,2] + 1e-12)
         angle = np.arctan2(v_n, u_n)
         rho_n = np.sqrt(v_n**2 + u_n**2)
+        #angle = np.arctan2(v, u)
+        #samples_local0 /= radius
+        # in std cylinder
 
-
-       # geometry coords mapped to [-1, 1]
-        vx_base = 2.0*ts_new - 1.0
-        #vx_base = 2.0*ts - 1.0
+        vx_base = 2*ts_new - 1
+        samples_local = samples_local0.copy()
+        samples_local /= radius
+        norms = np.linalg.norm(samples_local, axis=1)
+        inside_cyl = norms <= 1
+        inside = sidx[inside_cyl]
         samples_local[:, 0] += vx_base
 
-#        return {
-#            #'samples': vs[inside_cyl],
-#            'samples_local': samples_local[inside_cyl],
-#            #'samples_detail': samples_detail[inside_cyl],
-#            #'coords': ts_new[inside_cyl],
-#            'coords': ts[inside_cyl],
-#            #'coords_detail': ts_used[inside_cyl], 
-#            #'w_seam': w_seam,
-#            'rho': rho[inside_cyl],
-#            'rho_n': rho_n[inside_cyl],
-#            'angles': angle[inside_cyl],
-#            'radius': yz_radius[inside_cyl],
-#        }, inside
+
+        samples_detail_notile = samples_local0.copy()
+        samples_detail_notile /= radius
+        samples_detail_notile[:, 0] += vx_base
 
 
-        stretch_length = stretch_arg['length']
+        #intpl['radius_detail'] = np.stack([radius_y, radius_z], axis=1)
+        #ts_detail = intpl['detail'] #(stretch_arg['length'] * ts_new) % 1.0
+        #mask_region = np.zeros(ts.shape)#
+        #mask_region[(mask_region >= stretch_arg['t0']) & (mask_region <= stretch_arg['t1'])] = 1.0
+        length = stretch_arg['length']
         t0 = stretch_arg['t0']
         t1 = stretch_arg['t1']
         eps_region = stretch_arg.get('eps_region', 0.03)
         eps_seam = stretch_arg.get('eps_seam', 0.05)
       
-        w_region = make_detail_mask(ts_new, t0, t1, eps_region)
+        ts_detail = np.asarray(ts_new).reshape(-1)
+        w_region = make_detail_mask(ts_detail, t0, t1, eps_region)
         eps = 1e-12
-        tau = np.clip((ts_new - t0)/((t1 - t0)+eps), 0.0, 1.0)
-        ts_tile_phase = np.mod((stretch_length * tau), 1.0)
+        tau = np.clip((ts_detail - t0)/((t1 - t0)+eps), 0.0, 1.0)
+        ts_detail = np.mod((length * tau), 1.0)
 
-        # seam fade: 0 near phase seam, 1 away from seam
-        w_seam = seam_fade(ts_tile_phase, eps_seam)
+        w_seam = seam_fade(ts_detail, eps_seam)
         w_wrap = w_region * w_seam
 
-        ts_wrapped = t0 + (t1-t0)*ts_tile_phase
+        ts_wrapped = t0 + (t1-t0)*ts_detail
         ts_used = (1.0 - w_wrap) * ts_new + w_wrap * ts_wrapped
         vx_used = 2.0 * ts_used - 1.0
 
@@ -1055,24 +1007,35 @@ class PWLACurve():
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
         samples_detail  = samples_local0.copy()
-        samples_detail /= (radius + 1e-12)
+        samples_detail /= radius
         #x_radius_detail = self.calc_x_radius(ts_detail)
         #r_detail = np.concatenate([x_rs[:,None], intpl['radius_detail']], axis=1)
         #samples_detail /= r_detail #intpl['radius_detail']
         samples_detail[:,0] += vx_used
 
+        intpl['coords_detail'] = ts_detail
+
+
+        #vx_tile = 2*(w[:,None]*ts_detail + ((1-w)[:,None]*ts_new)) - 1
+        #samples_detail[:,0] += vx_tile
+        #samples_detail = samples_detail_notile
+        #samples_detail  = samples_local.copy()
+        #vx3 = vx.unsqueeze(-1) if vx.ndim == 2 else vx
+        #samples_detail[..., 0:1] = samples_detail[..., 0:1] - vx3
         return {
             #'samples': vs[inside_cyl],
             'samples_local': samples_local[inside_cyl],
             'samples_detail': samples_detail[inside_cyl],
+            'samples_detail_notile': samples_detail_notile[inside_cyl],
             'coords': ts_new[inside_cyl],
-            #'coords': ts[inside_cyl],
             'coords_detail': ts_used[inside_cyl], 
             'w_seam': w_seam,
+            # 'radius': yz_rs[inside_cyl],
             'rho': rho[inside_cyl],
             'rho_n': rho_n[inside_cyl],
             'angles': angle[inside_cyl],
             'radius': yz_radius[inside_cyl],
+            'radius_detail': intpl['radius_detail'][inside_cyl]
         }, inside
 
 
@@ -1158,6 +1121,7 @@ class PWLACurve():
 
         return np.interp(x_copy, ts_periodic, radius_periodic)
 
+    
     def interpolate_stretch(self, ts, stretch_arg):
         #func = stretch_arg['mix_func']
         #ts_new = func(ts)
@@ -1167,8 +1131,51 @@ class PWLACurve():
         ]).T
         intpl = self.interpolate(ts, radius=False)
 
+        length = stretch_arg['length']
+        t0 = stretch_arg['t0']
+        t1 = stretch_arg['t1']
+        eps_region = stretch_arg.get('eps_region', 0.03)
+        eps_seam = stretch_arg.get('eps_seam', 0.05)
+      
+        ts_detail = np.asarray(ts).reshape(-1)
+
+        w_region = make_detail_mask(ts_detail, t0, t1, eps_region)
+
+        #mask_region[(mask_region >= stretch_arg['t0']) & (mask_region <= stretch_arg['t1'])] = 1.0
+        eps = 1e-12
+        tau = np.clip((ts_detail - t0)/((t1 - t0)+eps), 0.0, 1.0)
+        ts_detail = np.mod((length * tau), 1.0)
+
+        w_seam = seam_fade(ts_detail, eps_seam)
+
+        #ts_detail = np.mod((length * ts), 1.0)
+
+        radius_y = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,0])
+        radius_z = self.periodic_interpolate(ts_detail, self.key_ts0, self.key_radius0[:,1])
+        radius_periodic = np.stack([radius_y, radius_z], axis=1)
+
+        ## Smoothening near seam
+        ## Give weight of 0 at near seam, so it takes from ts or base
+        ## Give weight of 1 away from seam so it picks up from the details
+        radius_detail_seam = (w_seam[:, None] * radius_periodic) + ((1.0 - w_seam)[:, None] * radius)
+        radius_detail = ((1.0 - w_region)[:, None] * radius) + (w_region[:, None] * radius_detail_seam)
+
+        #dist_to_seam = np.minimum(ts_detail, 1.0 - ts_detail)
+        #eps = 0.01
+        #x = np.clip(dist_to_seam /eps, 0.0, 1.0)
+        #w = x * x*(3 - 2*x)
+
+        #radius_detail = w[:,None]*radius_detail + (1-w)[:,None]*radius
+        #radius_detail = w[:,None]*radius_detail + (1-w)[:,None]*radius
+        #radius_detail = (1-mask_region)*radius + mask_region(w[:,None]*radius_detail + (1-w)*radius)
+
+        intpl['radius_detail'] = radius_detail
+        intpl['detail'] = ts_detail
         intpl['radius'] = radius 
+        intpl['w_seam'] = w_seam
+        intpl['w_region'] = w_region
         return intpl, ts
+
 
 
     def inverse_transform(self, samples_local, ts):

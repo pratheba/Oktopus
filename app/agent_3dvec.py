@@ -358,8 +358,9 @@ class Agent():
         batch_size = 64**3
         for curve in handle.curves:
             key = self.encode_key(shape_name, curve.name)
-
+            print("key = ", key)
             if key in config:
+                print("stretching curve")
                 stretch_config = config[key]
                 new_key = stretch_config['new_key']
 
@@ -388,6 +389,7 @@ class Agent():
                 #curve_data, kidx = curve.filter_grid_mix(mc_grid, stretch_arg)
                 #vals = self.__mix_inference(curve_data, stretch_arg, batch_size)
             else:
+                print("normal without stretch")
                 curve_data, kidx = curve.filter_grid(mc_grid)
                 vals = self.__inference_vals(curve_data, key, batch_size)
 

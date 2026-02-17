@@ -1,6 +1,6 @@
 experiment_name: train
 description: overfitting 2 shapes 
-logging_root: results_grid_gatesdf_rhogrid
+logging_root: results_grid_gatesdf_rhogrid_gridl2
 num_samples: 4M
 training:
   num_epochs: 20000
@@ -47,13 +47,13 @@ model:
   num_pos_encoding_base: 4
   num_pos_encoding_detail: 20
   num_pos_encoding_tile: 20
-  details_level: 0
+  details_level: 2
   tiling: False
   num_y_pos_encoding: 24
   num_z_pos_encoding: 24
   num_period_encoding: 24
 
-  grid_levels: 4
+  grid_levels: 2
   grid_dim: 256
   grid_hw: (32,256)
   encoder_curve:
