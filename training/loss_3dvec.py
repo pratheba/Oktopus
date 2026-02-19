@@ -36,7 +36,6 @@ class LossHandler():
 
         return loss
 
-
     def parse_config(self, loss_schedule):
         self.loss_fn = {}
         for name, loss_config in loss_schedule.items():
@@ -47,12 +46,20 @@ class LossHandler():
                     'factor': loss_config['factor']
                 }
 
-    def sdf_loss(self, output, gt, metric_fn):
+    def sdf_loss(self, output, gt, metric_fn, epoch=0, E0=2000, E1=4500):
         out_sdf = output['sdf']
         B, n = out_sdf.shape
         #gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
-        gt_sdf = gt['sdf'].view_as(out_sdf)
-        return metric_fn(out_sdf, gt_sdf)
+        if epoch < E0:
+            gt_sdf = gt['sdf'].view_as(out_sdf)
+            return metric_fn(out_sdf, gt_sdf)
+        elif epoch < E1:
+            mask = torch.abs(output['sdf_base'].detach()) < 0.05
+            gt_sdf = gt['sdf'].view_as(out_sdf)
+            return metric_fn(out_sdf[mask], gt_sdf[mask])
+        else:
+            gt_sdf = gt['sdf'].view_as(out_sdf)
+            return metric_fn(out_sdf, gt_sdf)
 
     def sdf_query_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']
@@ -64,7 +71,7 @@ class LossHandler():
         gt_sdf = gt['sdf'].view_as(out_sdf)
         return metric_fn(out_sdf, gt_sdf)
 
-    def code_loss(self, output, gt, metric_fn):
+    def code_loss(self, output, gt, metric_fn, epoch=0, E0=2000, E1=4500):
         #code = output['curve_code']
         code = output['code']
         reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
@@ -76,7 +83,23 @@ class LossHandler():
         return metric_fn(enc_features, dec_features)
         #reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
         #return torch.mean(reg_loss)
+    def eikonal_loss(self, output, gt, metric_fn):
+        out_sdf = output['sdf']
+        in_sample = gt['samples']
+        B, n = out_sdf.shape
+        B, n, d = in_sample.shape
+        #gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
+        grad = torch.autograd.grad(
+            outputs = out_sdf,
+            inputs = in_sample,
+            grad_outputs = torch.ones_like(out_sdf),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,)[0]
 
+        grad_norm = torch.sqrt(torch.sum(grad * grad, dim=-1) + 1e-12)
+        loss = (grad_norm - 1.0) ** 2
+        return loss.mean() 
     
     def nodes_loss(self, output, gt, metric_fn):
         nodes = output['nodes']
@@ -116,14 +139,14 @@ class LossHandler():
         return metric_fn(occ_max, occ_gt)
     
 
-    def __call__(self, output, gt):
+    def __call__(self, output, gt, epoch, E0, E1):
         res = {}
         for name, loss in self.loss_fn.items():
             if hasattr(self, name):
                 func = getattr(self, name)
             else:
                 raise NameError('Not defined loss name')
-            loss_term = func(output, gt, loss['metric_fn'])
+            loss_term = func(output, gt, loss['metric_fn'], epoch, E0, E1)
             res[name] = loss['factor']*loss_term
 
         return res

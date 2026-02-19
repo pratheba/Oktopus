@@ -6,8 +6,10 @@ def save_checkpoint(self, epoch, loss, filename):
         #print("self model = ", self.model)
         model_dict = {}
         model_dict['model'] = self.model.state_dict()
-        model_dict['optimizer'] = self.optim.state_dict()
-        model_dict['scheduler'] = self.scheduler.state_dict()
+        model_dict['optimizer_base'] = self.optim_base.state_dict()
+        model_dict['optimizer_detail'] = self.optim_detail.state_dict()
+        model_dict['scheduler_base'] = self.scheduler_base.state_dict()
+        model_dict['scheduler_detail'] = self.scheduler_detail.state_dict()
         model_dict['epoch'] = epoch
         model_dict['loss'] = loss
         #if withval:
@@ -31,28 +33,39 @@ def load_model(model, device, checkpoint_path, checkpoint='final'):
 
 
 def get_optimizer(opt, model):
-    p = opt.optim
+    p = opt.optim_base
     res = {}
     if p.type == 'Adam':
-        optim = torch.optim.Adam(params=model.parameters(), 
+        optim_base = torch.optim.Adam(params=model.base_parameters(), 
+                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+        optim_detail = torch.optim.Adam(params=model.detail_parameters(), 
                 lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
     elif p.type == 'AdamW':
-        optim =  torch.optim.AdamW(params=model.parameters(), 
+        #optim =  torch.optim.AdamW(params=model.parameters(), 
+        #        lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+        optim_base = torch.optim.AdamW(params=model.base_parameters(), 
+                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+        optim_detail = torch.optim.AdamW(params=model.detail_parameters(), 
                 lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
     elif p.type == 'SGD':
         optim = torch.optim.SGD(model.parameters(), lr=p.lr, momentum=p.momentum)
     else:
         raise NotImplementedError('Not implemented optimizer type')
-    res['optimizer'] = optim
+    res['optimizer_base'] = optim_base
+    res['optimizer_detail'] = optim_detail
     res['epoch_lr'] = None
+    res['epoch_lr_base'] = None
+    res['epoch_lr_detail'] = None
     res['step_lr'] = None
     if p.lr_scheduler:
         if p.lr_scheduler == 'MultiStep':
             lr_sch = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=p.milestones, gamma=p.gamma)
             res['epoch_lr'] = lr_sch
         elif p.lr_scheduler == 'ROP':
-            lr_sch = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, factor=p.factor, patience=p.patience)
-            res['epoch_lr'] = lr_sch
+            lr_sch_base = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_base, factor=p.factor, patience=p.patience)
+            res['epoch_lr_base'] = lr_sch_base
+            lr_sch_detail = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_detail, factor=p.factor, patience=p.patience)
+            res['epoch_lr_detail'] = lr_sch_detail
         elif p.lr_scheduler == 'CLR':
             lr_sch = torch.optim.lr_scheduler.CyclicLR(optim, base_lr=p.base_lr, max_lr=p.max_lr, step_size_up=p.step)
             res['step_lr'] = lr_sch

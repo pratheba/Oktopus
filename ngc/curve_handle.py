@@ -230,6 +230,8 @@ class CurveHandle():
 
     def filter_grid(self, mc_grid):
         # find grid points around the cylinder
+        self.core.update_coords()
+        self.core.update_frame()
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
         # calculate the neareast points and find inside points
         samples_data, inside = self.core.localize_samples(samples)
@@ -239,6 +241,8 @@ class CurveHandle():
     def filter_grid_mix(self, mc_grid, mix_arg):
         # gen mixed cyl mesh 
         #ts = np.linspace(0., 1., 20)
+        self.core.update_coords()
+        self.core.update_frame()
         ts = np.linspace(0., 1., n_sample_curve)
         
         intpl = self.core.interpolate_mix(ts, mix_arg)
@@ -256,6 +260,8 @@ class CurveHandle():
         # gen mixed cyl mesh 
         #points, ts_new = self.core.localize_stretch(stretch_arg)
         print("stretch arg ", stretch_arg)
+        self.core.update_coords()
+        self.core.update_frame()
         self.core.localize_stretch(stretch_arg)
         #try:
         ts = np.linspace(0., 1., n_sample_curve)
@@ -473,8 +479,8 @@ class PWLACurve():
             y_axis.reshape(-1,1,3),
             self.z_axis.reshape(-1,1,3)
         ], axis=1)
-        self.rotation = Rotation.from_matrix(self.key_frame)
-        self.rot_slerp = Slerp(self.key_ts, self.rotation)
+        #self.rotation = Rotation.from_matrix(self.key_frame)
+        #self.rot_slerp = Slerp(self.key_ts, self.rotation)
         self.flag_points = True
 
 
@@ -485,7 +491,7 @@ class PWLACurve():
 
     def estimate_tangent(self, points):
         edge_vec = points[1:] - points[:-1]
-        edge_vec /= np.linalg.norm(edge_vec, axis=1, keepdims=True)
+        edge_vec /= (np.linalg.norm(edge_vec, axis=1, keepdims=True) + 1e-12)
 
         if edge_vec.shape[0] > 1:
             tan_start = edge_vec[0]
@@ -525,8 +531,97 @@ class PWLACurve():
             c_zx = zx
 
         return np.asarray(final_z)
-    
+
+    def rotation_from_vectors(self, a, b):
+         v = np.cross(a, b)
+         c = np.dot(a, b)
+
+         if np.linalg.norm(v) < 1e-8:
+             return np.eye(3)
+
+         vx = np.array([
+              [0, -v[2], v[1]],
+              [v[2], 0, -v[0]],
+              [-v[1], v[0], 0]
+              ])
+         R = np.eye(3) + vx + vx @ vx * (1.0 / (1.0 + c))
+         return R
+
+    # Parallel transport frame
     def update_frame(self):
+        points = self.key_points
+        n = points.shape[0]
+
+        T = self.estimate_tangent(self.key_points)
+        z0 = self.z_axis[0] if self.z_axis is not None else np.array([0,0,1], dtype=np.float64)
+
+        z_axis = np.zeros_like(T)
+        z_axis[0] = z0 - np.dot(z0, T[0]) * T[0]
+        z_axis[0] /= np.linalg.norm(z_axis[0]) + 1e-12
+
+        for i in range(1, len(T)):
+            R = self.rotation_from_vectors(T[i-1], T[i])
+            z_axis[i] = R @ z_axis[i-1]
+            z_axis[i] /= np.linalg.norm(z_axis[i]) + 1e-12
+
+        y_axis = np.cross(z_axis, T)
+        y_axis /= np.linalg.norm(y_axis, axis=1, keepdims=True) + 1e-12
+        z_axis = np.cross(T, y_axis)
+        z_axis /= (np.linalg.norm(z_axis, axis=1, keepdims=True) + 1e-12)
+        self.z_axis = z_axis
+        self.key_frame = np.stack([T, y_axis, z_axis], axis=1)
+
+#        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+#        if abs(np.dot(T[0], world_up)) > 0.95:
+#            world_up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+#
+#        N = np.zeros_like(T)
+#        B = np.zeros_like(T)
+#
+#        N0 = world_up - np.dot(world_up, T[0]) * T[0]
+#        N0 = N0 / (np.linalg.norm(N0) + 1e-12)
+#        N[0] = N0
+#        B[0] = np.cross(T[0], N[0])
+#
+#        for i in range(1, n):
+#            R = self.rotation_from_vectors(T[i-1], T[i])
+#            N[i] = R @ N[i-1]
+#            N[i] /= (np.linalg.norm(N[i]) + 1e-12)
+#
+#            B[i] = np.cross(T[i], N[i])
+#            B[i] /= (np.linalg.norm(B[i]) + 1e-12)
+         
+        self.key_frame = np.stack([T, y_axis, z_axis], axis=1)
+        self.rotation = None
+        self.rot_slerp = None
+ 
+
+    def update_frame_slerp(self):
+        x_axis = self.estimate_tangent(self.key_points)
+
+        z0 = self.z_axis[0] if self.z_axis is not None else np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        z_axis = self.propagate_z_axis(x_axis, z0)
+
+        # Sign continuity
+        for i in range(1, z_axis.shape[0]):
+            if np.dot(z_axis[i], z_axis[i-1]) < 0:
+                z_axis[i] *= -1.0
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis /= (np.linalg.norm(y_axis, axis=1, keepdims=True) + 1e-12)
+
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis /= (np.linalg.norm(z_axis, axis=1, keepdims=True) + 1e-12)
+        self.z_axis = z_axis
+
+        self.key_frame = np.concatenate([
+            x_axis.reshape(-1,1,3),
+            y_axis.reshape(-1,1,3),
+            z_axis.reshape(-1,1,3)
+        ], axis=1)
+        self.rotation = Rotation.from_matrix(self.key_frame)
+        self.rot_slerp = Slerp(self.key_ts, self.rotation)
+
+    def update_frame_old(self):
         x_axis = self.estimate_tangent(self.key_points)
         self.z_axis = self.project_z_axis(x_axis, self.z_axis)
         y_axis = np.cross(self.z_axis, x_axis)
@@ -540,8 +635,12 @@ class PWLACurve():
 
     def set_frame(self, new_frame):
         self.key_frame = new_frame
-        self.rotation = Rotation.from_matrix(self.key_frame)
-        self.rot_slerp = Slerp(self.key_ts, self.rotation)
+        
+        #idx = np.searchsorted(self.key_ts, ts)
+        #idx = np.clip(idx, 0, len(self.key_ts)-1)
+        #frame = self.key_frame[idx]
+        #self.rotation = Rotation.from_matrix(self.key_frame)
+        #self.rot_slerp = Slerp(self.key_ts, self.rotation)
 
     def update_coords(self):
         edge_vec = self.key_points[1:] - self.key_points[:-1]
@@ -752,18 +851,18 @@ class PWLACurve():
 
         # frame: (N, 3,3), vs (N, 3)
         # The vector of the keypoint to the skeletam point is rotated using the rotation from
-        samples_local = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
+        samples_local0 = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
         # And all are bounding to radius
         #print("samples_local", samples_local)
         #import pdb; pdb.set_trace()
-        w, u, v = samples_local[:,0], samples_local[:, 1], samples_local[:, 2]
-#        samples_local_n = samples_local.copy()
+        w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
+        samples_local = samples_local0.copy()
+        samples_local /= (radius + 1e-12)
 #        samples_local_n[:, 1] /= radius[:, 1]
 #        samples_local_n[:, 2] /= radius[:, 2]
         rho = np.sqrt(v**2 + u**2)
-        samples_local /= radius
-        u_n = u / (radius[:,1] + 1e-12)
-        v_n = v / (radius[:,2] + 1e-12)
+        u_n = samples_local[:,1] #u / (radius[:,1] + 1e-12)
+        v_n = samples_local[:,2] #v / (radius[:,2] + 1e-12)
         angle = np.arctan2(v_n, u_n)
         rho_n = np.sqrt(v_n**2 + u_n**2)
         
@@ -1004,10 +1103,10 @@ class PWLACurve():
         norms = np.linalg.norm(samples_local, axis=1)
         inside_cyl = norms <= 1.0
         inside = sidx[inside_cyl]
-        #u_n = samples_local[:,1] # u / (radius[:,1] + 1e-12)
-        #v_n = samples_local[:,2] # v / (radius[:,2] + 1e-12)
-        u_n = u / (radius[:,1]**2 + 1e-12)
-        v_n = v / (radius[:,2]**2 + 1e-12)
+        u_n = samples_local[:,1] # u / (radius[:,1] + 1e-12)
+        v_n = samples_local[:,2] # v / (radius[:,2] + 1e-12)
+        #u_n = u / (radius[:,1]**2 + 1e-12)
+        #v_n = v / (radius[:,2]**2 + 1e-12)
         angle = np.arctan2(v_n, u_n)
         rho_n = np.sqrt(v_n**2 + u_n**2)
 
@@ -1116,7 +1215,10 @@ class PWLACurve():
         if frame:
             # requirement of Slerp from Scipy
             ts_rot = np.clip(ts, a_min=1e-10, a_max=(1 - 1e-10))
-            frame_ts = self.rot_slerp(ts_rot).as_matrix()
+            idx = np.searchsorted(self.key_ts, ts_rot)
+            idx = np.clip(idx, 0, len(self.key_ts)-1)
+            frame_ts= self.key_frame[idx]
+            #frame_ts = self.rot_slerp(ts_rot).as_matrix()
             res['frame'] = frame_ts
 
         return res

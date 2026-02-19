@@ -41,11 +41,17 @@ class Trainer:
         self.train_loss_fn = config_loss(self.opt['loss']) 
         self.val_loss_fn = config_loss(self.opt['val_loss'])
 
+    def set_requires_grad(self, params, flag: bool):
+        for p in params:
+            p.requires_grad = flag
+
     def train_model(self):
         opt = DottedDict(self.opt)
         res = get_optimizer(opt['training'], self.model)
-        self.optim = res['optimizer']
-        self.scheduler = res['epoch_lr']
+        self.optim_base = res['optimizer_base']
+        self.optim_detail = res['optimizer_detail']
+        self.scheduler_base = res['epoch_lr_base']
+        self.scheduler_detail = res['epoch_lr_detail']
 
         model_dir = opt.log_path
 
@@ -70,6 +76,7 @@ class Trainer:
 
         #num_epochs = opt['training']['num_epochs']
         #print(self.model.model_dict())
+        E0, E1 = 2000, 4500
 
         with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
             for epoch in range(opt.num_epochs):
@@ -77,6 +84,19 @@ class Trainer:
                     #print(self.model.state_dict())
                     #exit()
                     save_checkpoint(self, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
+                if epoch < E0:
+                    # base-only
+                    self.set_requires_grad(self.model.base_parameters(), True)
+                    self.set_requires_grad(self.model.detail_parameters(), False)
+                elif epoch < E1:
+                    # detail-only (freeze base)
+                    self.set_requires_grad(self.model.base_parameters(), False)
+                    self.set_requires_grad(self.model.detail_parameters(), True)
+                else:
+                    # joint
+                    self.set_requires_grad(self.model.base_parameters(), True)
+                    self.set_requires_grad(self.model.detail_parameters(), True)
+
 
                 # -----------------------
                 # training
@@ -89,14 +109,18 @@ class Trainer:
                     gt = {key: val.cuda() for key,val in gt.items()}
                     model_input['info'] = info
                     gt['info'] = info
+                    #x_used = model_input['samples']
+                    #x_used = x_used.detach().clone().requires_grad_(True)
+                    #model_input['samples'] = x_used
                     batch_size = gt['sdf'].shape[0]
+                    #gt['samples'] = x_used
                     #print("batch_size = ", batch_size)
                     #print(model_input['samples_local'])
                     #print(mode_input)
                     #exit()
                     model_output = self.model(model_input, epoch)
 
-                    losses = self.train_loss_fn(model_output, gt)
+                    losses = self.train_loss_fn(model_output, gt, epoch=epoch, E0=E0, E1=E1)
 
                     train_loss = 0.
                     for loss_name, loss in losses.items():
@@ -107,7 +131,8 @@ class Trainer:
 
                     writer.add_scalar("total_train_loss", train_loss, total_steps)
 
-                    self.optim.zero_grad()
+                    self.optim_base.zero_grad()
+                    self.optim_detail.zero_grad()
                     epoch_train_loss += (train_loss.item() * batch_size)
                     num_items += batch_size
                     train_loss.backward()
@@ -117,13 +142,21 @@ class Trainer:
                             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.)
                         else:
                             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=opt.clip_grad)
-
-                    self.optim.step()
+                    if epoch < E0:
+                        self.optim_base.step()
+                    elif epoch < E1:
+                        self.optim_detail.step()
+                    else:
+                        self.optim_base.step()
+                        self.optim_detail.step()
+                    #self.optim.step()
 
                     pbar.update(1)
                     # default to be only one parameter group
-                    current_lr = self.optim.param_groups[0]['lr']
-                    writer.add_scalar('lr', current_lr, total_steps)
+                    current_base_lr = self.optim_base.param_groups[0]['lr']
+                    current_detail_lr = self.optim_detail.param_groups[0]['lr']
+                    writer.add_scalar('base_lr', current_base_lr, total_steps)
+                    writer.add_scalar('detail_lr', current_detail_lr, total_steps)
 
                     #message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
                     #        epoch, total_steps, train_loss, current_lr)
@@ -134,8 +167,8 @@ class Trainer:
                         save_checkpoint(self, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'best_model_train.pth'))
 
                     if not total_steps % opt.steps_til_summary:
-                        message = "Epoch train {}|Iter:{}, Loss {:0.4f}, Lr {:0.8f}\n".format(
-                            epoch, total_steps, epoch_train_loss, current_lr)
+                        message = "Epoch train {}|Iter:{}, Loss {:0.4f}, B_Lr {:0.8f}, D_Lr {:0.8f}\n".format(
+                            epoch, total_steps, epoch_train_loss, current_base_lr, current_detail_lr)
                         for name, loss in losses.items():
                             message = message + '{}(X{}): {:.4f}, \n'.format(name, opt.loss[name].factor, loss.item())
                         tqdm.write(message)
@@ -148,7 +181,13 @@ class Trainer:
                 # -----------------------
                 vals = {}
                 if opt.val_type == 'None':
-                    self.scheduler.step(epoch_train_loss)
+                    if epoch < E0:
+                        self.scheduler_base.step(epoch_train_loss)
+                    elif epoch < E1:
+                        self.scheduler_detail.step(epoch_train_loss)
+                    else:
+                        self.scheduler_base.step(epoch_train_loss)
+                        self.scheduler_detail.step(epoch_train_loss)
                     continue
                 
                 #print("val dataloader = ", val_dataloader, flush=True)

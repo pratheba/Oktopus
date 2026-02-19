@@ -97,9 +97,14 @@ class CurveRhoMultiResGrid(nn.Module):
             grid_feat.append(grid_sample(feat, grid))
         return torch.cat(grid_feat, dim=-1)
 
+
     def forward(self, ts, rho, ts_min=0.0, ts_max=1.0):
         return self.forwardbase(ts, rho, ts_min, ts_max)
 
     @torch.no_grad()
     def inference(self, ts, rho, ts_min=0.0, ts_max=1.0):
+        return self.forwardbase(ts, rho, ts_min, ts_max)
+
+    @torch.no_grad()
+    def inference_stretch(self, ts, rho, ts_min=0.0, ts_max=1.0):
         return self.forwardbase(ts, rho, ts_min, ts_max)
