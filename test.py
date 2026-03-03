@@ -39,38 +39,50 @@ def start_test(opt):
     grid_config = {
         'reso': 512,
         'level': 0.,
-        'size': 1.2
+        'size': 1.2,
     }
-
-    #t0 = time()
-    #mc_grid = MCGrid(grid_config)
-    #shape_name = 'boots'
-    #
-    #arg = {
-    #    'exp_name': 'transform',
-    #    'data_root': data_root, 
-    #    'mc_grid': mc_grid,
-    #    'output_folder': op.join(output_path, f'{shape_name}'),
-    #    'shape': shape_name,
-    #    'transform_file': op.join(config_path, f'transform_{shape_name}.yaml'),
-    #}
-    #agent('shape_transform', arg)
-    #print('time cost: ', time()-t0)
 
     t0 = time()
     mc_grid = MCGrid(grid_config)
-    shape_name = 'boots'
+    shape_name = 'armadillo'
+
 
     arg = {
-        'exp_name': 'mix',
+        'exp_name': 'adapt',
         'data_root': data_root, 
         'mc_grid': mc_grid,
         'output_folder': op.join(output_path, f'{shape_name}'),
         'shape': shape_name,
-        'stretch_file': op.join(config_path, f'stretch_{shape_name}.yaml'),
+        'adapt_file': op.join(config_path, f'adapt_{shape_name}.yaml'),
     }
-    agent('shape_stretch', arg)
+    agent('part_adapt', arg)
     print('time cost: ', time()-t0)
+    
+#    arg = {
+#        'exp_name': 'mix',
+#        'data_root': data_root, 
+#        'mc_grid': mc_grid,
+#        'output_folder': op.join(output_path, f'{shape_name}'),
+#        'shape': shape_name,
+#        'mixing_file': op.join(config_path, f'mix_{shape_name}.yaml'),
+#    }
+#    agent('part_mixing', arg)
+#    print('time cost: ', time()-t0)
+
+#    t0 = time()
+#    mc_grid = MCGrid(grid_config)
+#    shape_name = 'boots'
+#
+#    arg = {
+#        'exp_name': 'stretch',
+#        'data_root': data_root, 
+#        'mc_grid': mc_grid,
+#        'output_folder': op.join(output_path, f'{shape_name}'),
+#        'shape': shape_name,
+#        'stretch_file': op.join(config_path, f'stretch_{shape_name}.yaml'),
+#    }
+#    agent('shape_stretch', arg)
+#    print('time cost: ', time()-t0)
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description='Input to test time config file')

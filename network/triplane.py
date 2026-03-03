@@ -33,7 +33,7 @@ def grid_sample(feat, grid, align_corners=True):
     return out.squeeze(-1).transpose(1,2)
 
 class CurveThetaMultiResGrid(nn.Module):
-    def __init__(self, base_hw=(64, 256), levels=4, dim=32):
+    def __init__(self, base_hw=(64, 256), levels=4, dim=32, reduce=False):
         super().__init__()
         self.levels = levels
         self.dim = dim 
@@ -43,7 +43,10 @@ class CurveThetaMultiResGrid(nn.Module):
         for l in range(self.levels):
             Hl = H0 * (2 ** l)
             Wl = W0 * (2 ** l)
-            g = nn.Parameter(torch.randn(1, dim, Hl, Wl) * 1e-3)
+            diml = dim
+            if reduce:
+                diml = int(dim / (2 ** l))
+            g = nn.Parameter(torch.randn(1, diml, Hl, Wl) * 1e-3)
             self.grids.append(g)
 
     def forwardbase(self, ts, theta, ts_min=0.0, ts_max=1.0):
@@ -76,7 +79,7 @@ class CurveThetaMultiResGrid(nn.Module):
         return self.forward_levels(ts, theta, ts_min, ts_max, start, end)
 
 class CurveRhoMultiResGrid(nn.Module):
-    def __init__(self, base_hw=(64, 256), levels=4, dim=32):
+    def __init__(self, base_hw=(64, 256), levels=4, dim=32, reduce=False):
         super().__init__()
         self.levels = levels
         self.dim = dim 
@@ -86,7 +89,10 @@ class CurveRhoMultiResGrid(nn.Module):
         for l in range(self.levels):
             Hl = H0 * (2 ** l)
             Wl = W0 * (2 ** l)
-            g = nn.Parameter(torch.randn(1, dim, Hl, Wl) * 1e-3)
+            diml = dim
+            if reduce:
+                diml = int(dim / (2 ** l))
+            g = nn.Parameter(torch.randn(1, diml, Hl, Wl) * 1e-3)
             self.grids.append(g)
 
     def forwardbase(self, ts, rho, ts_min=0.0, ts_max=1.0):

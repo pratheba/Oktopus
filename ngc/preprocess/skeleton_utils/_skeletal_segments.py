@@ -2,7 +2,7 @@ import numpy as np
 import os
 import sys
 import trimesh
-from visualize import pointcloud_viz, curve_viz
+#from visualize import pointcloud_viz, curve_viz
 
 
 class SkeletalSegments():
@@ -90,8 +90,9 @@ class SkeletalSegments():
         """
         allcorrespoints = []
         for point in points:
-            corres = correspondence_map[point.tobytes()]['corres']
-            allcorrespoints.append(corres)
+            #if point.tobytes() in correspondence_map:
+                corres = correspondence_map[point.tobytes()]['corres']
+                allcorrespoints.append(corres)
         allcorrespoints = np.vstack(allcorrespoints)
         return allcorrespoints
 

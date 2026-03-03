@@ -96,12 +96,23 @@ class NGCDataset(Dataset):
         #print("input_curve_idx = ", input_curve_idx)
         #exit()
 
-        input1, gt1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
-        input2, gt2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
-        input3, gt3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
+        input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
+        input2, gt2, sidx2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
+        input3, gt3, sidx3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
+        gt_base1 = torch.from_numpy(data['base_surface_sdf'][sidx1]).float()
+        gt_base2 = torch.from_numpy(data['base_space_sdf'][sidx2]).float()
+        gt_base3 = torch.from_numpy(data['base_on_surface_sdf'][sidx3]).float()
+        gt_residual1 = torch.from_numpy(data['residual_surface_sdf'][sidx1]).float()
+        gt_residual2 = torch.from_numpy(data['residual_space_sdf'][sidx2]).float()
+        gt_residual3 = torch.from_numpy(data['residual_on_surface_sdf'][sidx3]).float()
+        #input_base1, gt_base1 = self.get_curve_data(data['base_surface'], input_curve_idx, self.n_sample)
+        #input_base2, gt_base2 = self.get_curve_data(data['base_space'], input_curve_idx, self.n_sample)
+        #input_base3, gt_base3 = self.get_curve_data(data['base_on_surface'], input_curve_idx, self.n_surface_sample)
+        #input_residual1, gt_residual1 = self.get_curve_data(data['residual_surface'], input_curve_idx, self.n_sample)
+        #input_residual2, gt_residual2 = self.get_curve_data(data['residual_space'], input_curve_idx, self.n_sample)
+        #input_residual3, gt_residual3 = self.get_curve_data(data['residual_on_surface'], input_curve_idx, self.n_surface_sample)
         data_input = {
             'samples': torch.cat([input1['samples'], input2['samples'], input3['samples']], dim=0),
-            #'part_samples': torch.cat([input1['part_samples'], input2['part_samples']], dim=0),
             'coords': torch.cat([input1['coords'], input2['coords'], input3['coords']]),
             'angles': torch.cat([input1['angles'], input2['angles'], input3['angles']]),
             'rho': torch.cat([input1['rho'], input2['rho'], input3['rho']]),
@@ -111,12 +122,17 @@ class NGCDataset(Dataset):
         }
         data_gt = {
             'sdf': torch.cat([gt1['sdf'], gt2['sdf'], gt3['sdf']]),
+            'sdf_base': torch.cat([gt_base1, gt_base2, gt_base3]),
+            'sdf_residual': torch.cat([gt_residual1, gt_residual2, gt_residual3]),
         }
         #exit()
 
         info = {}
 
         return data_input, data_gt, info
+
+    def get_curve_base_residual_data(self, curve_data,sample_idx):
+        samples_sdf = curve_data['sdf'][sample_idx]
 
     def get_curve_data(self, curve_data, input_curve_idx, n_samples=1024):
         samples_local = curve_data['samples_local']
@@ -177,6 +193,6 @@ class NGCDataset(Dataset):
         gt = {
             'sdf': torch.from_numpy(gt_sdf).float(),
         }
-        return model_input, gt
+        return model_input, gt, sidx
     
 

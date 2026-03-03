@@ -28,7 +28,7 @@ def load_model(device, config_path, model_directory, mode='train', checkpoint='b
     else:
         ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
 
-    model = network.define_model(opt['model'])
+    model = network.define_model(opt['model'], opt['training']['phase_schedule'])
     checkpoint_path = op.join(model_directory, mode, f'checkpoints/{ckpt_name}')
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model'], strict=False)

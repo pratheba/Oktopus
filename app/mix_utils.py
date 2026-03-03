@@ -63,16 +63,22 @@ class MixFunc():
                 coords,
                 2*sym - coords
             )
+            #print("vals = ", vals, flush=True)
             weights = (vals - a) / (b - a)
+            #print("weights = ", weights, flush=True)
             weights = np.clip(weights, a_min=0., a_max=self.clip_max)
+            #print("weights = ", weights, flush=True)
         else:
             vals = torch.where(
                 coords < sym,
                 coords,
                 2*sym - coords
             )
+            #print("vals = ", vals, flush=True)
             weights = (vals - a) / (b - a)
+            #print("weights = ", weights, flush=True)
             weights = torch.clip(weights, min=0., max=self.clip_max)
+            #print("weights = ", weights, flush=True)
 
         if self.weights_reverse:
             weights = 1. - weights

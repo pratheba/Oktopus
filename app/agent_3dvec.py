@@ -143,10 +143,12 @@ class Agent():
         if batch_size is not None and num_samples > batch_size:
             N = num_samples // batch_size + 1
             vals = []
+            vals_base = []
             batches = np.array_split(np.arange(num_samples), N)
             for idx, batch in enumerate(batches):
                 batch_curve_data = {key: val[batch] for key,val in curve_data.items()}
                 batch_curve_data['device'] = self.device
+                print(self.feat_dict[key])
                 batch_curve_data['curve_idx'] = self.feat_dict[key]
 
                 #r = np.random.choice(num_context_samples, size=2048, replace=False)
@@ -160,39 +162,62 @@ class Agent():
                 #trimesh.Trimesh(vertices=batch_curve_data['on_surface_samples_gloabl'].numpy(), process = False).export(str(self.feat_dict[key])+'_onsurface.ply')
                 #trimesh.Trimesh(vertices=batch_curve_data['samples_local'], process = False).export(str(self.feat_dict[key])+'_'+str(idx)+'_query.ply')
 
-                vals_batch = self.model.inference(batch_curve_data, transform=transform).squeeze()
+                vals_batch, vals_base_batch = self.model.inference(batch_curve_data, transform=transform)
+                vals_batch = vals_batch.squeeze()
+                vals_base_batch = vals_base_batch.squeeze()
                 vals.append(vals_batch.detach().cpu().numpy())
+                vals_base.append(vals_base_batch.detach().cpu().numpy())
             
-            return np.concatenate(vals)
+            return np.concatenate(vals), np.concatenate(vals_base)
 
         curve_data['device'] = self.device
         curve_data['curve_idx'] = self.feat_dict[key]
 
         with torch.no_grad():
-            vals = self.model.inference(curve_data).squeeze()
+            vals, vals_base = self.model.inference(curve_data)
+            vals = vals.squeeze()
+            vals_base = vals_base.squeeze()
             vals = vals.detach().cpu().numpy()
+            vals_base = vals_base.detach().cpu().numpy()
 
-        return vals
+
+        return vals, vals_base
     
     def __mix_inference(self, curve_data, mix_arg, batch_size=None):
         num_samples = curve_data['samples'].shape[0]
         cd = curve_data
+        print(cd.keys())
         if batch_size is not None and num_samples > batch_size:
             N = num_samples // batch_size + 1
             vals = []
+            vals_base = []
             batches = np.array_split(np.arange(num_samples), N)
             for batch in batches:
                 mix_arg['samples_local'] = cd['samples_local'][batch]
                 mix_arg['coords'] = cd['coords'][batch]
-                vals_batch = self.model.mix_curve(mix_arg).squeeze()
+                mix_arg['angles'] = cd['angles'][batch]
+                mix_arg['radius'] = cd['radius'][batch]
+                mix_arg['rho'] = cd['rho'][batch]
+                mix_arg['rho_n'] = cd['rho_n'][batch]
+                vals_batch, vals_base_batch = self.model.mix_curve(mix_arg)
+                vals_batch = vals_batch.squeeze()
+                vals_base_batch = vals_base_batch.squeeze()
+                
                 vals.append(vals_batch.detach().cpu().numpy())
+                vals_base.append(vals_base_batch.detach().cpu().numpy())
 
-            return np.concatenate(vals)
+            return np.concatenate(vals), np.concatenate(vals_base)
         else:
             mix_arg['samples_local'] = cd['samples_local']
             mix_arg['coords'] = cd['coords']
-            vals = self.model.mix_curve(mix_arg).squeeze()
-            return vals.detach().cpu().numpy()
+            mix_arg['angles'] = cd['angles']
+            mix_arg['radius'] = cd['radius']
+            mix_arg['rho'] = cd['rho']
+            mix_arg['rho_n'] = cd['rho_n']
+            vals, vals_base = self.model.mix_curve(mix_arg)
+            vals = vals.squeeze()
+            vals_base = vals_base.squeeze()
+            return vals.detach().cpu().numpy(), vals_base.detach().cpu().numpy()
 
 
     def shape_repose(self, arg):
@@ -240,6 +265,7 @@ class Agent():
                     continue
 
                 temp_grid = utils.create_grid_like(mc_grid)
+                temp_grid_base = utils.create_grid_like(mc_grid)
                 #context_input = self.model_input[shape_name]
 
                 for curve in handle.curves:
@@ -258,14 +284,21 @@ class Agent():
                     #trimesh.Trimesh(vertices=context_data['samples'].numpy(), process=False).export(shape_name+'_'+curve.name+'context.ply')
                     
                     #vals = self.__inference_vals(curve_data, context_data, key, batch_size=batch_size)
-                    vals = self.__inference_vals(curve_data, key, batch_size=batch_size)
+                    vals, vals_base = self.__inference_vals(curve_data, key, batch_size=batch_size)
                     temp_grid.update_grid(vals, kidx, mode='minimum')
+                    temp_grid_base.update_grid(vals_base, kidx, mode='minimum')
                 
                 mesh = temp_grid.extract_mesh()
                 mesh_file = op.join(output_folder, shape_name, f'{shape_name}_{checkpoint}_mesh{reso}.ply')
                 os.makedirs(op.dirname(mesh_file), exist_ok=True)
                 mesh.export(mesh_file)
                 temp_grid = None
+
+                mesh = temp_grid_base.extract_mesh()
+                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_base_{checkpoint}_mesh{reso}.ply')
+                os.makedirs(op.dirname(mesh_file), exist_ok=True)
+                mesh.export(mesh_file)
+                temp_grid_base = None
 
                 # gt_file = op.join(data_root, shape_name, 'mesh.ply')
                 # err = utils.eval_shape(mesh_file, gt_file)
@@ -401,6 +434,127 @@ class Agent():
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
 
+    def phi_curve(self, curve_handle, curve_key, X_world, batch_size=65536):
+        # X_world: (N,3) numpy float32
+        curve_data, inside = curve_handle.core.localize_samples(X_world)
+
+        # IMPORTANT: localize_samples returns `inside` indices into the original X_world
+        # curve_data already corresponds to those inside points, in the same order.
+        vals, _ = self.__inference_vals(curve_data, curve_key, batch_size=batch_size)
+
+        # fill full array; outside points treated as "far outside"
+        out = np.full((X_world.shape[0],), 10.0, dtype=np.float32)  # large positive
+        out[inside] = vals.reshape(-1)
+        return out
+
+    def phi_and_grad_curve(self, curve_handle, curve_key, X, h=1e-3, batch_size=65536):
+        f0 = self.phi_curve(curve_handle, curve_key, X, batch_size=batch_size)
+        grads = np.zeros_like(X, dtype=np.float32)
+        for i in range(3):
+            e = np.zeros((1,3), dtype=np.float32)
+            e[0,i] = h
+            fp = self.phi_curve(curve_handle, curve_key, X + e, batch_size=batch_size)
+            fm = self.phi_curve(curve_handle, curve_key, X - e, batch_size=batch_size)
+            grads[:,i] = (fp - fm) / (2*h)
+        n = np.linalg.norm(grads, axis=1, keepdims=True) + 1e-12
+        grads /= n
+        return f0, grads
+
+    @torch.no_grad()
+    def action_part_adapt(self, arg):
+        output_folder = arg['output_folder']
+        exp_name = arg['exp_name']
+        mc_grid = arg['mc_grid']
+        shape_name = arg['shape']
+        config = utils.load_yaml_file(arg['adapt_file'])
+
+        data_root = arg['data_root']
+        handle = self.load_shape_handle(data_root, shape_name)
+        # out_name = exp_name
+        out_name = f'{shape_name}_{exp_name}'
+
+        batch_size = 64**3
+        for curve in handle.curves:
+            key = self.encode_key(shape_name, curve.name)
+            print(key)
+
+            if key in config:
+                adapt_config = config[key]
+                accessory_key = adapt_config['accessory_key']
+
+                if accessory_key == 'None':
+                    continue
+                
+                accessory_curve_handle = self.curve_from_key(accessory_key)
+                adapt_arg = {
+                    'accessory_curve_handle': accessory_curve_handle,
+                    'avatar_curve_handle': curve,
+                    'device': self.device,
+                    'avatar_curve_idx': self.feat_dict[key],
+                    'accessory_curve_idx': self.feat_dict[accessory_key],
+                }
+
+                accessory_data, avatar_data, kidx = curve.filter_grid_adapt(mc_grid, adapt_arg)
+                acc_vals, acc_vals_base = self.__inference_vals(accessory_data, accessory_key, batch_size=batch_size)
+                avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
+                #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
+                #vals = np.minimum(avatar_vals, acc_vals - 1e-1)
+                delta = 0.01  # boot outward
+                gap   = 0.01  # required clearance above leg
+
+                acc_grid = utils.create_grid_like(mc_grid)
+                acc_grid.clear_grid(val=10.0)
+                acc_grid.update_grid(acc_vals, kidx, mode="overwrite")
+                mesh_acc = acc_grid.extract_mesh()
+                mesh_acc.export(op.join(output_folder, f"acc_vals.ply"))
+
+                acc_delta = acc_vals - delta
+                outside_avatar_offset = (gap - avatar_vals)   # == gap - avatar_vals
+
+                acc_grid.clear_grid(val=10.0)
+                acc_grid.update_grid(acc_delta, kidx, mode="overwrite")
+                mesh_acc = acc_grid.extract_mesh()
+                mesh_acc.export(op.join(output_folder, f"acc_delta_vals.ply"))
+
+                acc_clipped = np.maximum(acc_delta, outside_avatar_offset)
+
+                acc_grid.clear_grid(val=10.0)
+                acc_grid.update_grid(acc_clipped, kidx, mode="overwrite")
+                mesh_acc = acc_grid.extract_mesh()
+                mesh_acc.export(op.join(output_folder, f"acc_clipped_vals.ply"))
+
+                vals = np.minimum(avatar_vals, acc_clipped)  # if you want both leg+boot
+                # or just boot_clipped if you want boot surface only
+                #vals = np.minimum(avatar_vals, acc_vals - 0.01)
+                print("acc  min/max", acc_vals.min(), acc_vals.max())
+                print("leg  min/max", avatar_vals.min(), avatar_vals.max())
+                print("mix  min/max", vals.min(), vals.max())
+                #vals = avatar_vals
+                acc_vertices = mesh_acc.vertices
+
+                for it in range(10):
+                    d, n = self.phi_and_grad_curve(curve, key, acc_vertices, h=1e-3)
+                    print("d min/max", d.min(), d.max())
+                    pen = gap - d
+                    mask = pen > 0
+                    if not np.any(mask):
+                        break
+                    
+                    acc_vertices[mask] += (pen[mask][:,None]) * n[mask]
+                    # optional: constrained smoothing step here
+                mesh_acc.vertices = acc_vertices
+                mesh_acc.export(op.join(output_folder, f"fixed.ply"))
+
+            else:
+                curve_data, kidx = curve.filter_grid(mc_grid)
+                vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
+
+            mc_grid.update_grid(vals, kidx, mode='minimum')
+
+        mesh = mc_grid.extract_mesh()
+        mesh_file = op.join(output_folder, f'{out_name}.ply')
+        os.makedirs(op.dirname(mesh_file), exist_ok=True)
+        mesh.export(mesh_file)
 
     @torch.no_grad()
     def action_part_mixing(self, arg):
@@ -413,11 +567,12 @@ class Agent():
         data_root = arg['data_root']
         handle = self.load_shape_handle(data_root, shape_name)
         # out_name = exp_name
-        out_name = f'{exp_name}_{shape_name}'
+        out_name = f'{shape_name}_{exp_name}'
 
         batch_size = 64**3
         for curve in handle.curves:
             key = self.encode_key(shape_name, curve.name)
+            print(key)
 
             if key in config:
                 mix_config = config[key]
@@ -439,10 +594,10 @@ class Agent():
                 }
 
                 curve_data, kidx = curve.filter_grid_mix(mc_grid, mix_arg)
-                vals = self.__mix_inference(curve_data, mix_arg, batch_size)
+                vals, vals_base = self.__mix_inference(curve_data, mix_arg, batch_size)
             else:
                 curve_data, kidx = curve.filter_grid(mc_grid)
-                vals = self.__inference_vals(curve_data, key, batch_size)
+                vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
 
             mc_grid.update_grid(vals, kidx, mode='minimum')
 

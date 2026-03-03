@@ -7,8 +7,8 @@ root_handle="${root}/${dir_name}/handle"
 
 python3 main_preprocess.py \
 	--name "${arg_name}" \
-	--skel_file "${root}/${dir_name}/${arg_name}-skel-poly.polylines.txt" \
-	--corres_file "${root}/${dir_name}/${arg_name}-correspondence-poly.polylines.txt"\
+	--skel_file "${root}/${dir_name}/${arg_name}_skel-poly.polylines.txt" \
+	--corres_file "${root}/${dir_name}/${arg_name}_correspondence-poly.polylines.txt"\
 	--mesh_path "${root}/${dir_name}/${arg_name}.ply"
 #python3 skeleton.py \
 #	--name "$arg_name" \

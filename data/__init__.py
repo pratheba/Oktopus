@@ -13,7 +13,7 @@ def get_dataset(dataset_name):
     return None
 
 def get_dataloader(opt, dataset_mode='train'):
-    if dataset_mode not in ['train', 'test', 'val', 'inference']:
+    if dataset_mode not in ['train', 'test', 'val', 'all', 'inference']:
         raise NotImplementedError
 
     DatasetType = get_dataset(opt['type'])

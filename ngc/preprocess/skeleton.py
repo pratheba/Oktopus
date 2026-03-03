@@ -37,27 +37,6 @@ class Skeleton():
     def get_keyframe_with_radius(self):
         self.SkeletalSegments.keyframe_radius()
 
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def getSegments(self):
         self.segments = _skeletal_segments.get_segments(self.skel_file)
 

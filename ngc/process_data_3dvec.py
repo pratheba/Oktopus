@@ -1,6 +1,7 @@
 import os, pickle
 import numpy as np
 import trimesh
+import copy
 import os.path as op
 import pymeshlab as ml
 from time import time
@@ -115,6 +116,48 @@ def split_train_test(num_surface, num_space, num_on_surface):
 
     return surface_train_ids, surface_val_ids, on_surface_train_ids, on_surface_val_ids, space_train_ids, space_val_ids
 
+def get_samples(mesh_filei, n_surface_samples):
+    on_surface_samples, surface_samples = meshlab_shape_sampling(
+        mesh_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
+    )
+
+    space_samples = meshlab_volumetric_sampling(
+        handle_mesh_file, n_space_samples
+    )
+    ########### ON SURFACE DATA ###################################
+    on_surface_data = handle.prepare_samples(on_surface_samples)
+    on_surface_sdf = np.zeros(on_surface_data['samples'].shape[0])
+    on_surface_data['sdf'] = on_surface_sdf
+    on_surface_base_sdf = meshlab_SDF_eval(shape_base_file, on_surface_data['samples'])
+    on_surface_residual_sdf = on_surface_sdf - on_surface_base_sdf
+    #on_surface_base_sdf = 
+    #on_surface_base_data['sdf'] = on_surface_base_sdf
+    #on_surface_residual_data['sdf'] = on_surface_sdf - on_surface_base_sdf
+    #on_surface_base_data = copy.deepcopy(on_surface_data)
+
+    ########### OFF SURFACE DATA ###################################
+    surface_data = handle.prepare_samples(surface_samples)
+    surface_base_data = copy.deepcopy(surface_data)
+    surface_residual_data = copy.deepcopy(surface_data)
+
+    surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
+    surface_data['sdf'] = surface_sdf
+    surface_base_sdf = meshlab_SDF_eval(shape_base_file, surface_data['samples'])
+    surface_residual_sdf = surface_sdf - surface_base_sdf
+    #surface_base_data['sdf'] = surface_base_sdf
+    #surface_residual_data['sdf'] = surface_sdf - surface_base_sdf
+    #surface_base_data = copy.deepcopy(surface_data)
+
+    ########### SPACE DATA ###################################
+    space_data = handle.prepare_samples(space_samples)
+    #space_base_data = copy.deepcopy(space_data)
+    #space_residual_data = copy.deepcopy(space_data)
+
+    space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
+    space_data['sdf'] = space_sdf
+    space_base_sdf = meshlab_SDF_eval(shape_base_file, space_data['samples'])
+    space_residual_sdf = space_sdf - space_base_sdf
+
 def ngc_dataset(arg):
     root_path = arg['root_path']
     file_name = arg['file_name']
@@ -129,6 +172,8 @@ def ngc_dataset(arg):
         for name in items:
             item_path = op.join(root_path, f'{name}')
             shape_file = op.join(item_path, 'mesh.ply')
+            shape_base_file = op.join(item_path, 'mesh_base.ply')
+            #residual_shape_file = get_residual_mesh(shape_file, base_shape_file)
             handle_path = op.join(item_path, 'handle')
             handle_file = op.join(handle_path, 'std_handle.pkl')
             handle_mesh_file = op.join(handle_path, 'std_mesh.ply')
@@ -167,23 +212,45 @@ def ngc_dataset(arg):
             # space_samples = bbox_volumetric_sampling(
             #     handle_mesh_file, n_space_samples
             # )
-
+            ########### ON SURFACE DATA ###################################
             on_surface_data = handle.prepare_samples(on_surface_samples)
-            print(on_surface_data.keys())
+            #on_surface_base_data = copy.deepcopy(on_surface_data)
+            #on_surface_residual_data = copy.deepcopy(on_surface_data)
+
             on_surface_sdf = np.zeros(on_surface_data['samples'].shape[0])
             on_surface_data['sdf'] = on_surface_sdf
+            on_surface_base_sdf = meshlab_SDF_eval(shape_base_file, on_surface_data['samples'])
+            on_surface_residual_sdf = on_surface_sdf - on_surface_base_sdf
+            #on_surface_base_sdf = 
+            #on_surface_base_data['sdf'] = on_surface_base_sdf
+            #on_surface_residual_data['sdf'] = on_surface_sdf - on_surface_base_sdf
+            #on_surface_base_data = copy.deepcopy(on_surface_data)
 
+            ########### OFF SURFACE DATA ###################################
             surface_data = handle.prepare_samples(surface_samples)
+            surface_base_data = copy.deepcopy(surface_data)
+            surface_residual_data = copy.deepcopy(surface_data)
+
             surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
             surface_data['sdf'] = surface_sdf
+            surface_base_sdf = meshlab_SDF_eval(shape_base_file, surface_data['samples'])
+            surface_residual_sdf = surface_sdf - surface_base_sdf
+            #surface_base_data['sdf'] = surface_base_sdf
+            #surface_residual_data['sdf'] = surface_sdf - surface_base_sdf
+            #surface_base_data = copy.deepcopy(surface_data)
 
+            ########### SPACE DATA ###################################
             space_data = handle.prepare_samples(space_samples)
+            #space_base_data = copy.deepcopy(space_data)
+            #space_residual_data = copy.deepcopy(space_data)
+
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
-            #truncate_sdf = np.where(space_sdf > 0.1)[0]
-            #space_sdf[truncate_sdf] = 0.1
-            #truncate_sdf = np.where(space_sdf < -0.1)[0]
-            #space_sdf[truncate_sdf] = -0.1
             space_data['sdf'] = space_sdf
+            space_base_sdf = meshlab_SDF_eval(shape_base_file, space_data['samples'])
+            space_residual_sdf = space_sdf - space_base_sdf
+            #space_base_data['sdf'] = space_base_sdf
+            #space_residual_data['sdf'] = space_sdf - space_base_sdf
+            #space_base_data = copy.deepcopy(space_data)
 
             surface_train_ids, surface_val_ids, \
                     on_surface_train_ids, on_surface_val_ids, \
@@ -226,6 +293,12 @@ def ngc_dataset(arg):
                 'on_surface': val_on_surface_data
             }
             all_data = {
+                'base_surface_sdf': surface_base_sdf,
+                'base_space_sdf': space_base_sdf,
+                'base_on_surface_sdf': on_surface_base_sdf,
+                'residual_surface_sdf': surface_residual_sdf,
+                'residual_space_sdf': space_residual_sdf,
+                'residual_on_surface_sdf': on_surface_residual_sdf,
                 'surface': surface_data,
                 'space': space_data,
                 'on_surface': on_surface_data

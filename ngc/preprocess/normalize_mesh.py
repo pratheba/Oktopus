@@ -30,6 +30,7 @@ def rescale_to_unitBB(input_mesh, output_folder, fname):
     radius = np.max(diff)/2.0
     normalized_vertices = centered_vertices / radius
 
+    os.makedirs(output_folder, exist_ok=True)
     outmesh = os.path.join(output_folder, fname+'.ply')
     trimesh.Trimesh(vertices = normalized_vertices, faces = mesh.faces, process=False).export(outmesh)
     outmesh = os.path.join(output_folder, fname+'.off')

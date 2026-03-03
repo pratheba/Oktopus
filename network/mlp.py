@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.nn.utils import spectral_norm
 
 from activation import *
 from pos_encoding_fromokto import *
@@ -31,6 +32,7 @@ class MLP(nn.Module):
             self.fc_layers.append(pos_encoder)
 
         for i in range(self.num_layer):
+            #fc = spectral_norm(nn.Linear(
             fc = nn.Linear(
                 size[i], size[i+1], bias=self.bias)
             self.fc_layers.append(fc)

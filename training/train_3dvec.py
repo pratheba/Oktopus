@@ -23,23 +23,27 @@ class Trainer:
 
     def initialize(self):
         ### Train Dataset
-        self.train_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='train')
+        #self.train_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='train')
+        self.train_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='all')
         #opt['training']['train_dataloader'] = train_dataloader
-        self.val_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='val')
+        #self.val_dataloader = data.get_dataloader(self.opt['dataset'], dataset_mode='val')
         #opt['training']['val_dataloader'] = val_dataloader
 
         ### define model
-        self.model = network.define_model(self.opt['model'])
+        self.E0 = self.opt['training']['phase_schedule']['base_only_end']
+        self.E1 = self.opt['training']['phase_schedule']['detail_only_end']
+        self.model = network.define_model(self.opt['model'], self.opt['training']['phase_schedule'])
         if self.opt['training']['resume']:
             print("resuming")
-            checkpoint_path = self.opt['training']['resume_data']['checkpoint_path']
+            #checkpoint_path = self.opt['training']['resume_data']['checkpoint_path']
+            checkpoint_path = self.opt['logging_root']
             checkpoint = self.opt['training']['resume_data']['checkpoint']
             self.model = load_model(self.model, self.device, checkpoint_path, checkpoint)
         self.model.to(self.device)
 
         ### define loss
         self.train_loss_fn = config_loss(self.opt['loss']) 
-        self.val_loss_fn = config_loss(self.opt['val_loss'])
+        #self.val_loss_fn = config_loss(self.opt['val_loss'])
 
     def set_requires_grad(self, params, flag: bool):
         for p in params:
@@ -70,25 +74,38 @@ class Trainer:
         best_train_loss = np.inf
 
         train_dataloader = self.train_dataloader
-        val_dataloader = self.val_dataloader
+        #val_dataloader = self.val_dataloader
 
         opt = opt['training']
 
         #num_epochs = opt['training']['num_epochs']
         #print(self.model.model_dict())
-        E0, E1 = 2000, 4500
+        #E0, E1 = 2000, 4500
+        reset_epoch = 12000
+        reset_count = 0
 
         with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
             for epoch in range(opt.num_epochs):
                 if not epoch % opt.epochs_til_ckpt and epoch:
                     #print(self.model.state_dict())
                     #exit()
-                    save_checkpoint(self, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
-                if epoch < E0:
+                    current_base_lr = self.optim_base.param_groups[0]['lr']
+                    current_detail_lr = self.optim_detail.param_groups[0]['lr']
+                    save_checkpoint(self, best_train_epoch, best_train_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % epoch))
+                #if epoch == self.E0:
+                    #return
+                if (epoch + 1) % reset_epoch == 0:
+                    reset_count += 1
+                    #reset_epoch += int(reset_epoch/2)
+                    self.optim_base.param_groups[0]['lr'] = self.opt['training']['optim_base']['lr']*(0.5/reset_count)
+                    self.optim_detail.param_groups[0]['lr'] = self.opt['training']['optim_detail']['lr']*(0.5/reset_count)
+   
+
+                if epoch < self.E0:
                     # base-only
                     self.set_requires_grad(self.model.base_parameters(), True)
                     self.set_requires_grad(self.model.detail_parameters(), False)
-                elif epoch < E1:
+                elif epoch < self.E1:
                     # detail-only (freeze base)
                     self.set_requires_grad(self.model.base_parameters(), False)
                     self.set_requires_grad(self.model.detail_parameters(), True)
@@ -120,7 +137,7 @@ class Trainer:
                     #exit()
                     model_output = self.model(model_input, epoch)
 
-                    losses = self.train_loss_fn(model_output, gt, epoch=epoch, E0=E0, E1=E1)
+                    losses = self.train_loss_fn(model_output, gt, epoch=epoch, E0=self.E0, E1=self.E1)
 
                     train_loss = 0.
                     for loss_name, loss in losses.items():
@@ -142,9 +159,9 @@ class Trainer:
                             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.)
                         else:
                             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=opt.clip_grad)
-                    if epoch < E0:
+                    if epoch < self.E0:
                         self.optim_base.step()
-                    elif epoch < E1:
+                    elif epoch < self.E1:
                         self.optim_detail.step()
                     else:
                         self.optim_base.step()
@@ -164,7 +181,7 @@ class Trainer:
                     if best_train_loss >= epoch_train_loss:
                         best_train_loss = epoch_train_loss
                         best_train_epoch = epoch
-                        save_checkpoint(self, best_train_epoch, best_train_loss, os.path.join(checkpoints_dir, 'best_model_train.pth'))
+                        save_checkpoint(self, best_train_epoch, best_train_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'best_model_train.pth'))
 
                     if not total_steps % opt.steps_til_summary:
                         message = "Epoch train {}|Iter:{}, Loss {:0.4f}, B_Lr {:0.8f}, D_Lr {:0.8f}\n".format(
@@ -181,9 +198,9 @@ class Trainer:
                 # -----------------------
                 vals = {}
                 if opt.val_type == 'None':
-                    if epoch < E0:
+                    if epoch < self.E0:
                         self.scheduler_base.step(epoch_train_loss)
-                    elif epoch < E1:
+                    elif epoch < self.E1:
                         self.scheduler_detail.step(epoch_train_loss)
                     else:
                         self.scheduler_base.step(epoch_train_loss)
@@ -225,7 +242,7 @@ class Trainer:
                     if best_val_loss >= epoch_val_loss:
                         best_val_loss = epoch_val_loss
                         best_val_epoch = epoch
-                        save_checkpoint(self, best_val_epoch, best_val_loss, os.path.join(checkpoints_dir, 'best_model_eval.pth'))
+                        save_checkpoint(self, best_val_epoch, best_val_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'best_model_eval.pth'))
 
                     #scheduler.step(curr_epoch_loss)
                     if not total_steps % opt.steps_til_summary:
@@ -236,7 +253,7 @@ class Trainer:
                 self.model.train()
 
             # TODO:final evaluation
-            save_checkpoint(self, epoch, epoch_train_loss, os.path.join(checkpoints_dir, 'model_final.pth'))
+            save_checkpoint(self, epoch, epoch_train_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'model_final.pth'))
         
 
 def optimize_code(opt, model):

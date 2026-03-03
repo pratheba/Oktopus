@@ -10,9 +10,9 @@ import model_withgrid as model
 #import model3dvec as model
 
 
-def define_model(opt):
-    if hasattr(model, opt['type']):
-        return getattr(model, opt['type'])(opt)
+def define_model(opt_model, opt_train):
+    if hasattr(model, opt_model['type']):
+        return getattr(model, opt_model['type'])(opt_model, opt_train)
 
     return None
 

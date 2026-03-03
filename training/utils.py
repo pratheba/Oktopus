@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 
-def save_checkpoint(self, epoch, loss, filename):
+def save_checkpoint(self, epoch, loss, base_lr, detail_lr, filename):
         #print("self model = ", self.model)
         model_dict = {}
         model_dict['model'] = self.model.state_dict()
@@ -10,6 +10,8 @@ def save_checkpoint(self, epoch, loss, filename):
         model_dict['optimizer_detail'] = self.optim_detail.state_dict()
         model_dict['scheduler_base'] = self.scheduler_base.state_dict()
         model_dict['scheduler_detail'] = self.scheduler_detail.state_dict()
+        model_dict['lr_base'] = base_lr 
+        model_dict['lr_detail'] = detail_lr 
         model_dict['epoch'] = epoch
         model_dict['loss'] = loss
         #if withval:
@@ -22,33 +24,61 @@ def load_model(model, device, checkpoint_path, checkpoint='final'):
 
     if checkpoint == 'final' or checkpoint == 'post':
         ckpt_name = f'model_{checkpoint}.pth'
+    elif checkpoint == 'train':
+        ckpt_name = f'best_model_{checkpoint}.pth'
     else:
         #ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
         ckpt_name = checkpoint 
 
-    checkpoint_path = os.path.join(checkpoint_path, f'checkpoints/{ckpt_name}')
+    checkpoint_path = os.path.join(checkpoint_path, 'train', f'checkpoints/{ckpt_name}')
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model'], strict=False)
     return model
 
 
 def get_optimizer(opt, model):
-    p = opt.optim_base
+    op_base = opt.optim_base
+    op_detail = opt.optim_detail
     res = {}
-    if p.type == 'Adam':
+    decay, no_decay = [], []
+    for name, p in model.named_base_parameters():
+        if not p.requires_grad:
+            continue
+
+        # never decay biases
+        if name.endswith(".bias"):
+            no_decay.append(p)
+            continue
+
+        # never decay grid tensors (use TV/seam instead)
+        if "base_grid_curve" in name or ".grid" in name or ".grids" in name:
+            no_decay.append(p)
+            continue
+
+        # decay only FiLM + decoder (usually the best)
+        if name.startswith("filmenc_base") or name.startswith("decoder_base"):
+            decay.append(p)
+        else:
+            no_decay.append(p)  # embeddings/encoder typically don't need decay
+
+
+    if op_base.type == 'Adam':
         optim_base = torch.optim.Adam(params=model.base_parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
+                lr=op_base.lr, betas=(op_base.beta1, op_base.beta2), amsgrad=op_base.amsgrad)
+    elif op_base.type == 'AdamW':
+        optim_base = torch.optim.AdamW([{"params": decay, "weight_decay": 1e-4},
+         {"params": no_decay, "weight_decay": 0.0}],lr=op_base.lr, betas=(op_base.beta1, op_base.beta2), amsgrad=op_base.amsgrad)
+    elif op_base.type == 'SGD':
+        optim_base = torch.optim.SGD(model.base_parameters(), lr=op_base.lr, momentum=op_base.momentum)
+
+    if op_detail.type == 'Adam':
         optim_detail = torch.optim.Adam(params=model.detail_parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-    elif p.type == 'AdamW':
-        #optim =  torch.optim.AdamW(params=model.parameters(), 
-        #        lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-        optim_base = torch.optim.AdamW(params=model.base_parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-        optim_detail = torch.optim.AdamW(params=model.detail_parameters(), 
-                lr=p.lr, betas=(p.beta1, p.beta2), amsgrad=p.amsgrad)
-    elif p.type == 'SGD':
-        optim = torch.optim.SGD(model.parameters(), lr=p.lr, momentum=p.momentum)
+                lr=op_detail.lr, betas=(op_detail.beta1, op_detail.beta2), amsgrad=op_detail.amsgrad)
+    elif op_detail.type == 'AdamW':
+        optim_detail = torch.optim.AdamW([{"params": decay, "weight_decay": 1e-4}, 
+         {"params": no_decay, "weight_decay": 0.0}],lr=op_detail.lr, betas=(op_detail.beta1, op_detail.beta2), amsgrad=op_detail.amsgrad)
+    elif op_detail.type == 'SGD':
+        optim_detail = torch.optim.SGD(model.parameters(), lr=op_detail.lr, momentum=op_detail.momentum)
     else:
         raise NotImplementedError('Not implemented optimizer type')
     res['optimizer_base'] = optim_base
@@ -57,16 +87,16 @@ def get_optimizer(opt, model):
     res['epoch_lr_base'] = None
     res['epoch_lr_detail'] = None
     res['step_lr'] = None
-    if p.lr_scheduler:
-        if p.lr_scheduler == 'MultiStep':
-            lr_sch = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=p.milestones, gamma=p.gamma)
+    if op_base.lr_scheduler:
+        if op_base.lr_scheduler == 'MultiStep':
+            lr_sch = torch.optim.lr_scheduler.MultiStepLR(optim, milestones=op_base.milestones, gamma=op_base.gamma)
             res['epoch_lr'] = lr_sch
-        elif p.lr_scheduler == 'ROP':
-            lr_sch_base = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_base, factor=p.factor, patience=p.patience)
+        elif op_base.lr_scheduler == 'ROP':
+            lr_sch_base = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_base, factor=op_base.factor, patience=op_base.patience)
             res['epoch_lr_base'] = lr_sch_base
-            lr_sch_detail = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_detail, factor=p.factor, patience=p.patience)
+            lr_sch_detail = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_detail, factor=op_detail.factor, patience=op_detail.patience)
             res['epoch_lr_detail'] = lr_sch_detail
-        elif p.lr_scheduler == 'CLR':
+        elif op_base.lr_scheduler == 'CLR':
             lr_sch = torch.optim.lr_scheduler.CyclicLR(optim, base_lr=p.base_lr, max_lr=p.max_lr, step_size_up=p.step)
             res['step_lr'] = lr_sch
         else:
