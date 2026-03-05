@@ -171,7 +171,7 @@ def ngc_dataset(arg):
     with tqdm(total=len(items)) as pbar:
         for name in items:
             item_path = op.join(root_path, f'{name}')
-            shape_file = op.join(item_path, 'mesh_base.ply')
+            shape_file = op.join(item_path, 'mesh.ply')
             shape_base_file = op.join(item_path, 'mesh_base.ply')
             #residual_shape_file = get_residual_mesh(shape_file, base_shape_file)
             handle_path = op.join(item_path, 'handle')
@@ -199,27 +199,26 @@ def ngc_dataset(arg):
             if not op.exists(handle_mesh_file):
                 export_handle_data(handle, output_path, handle_path)
 
-            on_surface_samples, surface_samples = meshlab_shape_sampling(
-                shape_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
-            )
-
-            #surface_samples = meshlab_shape_sampling(
-            #    shape_file, n_surface_samples, [0.01]
+            #on_surface_samples, surface_samples = meshlab_shape_sampling(
+            #    shape_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
             #)
             space_samples = meshlab_volumetric_sampling(
                 handle_mesh_file, n_space_samples
             )
-            # space_samples = bbox_volumetric_sampling(
-            #     handle_mesh_file, n_space_samples
-            # )
+            on_surface_base_samples, surface_base_samples = meshlab_shape_sampling(
+                shape_base_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
+            )
             ########### ON SURFACE DATA ###################################
-            on_surface_data = handle.prepare_samples(on_surface_samples)
-            #on_surface_base_data = copy.deepcopy(on_surface_data)
-            #on_surface_residual_data = copy.deepcopy(on_surface_data)
+            #on_surface_data = handle.prepare_samples(on_surface_samples)
+            #on_surface_sdf = np.zeros(on_surface_data['samples'].shape[0])
+            #on_surface_data['sdf'] = on_surface_sdf
+            on_surface_base_data = handle.prepare_samples(on_surface_base_samples)
+            on_surface_base_sdf = np.zeros(on_surface_base_data['samples'].shape[0])
+            on_surface_base_data['sdf'] = on_surface_base_sdf
 
-            on_surface_sdf = np.zeros(on_surface_data['samples'].shape[0])
-            on_surface_data['sdf'] = on_surface_sdf
-            on_surface_base_sdf = meshlab_SDF_eval(shape_base_file, on_surface_data['samples'])
+            #on_surface_base_sdf = meshlab_SDF_eval(shape_base_file, on_surface_data['samples'])
+            on_surface_sdf = meshlab_SDF_eval(shape_file, on_surface_base_data['samples'])
+            #on_surface_data['sdf'] = on_surface_sdf
             on_surface_residual_sdf = on_surface_sdf - on_surface_base_sdf
             #on_surface_base_sdf = 
             #on_surface_base_data['sdf'] = on_surface_base_sdf
@@ -227,15 +226,15 @@ def ngc_dataset(arg):
             #on_surface_base_data = copy.deepcopy(on_surface_data)
 
             ########### OFF SURFACE DATA ###################################
-            surface_data = handle.prepare_samples(surface_samples)
-            #surface_base_data = copy.deepcopy(surface_data)
-            #surface_residual_data = copy.deepcopy(surface_data)
+            surface_base_data = handle.prepare_samples(surface_base_samples)
+            #surface_data = handle.prepare_samples(surface_samples)
 
-            surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
-            surface_data['sdf'] = surface_sdf
-            surface_base_sdf = meshlab_SDF_eval(shape_base_file, surface_data['samples'])
+            #surface_sdf = meshlab_SDF_eval(shape_file, surface_data['samples'])
+            surface_sdf = meshlab_SDF_eval(shape_file, surface_base_data['samples'])
+            #surface_data['sdf'] = surface_sdf
+            surface_base_sdf = meshlab_SDF_eval(shape_base_file, surface_base_data['samples'])
             surface_residual_sdf = surface_sdf - surface_base_sdf
-            #surface_base_data['sdf'] = surface_base_sdf
+            surface_base_data['sdf'] = surface_base_sdf
             #surface_residual_data['sdf'] = surface_sdf - surface_base_sdf
             #surface_base_data = copy.deepcopy(surface_data)
 
@@ -245,53 +244,53 @@ def ngc_dataset(arg):
             #space_residual_data = copy.deepcopy(space_data)
 
             space_sdf = meshlab_SDF_eval(shape_file, space_data['samples'])
-            space_data['sdf'] = space_sdf
+            #space_data['sdf'] = space_sdf
             space_base_sdf = meshlab_SDF_eval(shape_base_file, space_data['samples'])
             space_residual_sdf = space_sdf - space_base_sdf
-            #space_base_data['sdf'] = space_base_sdf
+            space_base_data['sdf'] = space_base_sdf
             #space_residual_data['sdf'] = space_sdf - space_base_sdf
             #space_base_data = copy.deepcopy(space_data)
 
-            surface_train_ids, surface_val_ids, \
-                    on_surface_train_ids, on_surface_val_ids, \
-                    space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0], on_surface_data['sdf'].shape[0])
-
-            keys = surface_data.keys()
-
-            train_surface_data = {key:[] for key in keys}
-            val_surface_data = {key:[] for key in keys}
-            train_on_surface_data = {key:[] for key in keys}
-            val_on_surface_data = {key:[] for key in keys}
-            train_space_data = {key:[] for key in keys}
-            val_space_data = {key:[] for key in keys}
-
-
-            ### the whole shape
-            for key in surface_data.keys():
-                if 'part' in key:
-                    continue
-                train_surface_data[key] = surface_data[key][surface_train_ids]
-                val_surface_data[key] = surface_data[key][surface_val_ids]
-
-                train_on_surface_data[key] = on_surface_data[key][on_surface_train_ids]
-                val_on_surface_data[key] = on_surface_data[key][on_surface_val_ids]
-
-                train_space_data[key] = space_data[key][space_train_ids]
-                val_space_data[key] = space_data[key][space_val_ids]
+#            surface_train_ids, surface_val_ids, \
+#                    on_surface_train_ids, on_surface_val_ids, \
+#                    space_train_ids, space_val_ids = split_train_test(surface_data['sdf'].shape[0], space_data['sdf'].shape[0], on_surface_data['sdf'].shape[0])
+#
+#            keys = surface_data.keys()
+#
+#            train_surface_data = {key:[] for key in keys}
+#            val_surface_data = {key:[] for key in keys}
+#            train_on_surface_data = {key:[] for key in keys}
+#            val_on_surface_data = {key:[] for key in keys}
+#            train_space_data = {key:[] for key in keys}
+#            val_space_data = {key:[] for key in keys}
+#
+#
+#            ### the whole shape
+#            for key in surface_data.keys():
+#                if 'part' in key:
+#                    continue
+#                train_surface_data[key] = surface_data[key][surface_train_ids]
+#                val_surface_data[key] = surface_data[key][surface_val_ids]
+#
+#                train_on_surface_data[key] = on_surface_data[key][on_surface_train_ids]
+#                val_on_surface_data[key] = on_surface_data[key][on_surface_val_ids]
+#
+#                train_space_data[key] = space_data[key][space_train_ids]
+#                val_space_data[key] = space_data[key][space_val_ids]
 
 
             #### If we go by parts, then for each part need to split to train and test and do subsampling
 
-            train_data = {
-                'surface': train_surface_data,
-                'space': train_space_data,
-                'on_surface': train_on_surface_data
-            }
-            val_data = {
-                'surface': val_surface_data,
-                'space': val_space_data,
-                'on_surface': val_on_surface_data
-            }
+#            train_data = {
+#                'surface': train_surface_data,
+#                'space': train_space_data,
+#                'on_surface': train_on_surface_data
+#            }
+#            val_data = {
+#                'surface': val_surface_data,
+#                'space': val_space_data,
+#                'on_surface': val_on_surface_data
+#            }
             all_data = {
                 'base_surface_sdf': surface_base_sdf,
                 'base_space_sdf': space_base_sdf,
@@ -299,9 +298,9 @@ def ngc_dataset(arg):
                 'residual_surface_sdf': surface_residual_sdf,
                 'residual_space_sdf': space_residual_sdf,
                 'residual_on_surface_sdf': on_surface_residual_sdf,
-                'surface': surface_data,
-                'space': space_data,
-                'on_surface': on_surface_data
+                'surface': surface_base_data,
+                'space': space_base_data,
+                'on_surface': on_surface_base_data
             }
 
             with open(output_train_file, 'wb') as f:

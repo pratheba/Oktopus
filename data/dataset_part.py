@@ -96,6 +96,9 @@ class NGCDataset(Dataset):
         #print("input_curve_idx = ", input_curve_idx)
         #exit()
 
+        #input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
+        #input2, gt2, sidx2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
+        #input3, gt3, sidx3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
         input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
         input2, gt2, sidx2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
         input3, gt3, sidx3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)

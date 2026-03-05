@@ -264,117 +264,29 @@ class CurveHandle():
         kidx = kidx[inside]
         return accessory_data, avatar_data, kidx
 
-        # calculate the neareast points and find inside points
-        avatar_data, inside = self.core.localize_samples(samples)
-        print(len(kidx))
-        print(len(inside))
-        kidx = kidx[inside]
-        samples = samples[inside]
-        #avatar_data = {k: (v[inside] if hasattr(v, "__len__") and len(v)==len(inside) else v)
-        #      for k,v in avatar_data.items()}
+    def filter_grid_adapt_test(self, mc_grid, adapt_arg):
+        self.core.update_coords()
+        self.core.update_frame()
 
         accessory_curve_handle = adapt_arg['accessory_curve_handle']
-        accessory_curve_handle.core.update_coords()
-        accessory_curve_handle.core.update_frame()
+        acc_coords = self.core.map_coords_to_by_arclen(self.core.key_ts, accessory_curve_handle.core)
 
-        # ---- 3) Map coords_avatar -> coords_boot and repack x channel ----
-        avatar_coords = avatar_data["coords"]                         # avatar coords in [0,1]
-        avatar_samples_local = avatar_data["samples_local"].copy()                 # packed x = w_n + vx_avatar
+        acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
+        tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
+        thetas = (2*np.pi)* np.linspace(0, 1, n_sample_circle, endpoint=False)
+        acc_intpl['thetas'] = thetas
+        cyl_mesh = accessory_curve_handle.__gen_cyl_mesh(acc_intpl)
+        samples, kidx = cyl_mesh.filter_grid(mc_grid)
+        #samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
+        #accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+        accessory_data, inside = accessory_curve_handle.core.localize_samples(samples)
+        kidx = kidx[inside]
 
-        # unpack w_n by removing vx_avatar
-        vx_avatar = 2.0 * avatar_coords - 1.0
-        w_n_avatar = avatar_samples_local[:, 0] - vx_avatar
-        u_n_avatar = avatar_samples_local[:, 1]
-        v_n_avatar = avatar_samples_local[:, 2]
-        rA_y = avatar_data["radius"][:,0]
-        rA_z = avatar_data["radius"][:,1]
-        u_phy_avatar = u_n_avatar * (avatar_data['radius'][:,0])
-        v_phy_avatar = v_n_avatar * (avatar_data['radius'][:,1])
-        tangent_avatar = self.core.calc_x_radius(avatar_coords)          # (N,)
-        w_phy_avatar = w_n_avatar * (tangent_avatar + 1e-12)
-
-
-        # map avatar coords -> boot coords by arclen
-        acc_coords = self.core.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core)
-        # boot radii at mapped coords
-        #boot_intpl = accessory_curve_handle.core.interpolate(acc_coords)
-        #rB_y = boot_intpl["radius"][:, 0]
-        #rB_z = boot_intpl["radius"][:, 1]
-        # 5) choose TARGET radius = (1+eps)*leg radius  (boot worn on top)
-        eps = 0.10
-        rT_y = (1.0 + eps) * rA_y
-        rT_z = (1.0 + eps) * rA_z
-        xB = accessory_curve_handle.core.calc_x_radius(acc_coords)
-
-
-        #scale = (avatar_data["radius"] + 1e-12) / (boot_intpl["radius"] + 1e-12) # (N,2)
-        #u_phys_prime = u_phy_avatar / (scale[:,0]+1e-12)
-        #v_phys_prime = v_phy_avatar / (scale[:,1]+1e-12)
-        # renormalize offsets for boot network
-        #u_n_b = u_phys_prime / (rB_y + 1e-12)
-        #v_n_b = v_phys_prime / (rB_z + 1e-12)
-        #w_n_b = w_phy_avatar / (xB + 1e-12)
-        # 6) normalize into boot_cd using the SAME target radii you will feed
-        #u_n_b = u_phy_avatar / (rT_y + 1e-12)
-        #v_n_b = v_phy_avatar / (rT_z + 1e-12)
-        w_n_b = w_phy_avatar / (xB   + 1e-12)
-
-        #boot_cd["radius"] = boot_intpl["radius"]
-        #boot_cd["radius"]  *= scale         # == r_leg (by construction)
-        #eps = 0.10  # 10% thicker boot
-        #rT_y = (1.0 + eps) * avatar_data["radius"][:,0]
-        #rT_z = (1.0 + eps) * avatar_data["radius"][:,1]
-
-        #u_n_b = u_phy_avatar / (rT_y + 1e-12)
-        #v_n_b = v_phy_avatar / (rT_z + 1e-12)
-        # boot radii at mapped coords
-        boot_intpl = accessory_curve_handle.core.interpolate(acc_coords)
-        rB_y = boot_intpl["radius"][:,0]
-        rB_z = boot_intpl["radius"][:,1]
-        print(rT_y)
-        print(rB_y)
-
-        # desired boot outer radius = (1+eps)*leg radius
-        eps = 0.10
-        rDes_y = (1.0 + eps) * rA_y
-        rDes_z = (1.0 + eps) * rA_z
-
-        alpha_y = rDes_y / (rB_y + 1e-12)
-        alpha_z = rDes_z / (rB_z + 1e-12)
-
-        # warp offsets into boot canonical space
-        u_phys_prime = u_phy_avatar / (alpha_y + 1e-12)
-        v_phys_prime = v_phy_avatar / (alpha_z + 1e-12)
-
-        # normalize using BOOT radii (canonical)
-        u_n_b = u_phys_prime / (rB_y + 1e-12)
-        v_n_b = v_phys_prime / (rB_z + 1e-12)
-
-
-        #boot_cd["radius"] = np.stack([rT_y, rT_z], axis=1)
-        # repack x channel correctly
-        vx_b = 2.0 * acc_coords - 1.0
-        sl_b = np.stack([w_n_b + vx_b, u_n_b, v_n_b], axis=1)
-
-        # recompute consistent polar terms for boot
-        angles_b = np.arctan2(v_n_b, u_n_b)
-        rho_n_b = np.sqrt(u_n_b**2 + v_n_b**2)
-
-        # and physical rho (if you use it anywhere)
-        #rho_b = np.sqrt((u_phy_avatar)**2 + (v_phy_avatar)**2)
-        rho_b = np.sqrt((u_phys_prime)**2 + (v_phys_prime)**2)
-        #rho_b = np.sqrt((u_phys_prime)**2 + (v_phys_prime)**2)
-
-        boot_cd = dict(avatar_data)
-        boot_cd["coords"] = acc_coords
-        boot_cd["samples_local"] = sl_b
-        boot_cd["angles"] = angles_b
-        boot_cd["rho_n"] = rho_n_b
-        boot_cd["rho"] = rho_b
-        boot_cd["radius"] = boot_intpl["radius"]   # <-- keep canonicalV
-
-        return boot_cd, avatar_data, kidx
-
+        avatar_samples, avatar_kidx = self.cyl_mesh.filter_grid(mc_grid)
+        # calculate the neareast points and find inside points
+        avatar_data, avatar_inside = self.core.localize_samples(avatar_samples)
+        
+        return accessory_data, avatar_data, kidx
 
 
     def filter_grid_stretch(self, mc_grid, stretch_arg):
@@ -392,31 +304,10 @@ class CurveHandle():
         cyl_mesh = self.__gen_cyl_mesh(intpl)
         
         samples, kidx = cyl_mesh.filter_grid(mc_grid)
-        #samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
-        #sd1, inside1 = self.core.localize_samples(samples)
-        sd0, inside0 = self.core.localize_samples_stretch(samples, stretch_arg)
-        #print("inside counts:", inside0.shape[0], inside1.shape[0])
-        #print("coords range:", sd0["coords"].min(), sd0["coords"].max(),
-        #            sd1["coords"].min(), sd1["coords"].max())
-        #print("angle range:",  sd0["angles"].min(), sd0["angles"].max(),
-        #            sd1["angles"].min(), sd1["angles"].max())
+        samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
 
-        # Key: compare distributions of normalized coords
-        #print("samples_local mean abs (w,u,v):",
-        #   np.mean(np.abs(sd0["samples_local"]), axis=0),
-        #   np.mean(np.abs(sd1["samples_local"]), axis=0))
-        #exit()
-
-        kidx = kidx[inside0]
-        #kidx = kidx[inside1]
-        #return samples_data, kidx
-        #return sd1, kidx
-        return sd0, kidx
-        #finally:
-        #    return
-        #    self.core.restore_stretch()
-        #    self.core.update_coords()
-        #    self.core.update_frame()
+        kidx = kidx[inside]
+        return samples_data, kidx
 
 
     def calc_cylinder_SDF(self, mc_grid):
@@ -1016,7 +907,8 @@ class PWLACurve():
             'rho': rho[inside_cyl],
             'rho_n': rho_n[inside_cyl],
             'angles': angle[inside_cyl],
-            'radius': yz_radius[inside_cyl]
+            'radius': yz_radius[inside_cyl],
+            'frame_mat': frame_mat[inside_cyl]
             # 'radius': yz_rs[inside_cyl],
         }, inside
     
@@ -1164,7 +1056,6 @@ class PWLACurve():
             return out
 
 
-    #### Self is always accessory here (source)
     def localize_adapt(self, ts, adapt_arg):
         curve_length, cum_length = self.calc_curve_length()
         accessory_arclen = cum_length / (curve_length  + 1e-12)
@@ -1172,6 +1063,8 @@ class PWLACurve():
         avatar_curve_handle = adapt_arg['avatar_curve_handle']
         avatar_curve_length, cum_length = avatar_curve_handle.core.calc_curve_length()
         avatar_arclen = cum_length / (avatar_curve_length + 1e-12)
+
+
 
         acc_arclen_coords = np.interp(ts, self.key_ts, accessory_arclen)
         avatar_arclen_coords = np.interp(acc_arclen_coords, avatar_arclen, avatar_curve_handle.core.key_ts)
@@ -1377,11 +1270,9 @@ class PWLACurve():
         accessory_curve_handle.core.update_coords()
         accessory_curve_handle.core.update_frame()
 
-        # ---- 3) Map coords_avatar -> coords_boot and repack x channel ----
-        avatar_coords = avatar_data["coords"]                         # avatar coords in [0,1]
-        avatar_samples_local = avatar_data["samples_local"].copy()                 # packed x = w_n + vx_avatar
+        avatar_coords = avatar_data["coords"]                         
+        avatar_samples_local = avatar_data["samples_local"].copy()   
 
-        # unpack w_n by removing vx_avatar
         vx_avatar = 2.0 * avatar_coords - 1.0
         w_n_avatar = avatar_samples_local[:, 0] - vx_avatar
         u_n_avatar = avatar_samples_local[:, 1]
@@ -1390,8 +1281,7 @@ class PWLACurve():
         avatar_radius_y = avatar_data["radius"][:,0]
         avatar_radius_z = avatar_data["radius"][:,1]
 
-        # Un normalized world radius of frame
-        tangent_avatar = self.calc_x_radius(avatar_coords)          # (N,)
+        tangent_avatar = self.calc_x_radius(avatar_coords)          
         w_avatar = w_n_avatar * (tangent_avatar + 1e-12)
         u_avatar = u_n_avatar * (avatar_radius_y)
         v_avatar = v_n_avatar * (avatar_radius_z)
@@ -1404,30 +1294,42 @@ class PWLACurve():
         acc_radius_y = acc_intpl["radius"][:,0]
         acc_radius_z = acc_intpl["radius"][:,1]
 
+        u_acc, v_acc = rotate_uv_avatar_to_acc(u_avatar, v_avatar, avatar_data['frame_mat'][:,1], avatar_data['frame_mat'][:,2],  acc_intpl['frame'][:,1], acc_intpl['frame'][:,2])
+
         # desired boot outer radius = (1+eps)*leg radius
-        eps = 0.10
-        final_radius_y = (1.0 + eps) * avatar_radius_y
-        final_radius_z = (1.0 + eps) * avatar_radius_z
+#        eps = 0.10
+#        final_radius_y = (1.0 + eps) * avatar_radius_y
+#        final_radius_z = (1.0 + eps) * avatar_radius_z
+#
+#        alpha_y = final_radius_y / (acc_radius_y + 1e-12)
+#        alpha_z = final_radius_z / (acc_radius_z + 1e-12)
+#
+#        # warp offsets into boot canonical space
+#        u_warp_acc = u_acc / (alpha_y + 1e-12)
+#        v_warp_acc = v_acc / (alpha_z + 1e-12)
+#
+#        # normalize using BOOT radii (canonical)
+#        w_n_acc = w_avatar / (tangent_acc + 1e-12)
+        #u_n_acconly = u_acc / (acc_radius_y + 1e-12)
+        #v_n_acconly = v_acc / (acc_radius_z + 1e-12)
+        #rho_n_acconly = np.sqrt(u_n_acconly**2 + v_n_acconly**2)
+        #gap = 0.01
+        #u_n_acc = u_n_acconly / (rho_n_acconly + gap)
+        #v_n_acc = v_n_acconly / (rho_n_acconly + gap)
 
-        alpha_y = final_radius_y / (acc_radius_y + 1e-12)
-        alpha_z = final_radius_z / (acc_radius_z + 1e-12)
-
-        # warp offsets into boot canonical space
-        u_acc = u_avatar / (alpha_y + 1e-12)
-        v_acc = v_avatar / (alpha_z + 1e-12)
-
-        # normalize using BOOT radii (canonical)
         w_n_acc = w_avatar / (tangent_acc + 1e-12)
-        u_n_acc = u_acc / (acc_radius_y + 1e-12)
-        v_n_acc = v_acc / (acc_radius_z + 1e-12)
+        u_n_acc = u_acc / (1.01*avatar_radius_y + 1e-12)
+        v_n_acc = v_acc / (1.01*avatar_radius_z + 1e-12)
+        #u_n_acc /= 1.01
+        #v_n_acc /= 1.01
 
         vx_acc = 2.0 * acc_coords - 1.0
         samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
 
         # recompute consistent polar terms for boot
+        #angles_acc = np.arctan2(v_n_acconly, u_n_acconly)
         angles_acc = np.arctan2(v_n_acc, u_n_acc)
         rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
-
         rho_acc = np.sqrt((u_acc)**2 + (v_acc)**2)
 
         accessory_data = dict(avatar_data)
@@ -1437,74 +1339,10 @@ class PWLACurve():
         accessory_data["rho_n"] = rho_n_acc
         accessory_data["rho"] = rho_acc
         accessory_data["radius"] = acc_intpl["radius"]   # <-- keep canonicalV
+        accessory_data["frame"] = acc_intpl["frame"]
 
         return accessory_data, avatar_data, inside
 
-        # for stretch or offset 
-        # Project samples from surface onto the curve to get ts - they key points
-        #return self.localize_samples(vs)
-        avatar_curve_handle = adapt_arg['avatar_curve_handle']
-        ts = self.curve_projection(vs)
-        valid_range = np.logical_and(ts >= 0., ts <= 1.)
-
-        sidx = np.arange(vs.shape[0])
-        ts = ts[valid_range]
-        vs = vs[valid_range]
-        sidx = sidx[valid_range]
-
-        # Interpolate the keypoints (points on curve), radius and frame
-        intpl, avatar_intpl, avatar_ts = self.interpolate_adapt(ts, adapt_arg)
-
-        proj_vs = intpl['points']
-        frame_mat = intpl['frame']
-        yz_radius = intpl['radius']
-
-        # Build local coordinate system
-        x_rs = self.calc_x_radius(ts)
-        radius = np.concatenate([x_rs[:,None], yz_radius], axis=1)
-        # frame: (N, 3,3), vs (N, 3)
-        samples_local0 = np.einsum('nij,nj->ni', frame_mat, (vs - proj_vs))
-        w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
-        samples_local = samples_local0.copy()
-        samples_local /= (radius + 1e-12)
-        w_n = samples_local[:,0] # u / (radius[:,1] + 1e-12)
-        u_n = samples_local[:,1] # u / (radius[:,1] + 1e-12)
-        v_n = samples_local[:,2] # v / (radius[:,2] + 1e-12)
-        vx_base = 2.0*ts - 1.0
-        samples_local[:, 0] += vx_base
-
-
-        avatar_radius = avatar_intpl["radius"]     
-        avatar_u_n = u_n * (avatar_radius[:, 0] / (yz_radius[:, 0] + 1e-12))
-        avatar_v_n = v_n * (avatar_radius[:, 1] / (yz_radius[:, 1] + 1e-12))
-        samples_local_avatar_tmp = np.stack([w_n, avatar_u_n, avatar_v_n], axis=1)
-        norms = np.linalg.norm(samples_local_avatar_tmp, axis=1)
-        inside_cyl = norms <= 1.0
-        inside = sidx[inside_cyl]
-
-        vx_avatar = 2.0 * avatar_ts - 1.0
-        samples_local_avatar = samples_local_avatar_tmp.copy()
-        samples_local_avatar[:,0] += vx_avatar
-        source_on_avatar_points = avatar_curve_handle.core.inverse_transform(samples_local_avatar, avatar_ts)
-        trimesh.Trimesh(vertices=source_on_avatar_points, process=False).export('source_on_avatar.ply')
-
-
-        angle = np.arctan2(avatar_v_n, avatar_u_n)
-        rho_n = np.sqrt(avatar_v_n**2 + avatar_u_n**2)
-
-        u_phys_avatar = avatar_u_n * avatar_radius[:,0]
-        v_phys_avatar = avatar_v_n * avatar_radius[:,1]
-        rho = np.sqrt(v_phys_avatar**2 + u_phys_avatar**2)
-
-        return {
-            #'samples': vs[inside_cyl],
-            'samples_local': samples_local_avatar[inside_cyl],
-            'coords': avatar_ts[inside_cyl], 
-            'rho': rho[inside_cyl],
-            'rho_n': rho_n[inside_cyl],
-            'angles': angle[inside_cyl],
-            'radius': avatar_radius[inside_cyl],
-        }, inside
 
     def localize_occ_samples(self, samples):
         ts = self.curve_projection(samples, outside=True)

@@ -148,7 +148,7 @@ class Agent():
             for idx, batch in enumerate(batches):
                 batch_curve_data = {key: val[batch] for key,val in curve_data.items()}
                 batch_curve_data['device'] = self.device
-                print(self.feat_dict[key])
+                #print(self.feat_dict[key])
                 batch_curve_data['curve_idx'] = self.feat_dict[key]
 
                 #r = np.random.choice(num_context_samples, size=2048, replace=False)
@@ -444,21 +444,34 @@ class Agent():
 
         # fill full array; outside points treated as "far outside"
         out = np.full((X_world.shape[0],), 10.0, dtype=np.float32)  # large positive
+        valid = np.zeros((X_world.shape[0],), dtype=bool)
         out[inside] = vals.reshape(-1)
-        return out
+        valid[inside] = True
+        return out, valid
 
     def phi_and_grad_curve(self, curve_handle, curve_key, X, h=1e-3, batch_size=65536):
-        f0 = self.phi_curve(curve_handle, curve_key, X, batch_size=batch_size)
+        f0, v0 = self.phi_curve(curve_handle, curve_key, X, batch_size=batch_size)
         grads = np.zeros_like(X, dtype=np.float32)
+        valid_all = v0.copy()
         for i in range(3):
             e = np.zeros((1,3), dtype=np.float32)
             e[0,i] = h
-            fp = self.phi_curve(curve_handle, curve_key, X + e, batch_size=batch_size)
-            fm = self.phi_curve(curve_handle, curve_key, X - e, batch_size=batch_size)
+            fp, vp = self.phi_curve(curve_handle, curve_key, X + e, batch_size=batch_size)
+            fm, vm = self.phi_curve(curve_handle, curve_key, X - e, batch_size=batch_size)
             grads[:,i] = (fp - fm) / (2*h)
+            valid_all &= vp & vm
+
         n = np.linalg.norm(grads, axis=1, keepdims=True) + 1e-12
-        grads /= n
-        return f0, grads
+        good = valid_all & (n[:,0] > 1e-3)
+
+        grads[good] /= (n[good] + 1e-12)
+
+        # For bad points, set gradient to 0 (caller should not move them)
+        grads[~good] = 0.0
+
+        return f0, grads, good
+        #grads /= n
+        #return f0, grads
 
     @torch.no_grad()
     def action_part_adapt(self, arg):
@@ -496,51 +509,72 @@ class Agent():
 
                 accessory_data, avatar_data, kidx = curve.filter_grid_adapt(mc_grid, adapt_arg)
                 acc_vals, acc_vals_base = self.__inference_vals(accessory_data, accessory_key, batch_size=batch_size)
-                avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
+                #avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
                 #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
-                #vals = np.minimum(avatar_vals, acc_vals - 1e-1)
+                #vals = np.minimum(avatar_vals, acc_vals - 2e-3)
                 delta = 0.01  # boot outward
                 gap   = 0.01  # required clearance above leg
 
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals, kidx, mode="overwrite")
+                acc_grid.update_grid(acc_vals +5e-2, kidx, mode="overwrite")
                 mesh_acc = acc_grid.extract_mesh()
+                mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
                 mesh_acc.export(op.join(output_folder, f"acc_vals.ply"))
 
-                acc_delta = acc_vals - delta
-                outside_avatar_offset = (gap - avatar_vals)   # == gap - avatar_vals
 
-                acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_delta, kidx, mode="overwrite")
-                mesh_acc = acc_grid.extract_mesh()
-                mesh_acc.export(op.join(output_folder, f"acc_delta_vals.ply"))
+                phi, valid = self.phi_curve(curve, key, mesh_acc.vertices)
+                #print(phi[0:100])
+                #print(phi[100:200])
+                #print("d min/max", phi.min(), phi.max())
+                #exit()
 
-                acc_clipped = np.maximum(acc_delta, outside_avatar_offset)
+                avatar_grid = utils.create_grid_like(mc_grid)
+                avatar_grid.clear_grid(val=10.0)
+                avatar_grid.update_grid(avatar_vals  , kidx, mode="overwrite")
+                mesh_avatar = avatar_grid.extract_mesh()
+                mesh_avatar = max(mesh_avatar.split(only_watertight=False), key=lambda m: len(m.faces))
+                mesh_avatar.export(op.join(output_folder, f"avatar_vals.ply"))
 
-                acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_clipped, kidx, mode="overwrite")
-                mesh_acc = acc_grid.extract_mesh()
-                mesh_acc.export(op.join(output_folder, f"acc_clipped_vals.ply"))
+                #acc_delta = acc_vals - delta
+                #outside_avatar_offset = (gap - avatar_vals)   # == gap - avatar_vals
 
-                vals = np.minimum(avatar_vals, acc_clipped)  # if you want both leg+boot
+                #acc_grid.clear_grid(val=10.0)
+                #acc_grid.update_grid(acc_delta, kidx, mode="overwrite")
+                #mesh_acc = acc_grid.extract_mesh()
+                #mesh_acc.export(op.join(output_folder, f"acc_delta_vals.ply"))
+
+                #acc_clipped = np.maximum(acc_delta, outside_avatar_offset)
+
+                #acc_grid.clear_grid(val=10.0)
+                #acc_grid.update_grid(acc_clipped, kidx, mode="overwrite")
+                #mesh_acc = acc_grid.extract_mesh()
+                #mesh_acc.export(op.join(output_folder, f"acc_clipped_vals.ply"))
+
+                #vals = np.minimum(avatar_vals, acc_clipped)  # if you want both leg+boot
                 # or just boot_clipped if you want boot surface only
                 #vals = np.minimum(avatar_vals, acc_vals - 0.01)
                 print("acc  min/max", acc_vals.min(), acc_vals.max())
                 print("leg  min/max", avatar_vals.min(), avatar_vals.max())
                 print("mix  min/max", vals.min(), vals.max())
                 #vals = avatar_vals
-                acc_vertices = mesh_acc.vertices
+                acc_vertices = mesh_acc.vertices.copy()
+                max_step = 0.005
 
-                for it in range(10):
-                    d, n = self.phi_and_grad_curve(curve, key, acc_vertices, h=1e-3)
+                for it in range(30):
+                    d, n, good = self.phi_and_grad_curve(curve, key, acc_vertices, h=1e-2)
                     print("d min/max", d.min(), d.max())
                     pen = gap - d
-                    mask = pen > 0
+                    mask = (pen > 0) & good
                     if not np.any(mask):
                         break
+                    disp = pen[mask][:,None] * n[mask]
+                    dn = np.linalg.norm(disp, axis=1)
+                    s = np.minimum(1.0, max_step / (dn + 1e-12))
+                    disp *= s[:,None]
+                    acc_vertices[mask] += disp
                     
-                    acc_vertices[mask] += (pen[mask][:,None]) * n[mask]
+                    #acc_vertices[mask] += (pen[mask][:,None]) * n[mask]
                     # optional: constrained smoothing step here
                 mesh_acc.vertices = acc_vertices
                 mesh_acc.export(op.join(output_folder, f"fixed.ply"))

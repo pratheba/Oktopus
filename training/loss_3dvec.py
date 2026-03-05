@@ -70,13 +70,17 @@ class LossHandler():
             return metric_fn(out_base_sdf, gt_base_sdf)
             #return metric_fn(out_sdf, gt_sdf)
         elif epoch < E1:
-            mask = torch.abs(output['sdf_base'].detach()) < 0.05
+            mask = torch.abs(output['sdf_base'].detach()) < 0.1
+            out_detail_sdf = output['sdf_detail']
             gt_sdf = gt['sdf_residual'].view_as(out_detail_sdf)
             if not (clamp is None):
                 gt_sdf = gt_sdf.clamp(-clamp, clamp)
             #gt_sdf = gt_sdf.clamp(-clamp, clamp)
             return metric_fn(out_detail_sdf[mask], gt_sdf[mask])
         else:
+            out_sdf = output['sdf']
+            out_base_sdf = output['sdf_base']
+            out_detail_sdf = output['sdf_detail']
             gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
             gt_residual_sdf = gt['sdf_residual'].view_as(out_residual_sdf)
             gt_sdf = gt['sdf'].view_as(out_sdf)
