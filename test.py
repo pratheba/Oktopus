@@ -44,8 +44,7 @@ def start_test(opt):
 
     t0 = time()
     mc_grid = MCGrid(grid_config)
-    shape_name = 'armadillo'
-
+    shape_name = 'boots'
 
     arg = {
         'exp_name': 'adapt',
@@ -57,6 +56,19 @@ def start_test(opt):
     }
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
+
+#    shape_name = 'armadillo'
+#
+#    arg = {
+#        'exp_name': 'adapt',
+#        'data_root': data_root, 
+#        'mc_grid': mc_grid,
+#        'output_folder': op.join(output_path, f'{shape_name}'),
+#        'shape': shape_name,
+#        'adapt_file': op.join(config_path, f'adapt_{shape_name}.yaml'),
+#    }
+#    agent('part_adapt', arg)
+#    print('time cost: ', time()-t0)
     
 #    arg = {
 #        'exp_name': 'mix',

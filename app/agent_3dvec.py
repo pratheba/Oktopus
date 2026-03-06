@@ -517,7 +517,7 @@ class Agent():
 
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals +5e-2, kidx, mode="overwrite")
+                acc_grid.update_grid(acc_vals , kidx, mode="overwrite")
                 mesh_acc = acc_grid.extract_mesh()
                 mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
                 mesh_acc.export(op.join(output_folder, f"acc_vals.ply"))

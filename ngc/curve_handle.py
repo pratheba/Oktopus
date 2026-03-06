@@ -1286,45 +1286,56 @@ class PWLACurve():
         u_avatar = u_n_avatar * (avatar_radius_y)
         v_avatar = v_n_avatar * (avatar_radius_z)
 
-
         # map avatar coords -> accessory coords by arclen
         acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core)
+        #acc_coords = maybe_flip_coords(acc_coords, True) #adapt_arg.get("flip_s", False))
+
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
+
+        accessory_curve_handle.core.update_coords()
+        accessory_curve_handle.core.update_frame()
         tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
+
         acc_radius_y = acc_intpl["radius"][:,0]
         acc_radius_z = acc_intpl["radius"][:,1]
+        #acc_frame = maybe_swap_nb(acc_intpl["frame"], True) #adapt_arg.get("swap_nb", False))
+        acc_frame = acc_intpl["frame"] #adapt_arg.get("swap_nb", False))
+        avatar_frame = avatar_data["frame_mat"]
 
-        u_acc, v_acc = rotate_uv_avatar_to_acc(u_avatar, v_avatar, avatar_data['frame_mat'][:,1], avatar_data['frame_mat'][:,2],  acc_intpl['frame'][:,1], acc_intpl['frame'][:,2])
+        #u_acc, v_acc = rotate_uv_avatar_to_acc(u_avatar, v_avatar,
+#                                       avatar_frame[:,1], avatar_frame[:,2],
+#                                       acc_frame[:,2], acc_frame[:,1],
+#                                       Ta=avatar_frame[:,0],
+#                                       Tb=acc_frame[:,0])
+        w_acc, u_acc, v_acc = rotate_wuv_avatar_to_acc(
+            w_avatar, u_avatar, v_avatar,
+            avatar_frame[:,0], avatar_frame[:,1], avatar_frame[:,2],
+            acc_frame[:,0],    acc_frame[:,1],    acc_frame[:,2],
+            project_SO3=True
+        )
 
-        # desired boot outer radius = (1+eps)*leg radius
-#        eps = 0.10
-#        final_radius_y = (1.0 + eps) * avatar_radius_y
-#        final_radius_z = (1.0 + eps) * avatar_radius_z
-#
-#        alpha_y = final_radius_y / (acc_radius_y + 1e-12)
-#        alpha_z = final_radius_z / (acc_radius_z + 1e-12)
-#
-#        # warp offsets into boot canonical space
-#        u_warp_acc = u_acc / (alpha_y + 1e-12)
-#        v_warp_acc = v_acc / (alpha_z + 1e-12)
-#
-#        # normalize using BOOT radii (canonical)
-#        w_n_acc = w_avatar / (tangent_acc + 1e-12)
-        #u_n_acconly = u_acc / (acc_radius_y + 1e-12)
-        #v_n_acconly = v_acc / (acc_radius_z + 1e-12)
-        #rho_n_acconly = np.sqrt(u_n_acconly**2 + v_n_acconly**2)
-        #gap = 0.01
-        #u_n_acc = u_n_acconly / (rho_n_acconly + gap)
-        #v_n_acc = v_n_acconly / (rho_n_acconly + gap)
+        w_n_acc = w_acc / (tangent_acc + 1e-12)
+        #v_acc = -v_acc
+        #u_acc, v_acc = v_acc, u_acc
+        #acc_radius_y, acc_radius_z = acc_radius_z, acc_radius_y
 
-        w_n_acc = w_avatar / (tangent_acc + 1e-12)
-        u_n_acc = u_acc / (1.01*avatar_radius_y + 1e-12)
-        v_n_acc = v_acc / (1.01*avatar_radius_z + 1e-12)
-        #u_n_acc /= 1.01
-        #v_n_acc /= 1.01
+
+        #scale_y = (avatar_radius_y + 1e-12) / (acc_radius_y + 1e-12)
+        #scale_z = (avatar_radius_z + 1e-12) / (acc_radius_z + 1e-12)
+        #u_acc *= scale_y
+        #v_acc *= scale_z
+        #u_acc *= 0.6
+        #v_acc *= 0.6
+
+        #print(avatar_radius_y)
+        #print(avatar_radius_z)
+        u_n_acc = u_acc / (1.2*avatar_radius_z + 1e-12)
+        v_n_acc = v_acc / (1.2*avatar_radius_y + 1e-12)
 
         vx_acc = 2.0 * acc_coords - 1.0
+        #samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
         samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
+        #samples_local_acc = np.stack([w_n_acc + vx_acc, v_n_acc, u_n_acc], axis=1)
 
         # recompute consistent polar terms for boot
         #angles_acc = np.arctan2(v_n_acconly, u_n_acconly)
