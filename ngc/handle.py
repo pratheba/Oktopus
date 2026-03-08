@@ -110,7 +110,8 @@ class Handle():
             sidx_bbox = sidx[inbbox]
 
             # Localize the samples for each curve
-            curve_data, inside = curve.localize_samples(samples_bbox)
+            #curve_data, inside = curve.localize_samples(samples_bbox)
+            curve_data, inside = curve.localize_samples_test(samples_bbox)
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
@@ -122,6 +123,7 @@ class Handle():
             rho.append(curve_data['rho'])
             rho_n.append(curve_data['rho_n'])
             cids.append(np.ones(num_inside, dtype=int)*cid)
+        exit()
 
 
         samples_glob = np.concatenate(samples_glob, axis=0)

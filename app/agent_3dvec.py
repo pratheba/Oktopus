@@ -487,9 +487,11 @@ class Agent():
         out_name = f'{shape_name}_{exp_name}'
 
         batch_size = 64**3
+        count = 0
         for curve in handle.curves:
             key = self.encode_key(shape_name, curve.name)
             print(key)
+            count += 1
 
             if key in config:
                 adapt_config = config[key]
@@ -517,10 +519,10 @@ class Agent():
 
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals , kidx, mode="overwrite")
+                acc_grid.update_grid(acc_vals - delta , kidx, mode="overwrite")
                 mesh_acc = acc_grid.extract_mesh()
                 mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
-                mesh_acc.export(op.join(output_folder, f"acc_vals.ply"))
+                mesh_acc.export(op.join(output_folder, f"{count}_acc_vals.ply"))
 
 
                 phi, valid = self.phi_curve(curve, key, mesh_acc.vertices)
@@ -529,12 +531,12 @@ class Agent():
                 #print("d min/max", phi.min(), phi.max())
                 #exit()
 
-                avatar_grid = utils.create_grid_like(mc_grid)
-                avatar_grid.clear_grid(val=10.0)
-                avatar_grid.update_grid(avatar_vals  , kidx, mode="overwrite")
-                mesh_avatar = avatar_grid.extract_mesh()
-                mesh_avatar = max(mesh_avatar.split(only_watertight=False), key=lambda m: len(m.faces))
-                mesh_avatar.export(op.join(output_folder, f"avatar_vals.ply"))
+#                avatar_grid = utils.create_grid_like(mc_grid)
+#                avatar_grid.clear_grid(val=10.0)
+#                avatar_grid.update_grid(avatar_vals  , kidx, mode="overwrite")
+#                mesh_avatar = avatar_grid.extract_mesh()
+#                mesh_avatar = max(mesh_avatar.split(only_watertight=False), key=lambda m: len(m.faces))
+#                mesh_avatar.export(op.join(output_folder, f"avatar_vals.ply"))
 
                 #acc_delta = acc_vals - delta
                 #outside_avatar_offset = (gap - avatar_vals)   # == gap - avatar_vals
@@ -554,10 +556,10 @@ class Agent():
                 #vals = np.minimum(avatar_vals, acc_clipped)  # if you want both leg+boot
                 # or just boot_clipped if you want boot surface only
                 #vals = np.minimum(avatar_vals, acc_vals - 0.01)
-                print("acc  min/max", acc_vals.min(), acc_vals.max())
-                print("leg  min/max", avatar_vals.min(), avatar_vals.max())
-                print("mix  min/max", vals.min(), vals.max())
-                #vals = avatar_vals
+                #print("acc  min/max", acc_vals.min(), acc_vals.max())
+                #print("leg  min/max", avatar_vals.min(), avatar_vals.max())
+                #print("mix  min/max", vals.min(), vals.max())
+                vals = acc_vals
                 acc_vertices = mesh_acc.vertices.copy()
                 max_step = 0.005
 

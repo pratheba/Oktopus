@@ -213,7 +213,7 @@ def ngc_dataset(arg):
             #     handle_mesh_file, n_space_samples
             # )
             ########### ON SURFACE DATA ###################################
-            on_surface_data = handle.prepare_samples(on_surface_samples)
+            on_surface_data = handle.prepare_samples(name+"_on", on_surface_samples)
             #on_surface_base_data = copy.deepcopy(on_surface_data)
             #on_surface_residual_data = copy.deepcopy(on_surface_data)
 
@@ -227,7 +227,7 @@ def ngc_dataset(arg):
             #on_surface_base_data = copy.deepcopy(on_surface_data)
 
             ########### OFF SURFACE DATA ###################################
-            surface_data = handle.prepare_samples(surface_samples)
+            surface_data = handle.prepare_samples(name+"_off", surface_samples)
             #surface_base_data = copy.deepcopy(surface_data)
             #surface_residual_data = copy.deepcopy(surface_data)
 
@@ -240,7 +240,7 @@ def ngc_dataset(arg):
             #surface_base_data = copy.deepcopy(surface_data)
 
             ########### SPACE DATA ###################################
-            space_data = handle.prepare_samples(space_samples)
+            space_data = handle.prepare_samples(name+"_space", space_samples)
             #space_base_data = copy.deepcopy(space_data)
             #space_residual_data = copy.deepcopy(space_data)
 

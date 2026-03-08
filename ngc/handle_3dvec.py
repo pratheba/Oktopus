@@ -85,7 +85,7 @@ class Handle():
 
         return res
     
-    def prepare_samples(self, samples):
+    def prepare_samples(self, name, samples):
         # samples to train data
         samples_glob = []
         samples_local = []
@@ -110,6 +110,7 @@ class Handle():
             sidx_bbox = sidx[inbbox]
 
             # Localize the samples for each curve
+            curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
             curve_data, inside = curve.localize_samples(samples_bbox)
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]

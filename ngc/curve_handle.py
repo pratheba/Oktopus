@@ -5,7 +5,8 @@ import trimesh
 from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
 from handle_utils import CylindersMesh
-from curve_mask import *
+from scipy.ndimage import gaussian_filter1d
+from curve_utils import *
 
 
 n_sample_curve = 200
@@ -224,6 +225,9 @@ class CurveHandle():
 
     def localize_samples(self, samples):
         return self.core.localize_samples(samples)
+
+    def localize_samples_test(self, name, samples):
+        return self.core.localize_samples_test(name, samples)
     
     # def localize_samples_transition(self, samples, ts):
     #     return self.core.localize_samples_transition(samples, ts)
@@ -833,10 +837,9 @@ class PWLACurve():
         else:
             return ds*signs
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0):
-        sample_keypoint_map = self.curve_projection(pointcloudsamples)
-        #print("sample_keypoint_map", sample_keypoint_map)
 
+    def localize_samples_test(self, idx, pointcloudsamples, norm=1.0):
+        sample_keypoint_map = self.curve_projection(pointcloudsamples)
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
@@ -845,15 +848,11 @@ class PWLACurve():
         pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
         sample_index = sample_index[sample_keypoint_map_range]
 
-
         # interpolate with the new additional non linear skeletal keypoints
         intpl = self.interpolate(sample_keypoint_map)
 
         ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
-        #print("proj vs", proj_vs)
-        #print(self.key_points)
-        #exit()
         yz_radius = intpl['radius']
         frame_mat = intpl['frame']
 
@@ -865,23 +864,61 @@ class PWLACurve():
         # The vector of the keypoint to the skeletam point is rotated using the rotation from
         samples_local0 = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
         # And all are bounding to radius
-        #print("samples_local", samples_local)
-        #import pdb; pdb.set_trace()
+        samples_local = samples_local0.copy()
+        stats = compute_local_centering_stats(samples_local, sample_keypoint_map)
+        C_old, C_new = compute_centered_curve_world(self, stats)
+        C_new_smooth = gaussian_filter1d(C_new, sigma=2, axis=0)
+        export_curve_points_as_ply(C_old, C_new_smooth, str(idx)+"_curve_compare_points.ply")
+        export_shape_and_curves_as_ply(
+            points=pointcloudsamples,
+            C_old=C_old,
+            C_new=C_new_smooth,
+            out_path=str(idx)+"_shape_and_curves.ply"
+        )
+
+        #plot_centroid_offsets_from_origin(stats)
+        #plot_centered_curve_local_projections(stats)
+        #plot_centroid_path_with_origin(stats)
+        #plot_local_centering_stats(stats)
+        #plot_local_bins(stats, bins=[10, 25, 40, 60, 80])   
+        #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
+
+
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0):
+        sample_keypoint_map = self.curve_projection(pointcloudsamples)
+        sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
+        sample_index = np.arange(pointcloudsamples.shape[0])
+
+        ### Keep only the points that fall within the rane of 0 and 1
+        sample_keypoint_map = sample_keypoint_map[sample_keypoint_map_range]
+        pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
+        sample_index = sample_index[sample_keypoint_map_range]
+
+        # interpolate with the new additional non linear skeletal keypoints
+        intpl = self.interpolate(sample_keypoint_map)
+
+        ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
+        proj_vs = intpl['points']
+        yz_radius = intpl['radius']
+        frame_mat = intpl['frame']
+
+        # If the end ball is None then x_radius  = 1.0 
+        x_radius = self.calc_x_radius(sample_keypoint_map)
+        radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
+
+        # frame: (N, 3,3), vs (N, 3)
+        # The vector of the keypoint to the skeletam point is rotated using the rotation from
+        samples_local0 = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
+        # And all are bounding to radius
         w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
         samples_local = samples_local0.copy()
         samples_local /= (radius + 1e-12)
-#        samples_local_n[:, 1] /= radius[:, 1]
-#        samples_local_n[:, 2] /= radius[:, 2]
         rho = np.sqrt(v**2 + u**2)
         u_n = samples_local[:,1] #u / (radius[:,1] + 1e-12)
         v_n = samples_local[:,2] #v / (radius[:,2] + 1e-12)
         angle = np.arctan2(v_n, u_n)
         rho_n = np.sqrt(v_n**2 + u_n**2)
         
-#        print("samples_local normalized", samples_local[0:10])
-#        print("samples_local normalized N", samples_local_n[0:10])
-#        exit()
-
         # in std cylinder
         norms = np.linalg.norm(samples_local, axis=1)
         if return_sdf:
@@ -893,23 +930,16 @@ class PWLACurve():
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
         # [0,1] -> [-1,1]
         vx = 2*sample_keypoint_map - 1
-        #import pdb; pdb.set_trace()
-        #print(samples_local, flush=True)
         samples_local[:, 0] += vx
-        #samples_local_n[:, 0] += vx
-        #print(samples_local, flush=True)
-        #import pdb; pdb.set_trace()
         return {
             'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],
-            #'samples_local_n': samples_local_n[inside_cyl],
             'coords': sample_keypoint_map[inside_cyl],
             'rho': rho[inside_cyl],
             'rho_n': rho_n[inside_cyl],
             'angles': angle[inside_cyl],
             'radius': yz_radius[inside_cyl],
             'frame_mat': frame_mat[inside_cyl]
-            # 'radius': yz_rs[inside_cyl],
         }, inside
     
     def localize_samples_global(self, vs):
@@ -1278,6 +1308,9 @@ class PWLACurve():
         u_n_avatar = avatar_samples_local[:, 1]
         v_n_avatar = avatar_samples_local[:, 2]
 
+        theta_avatar = np.arctan2(v_n_avatar, u_n_avatar)
+        rho_n_avatar = np.sqrt(u_n_avatar**2 + v_n_avatar**2)
+
         avatar_radius_y = avatar_data["radius"][:,0]
         avatar_radius_z = avatar_data["radius"][:,1]
 
@@ -1287,13 +1320,14 @@ class PWLACurve():
         v_avatar = v_n_avatar * (avatar_radius_z)
 
         # map avatar coords -> accessory coords by arclen
+        #avatar_coords = maybe_flip_coords(avatar_coords, True) #adapt_arg.get("flip_s", False))
         acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core)
         #acc_coords = maybe_flip_coords(acc_coords, True) #adapt_arg.get("flip_s", False))
 
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
 
-        accessory_curve_handle.core.update_coords()
-        accessory_curve_handle.core.update_frame()
+        #accessory_curve_handle.core.update_coords()
+        #accessory_curve_handle.core.update_frame()
         tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
 
         acc_radius_y = acc_intpl["radius"][:,0]
@@ -1313,35 +1347,82 @@ class PWLACurve():
             acc_frame[:,0],    acc_frame[:,1],    acc_frame[:,2],
             project_SO3=True
         )
-
-        w_n_acc = w_acc / (tangent_acc + 1e-12)
+        delta = np.median(estimate_delta(avatar_frame[:,1], avatar_frame[:,2], acc_frame[:,1]))
+        cd, sd = np.cos(delta), np.sin(delta)
+        u2 =  cd*u_acc - sd*v_acc
+        v2 =  sd*u_acc + cd*v_acc
+        u_acc, v_acc = u2, v2
+#
+#        w_n_acc = w_acc / (tangent_acc + 1e-12)
         #v_acc = -v_acc
         #u_acc, v_acc = v_acc, u_acc
         #acc_radius_y, acc_radius_z = acc_radius_z, acc_radius_y
+#        nbins = 64
+#        bins = np.clip((acc_coords * nbins).astype(np.int32), 0, nbins-1)
+#
+#        mean_u = np.zeros(nbins)
+#        mean_v = np.zeros(nbins)
+#        count  = np.zeros(nbins)
+#
+#        np.add.at(mean_u, bins, u_acc)
+#        np.add.at(mean_v, bins, v_acc)
+#        np.add.at(count,  bins, 1.0)
+#
+#        mean_u /= (count + 1e-12)
+#        mean_v /= (count + 1e-12)
+#        u_acc = u_acc - mean_u[bins]
+#        v_acc = v_acc - mean_v[bins]
 
 
-        #scale_y = (avatar_radius_y + 1e-12) / (acc_radius_y + 1e-12)
-        #scale_z = (avatar_radius_z + 1e-12) / (acc_radius_z + 1e-12)
-        #u_acc *= scale_y
-        #v_acc *= scale_z
+#        scale_y = (1.1*avatar_radius_y + 1e-12) / (acc_radius_y + 1e-12)
+#        scale_z = (1.1*avatar_radius_z + 1e-12) / (acc_radius_z + 1e-12)
+#        u_acc /= scale_y
+#        v_acc /= scale_z
+#        u_n_acc = u_acc / (acc_radius_y+ 1e-12)
+#        v_n_acc = v_acc / (acc_radius_z + 1e-12)
+        #u_n_acc /= scale_y
+        #v_n_acc /= scale_z
         #u_acc *= 0.6
         #v_acc *= 0.6
 
         #print(avatar_radius_y)
         #print(avatar_radius_z)
-        u_n_acc = u_acc / (1.2*avatar_radius_z + 1e-12)
-        v_n_acc = v_acc / (1.2*avatar_radius_y + 1e-12)
+        #u_n_acc = u_acc / (avatar_radius_y + 1e-12)
+        #v_n_acc = v_acc / (avatar_radius_z + 1e-12)
+
+        #theta_offset = np.deg2rad(adapt_arg.get('theta_offset_deg', -35.0))
+        theta_offset = 0
+
+        angles_acc = theta_avatar + theta_offset
+        angles_acc = (angles_acc + np.pi) % (2*np.pi) - np.pi
+        rho_scale = 0.9
+        rho_n_acc = rho_scale * rho_n_avatar
+
+        u_n_acc = rho_n_acc * np.cos(angles_acc)
+        v_n_acc = rho_n_acc * np.sin(angles_acc)
+
 
         vx_acc = 2.0 * acc_coords - 1.0
         #samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
-        samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
+        samples_local_acc = np.stack([w_n_avatar + vx_acc, u_n_acc, v_n_acc], axis=1)
         #samples_local_acc = np.stack([w_n_acc + vx_acc, v_n_acc, u_n_acc], axis=1)
 
         # recompute consistent polar terms for boot
         #angles_acc = np.arctan2(v_n_acconly, u_n_acconly)
-        angles_acc = np.arctan2(v_n_acc, u_n_acc)
-        rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
-        rho_acc = np.sqrt((u_acc)**2 + (v_acc)**2)
+        #angles_acc = np.arctan2(v_n_acc, u_n_acc)
+        #angles_acc += delta
+        #rho_acc = np.sqrt((u_acc)**2 + (v_acc)**2)
+        #u_acc = rho_acc * np.cos(angles_acc)
+        #v_acc = rho_acc * np.sin(angles_acc)
+        #u_n_acc = u_acc / (avatar_radius_y + 1e-12)
+        #v_n_acc = v_acc / (avatar_radius_z + 1e-12)
+        #u_n_acc = u_acc / (1.2*acc_radius_y+ 1e-12)
+        #v_n_acc = v_acc / (1.2*acc_radius_z + 1e-12)
+        #rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
+        #samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
+        u_acc = u_n_acc * acc_radius_y
+        v_acc = v_n_acc * acc_radius_z
+        rho_acc = np.sqrt(u_acc**2 + v_acc**2)
 
         accessory_data = dict(avatar_data)
         accessory_data["coords"] = acc_coords
