@@ -95,6 +95,7 @@ class Handle():
         rho = []
         rho_n = []
         cids = []
+        meta_data = {}
 
         num_samples = samples.shape[0]
         sidx = np.arange(num_samples)
@@ -111,7 +112,15 @@ class Handle():
 
             # Localize the samples for each curve
             curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
-            curve_data, inside = curve.localize_samples(samples_bbox)
+            if "_on" in name:
+                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=False, update_radius=True, name=name+'_'+str(cid))
+                key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_radius': curve.core.key_radius, 'key_frame': curve.core.key_frame,
+                            'wrap_radius': curve.core.wrap_radius, 'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, 
+                            'wrap_radius_max': curve.core.wrap_radius_max}
+                #curve_data, inside = curve.localize_samples(samples_bbox, name=name+'orig_'+str(cid))
+                meta_data[name+'_'+str(cid)] = key_info
+            else:
+                curve_data, inside = curve.localize_samples(samples_bbox)
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
@@ -123,8 +132,8 @@ class Handle():
             rho.append(curve_data['rho'])
             rho_n.append(curve_data['rho_n'])
             cids.append(np.ones(num_inside, dtype=int)*cid)
-
-
+        if len(meta_data.keys()):
+            np.savez(name+'.npz', meta_data)
         samples_glob = np.concatenate(samples_glob, axis=0)
         samples_local = np.concatenate(samples_local, axis=0)
         coords = np.concatenate(coords)

@@ -470,7 +470,6 @@ def plot_centered_curve_local_projections(stats, use_bin_centers=True):
 
 
 def show_curve_correction(points, C, C_new):
-
     scene = trimesh.Scene()
 
     scene.add_geometry(trimesh.points.PointCloud(points))
@@ -487,6 +486,20 @@ def show_curve_correction(points, C, C_new):
     scene.add_geometry(trimesh.load_path(segs))
     
     scene.show()
+
+def resample_curve_to_key_ts(s_dense, C_dense, key_ts):
+    """
+    s_dense : (M,)
+    C_dense : (M,3)
+    key_ts  : (K,)
+
+    returns:
+        C_key : (K,3)
+    """
+    C_key = np.zeros((len(key_ts), 3), dtype=np.float64)
+    for d in range(3):
+        C_key[:, d] = np.interp(key_ts, s_dense, C_dense[:, d])
+    return C_key
 
 def compute_centered_curve_world(curve_core, stats):
     """
@@ -518,12 +531,12 @@ def compute_centered_curve_world(curve_core, stats):
             continue
 
         mu_u, mu_v = uv[i]
-
         delta = mu_u * N[i] + mu_v * B[i]
-
         C_new[i] = C[i] + delta
 
-    return C, C_new
+    C_key_new = resample_curve_to_key_ts(s, C_new, curve_core.key_ts)
+
+    return C, C_new, C_key_new
 
 
 def export_curve_points_as_ply(C_old, C_new, out_path="curve_compare_points.ply"):
@@ -556,3 +569,599 @@ def export_shape_and_curves_as_ply(points, C_old, C_new, out_path="shape_and_cur
     pc = trimesh.points.PointCloud(vertices=pts, colors=colors)
     pc.export(out_path)
     print(f"saved: {out_path}")
+
+
+def fill_invalid_bins(arr, valid):
+    arr = arr.copy()
+    idx_valid = np.where(valid)[0]
+    if len(idx_valid) == 0:
+        return arr
+    idx_all = np.arange(len(arr))
+    for i in idx_all[~valid]:
+        j = idx_valid[np.argmin(np.abs(idx_valid - i))]
+        arr[i] = arr[j]
+    return arr
+
+
+def fill_invalid_theta(vals, valid_mask):
+    vals = vals.copy()
+    n = len(vals)
+    if n == 0:
+        return vals
+    if not np.any(valid_mask):
+        return np.zeros_like(vals)
+
+    idx = np.arange(n)
+    valid_idx = idx[valid_mask]
+    valid_vals = vals[valid_mask]
+
+    idx_ext = np.concatenate([valid_idx - n, valid_idx, valid_idx + n])
+    vals_ext = np.concatenate([valid_vals, valid_vals, valid_vals])
+
+    vals_filled = np.interp(idx, idx_ext, vals_ext)
+    return vals_filled
+
+
+def interp_periodic_1d(x, xp, fp, period=2*np.pi):
+    """
+    Periodic 1D interpolation.
+    x: (...,)
+    xp: (K,) sorted, assumed within one period
+    fp: (K,)
+    """
+    x = np.asarray(x)
+    xp = np.asarray(xp)
+    fp = np.asarray(fp)
+
+    x0 = xp[0]
+    x_wrap = ((x - x0) % period) + x0
+
+    xp_ext = np.concatenate([xp - period, xp, xp + period])
+    fp_ext = np.concatenate([fp, fp, fp])
+
+    return np.interp(x_wrap, xp_ext, fp_ext)
+
+def _make_point_cloud(points, color=(140, 140, 140, 60)):
+    points = np.asarray(points, dtype=np.float64)
+    colors = np.tile(np.array(color, dtype=np.uint8), (len(points), 1))
+    return trimesh.points.PointCloud(points, colors=colors)
+
+
+def _make_spheres(points, radius=0.003, color=(255, 0, 255, 255)):
+    meshes = []
+    for p in np.asarray(points):
+        s = trimesh.creation.icosphere(subdivisions=1, radius=radius)
+        s.apply_translation(p)
+        s.visual.vertex_colors = np.tile(np.array(color, dtype=np.uint8), (len(s.vertices), 1))
+        meshes.append(s)
+    return trimesh.util.concatenate(meshes) if meshes else None
+
+
+def _make_segments(p0, p1, color=(255, 255, 0, 255)):
+    p0 = np.asarray(p0, dtype=np.float64)
+    p1 = np.asarray(p1, dtype=np.float64)
+    valid = np.isfinite(p0).all(axis=1) & np.isfinite(p1).all(axis=1)
+    p0 = p0[valid]
+    p1 = p1[valid]
+    if len(p0) == 0:
+        return None
+    segs = np.stack([p0, p1], axis=1)
+    path = trimesh.load_path(segs)
+    path.colors = np.tile(np.array(color, dtype=np.uint8), (len(path.entities), 1))
+    return path
+
+
+def _make_polyline(points, closed=False, color=(255, 255, 255, 255)):
+    points = np.asarray(points, dtype=np.float64)
+    points = points[np.isfinite(points).all(axis=1)]
+    if len(points) < 2:
+        return None
+
+    if closed:
+        pts0 = points
+        pts1 = np.roll(points, -1, axis=0)
+        segs = np.stack([pts0, pts1], axis=1)
+    else:
+        segs = np.stack([points[:-1], points[1:]], axis=1)
+    path = trimesh.load_path(segs)
+    path.colors = np.tile(np.array(color, dtype=np.uint8), (len(path.entities), 1))
+    return path
+
+
+def _ellipse_points_world(C, N, B, ru, rv, n=64):
+    theta = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    pts = (
+        C[None, :]
+        + (ru * np.cos(theta))[:, None] * N[None, :]
+        + (rv * np.sin(theta))[:, None] * B[None, :]
+    )
+    return pts
+
+
+def visualize_keyframes_with_ellipses_trimesh(
+    curve_core,
+    surface_points,
+    key_ts=None,
+    neighborhood_half_width=0.1,
+    show_all_surface=True,
+    key_sphere_radius=0.004,
+    frame_scale=0.015,
+    ellipse_samples=64,
+    ellipse_stride=1,
+    name='keyframe_with_ellipse'
+):
+    """
+    Visualize keyframes, frame axes, radius bars, and cross-section ellipses.
+
+    curve_core must provide:
+        key_ts
+        interpolate(ts) -> {'points','frame','radius'}
+        calc_x_radius(ts)
+        curve_projection(points)
+    """
+    if key_ts is None:
+        key_ts = curve_core.key_ts
+
+    key_ts = np.asarray(key_ts, dtype=np.float64)
+    surface_points = np.asarray(surface_points, dtype=np.float64)
+
+    intpl = curve_core.interpolate(key_ts)
+    C = intpl["points"]          # (K,3)
+    frame = intpl["frame"]       # world->local
+    yz_radius = intpl["radius"]  # (K,2)
+
+    axes = np.transpose(frame, (0, 2, 1))
+    T = axes[:, :, 0]
+    N = axes[:, :, 1]
+    B = axes[:, :, 2]
+
+    rw = curve_core.calc_x_radius(key_ts)
+    ru = yz_radius[:, 0]
+    rv = yz_radius[:, 1]
+
+    scene = trimesh.Scene()
+
+    if show_all_surface:
+        #print(surface_points.shape)
+        scene.add_geometry(_make_point_cloud(surface_points, color=(140, 140, 140, 45)))
+
+    # local neighborhoods around each keyframe
+    s_proj = curve_core.curve_projection(surface_points)
+    valid = (s_proj >= 0.0) & (s_proj <= 1.0)
+    pts_valid = surface_points[valid]
+    s_valid = s_proj[valid]
+
+
+    for i, s0 in enumerate(key_ts):
+        Ci = C[i]
+        Fi = frame[i]          # world->local at this keyframe
+
+        local_i = np.einsum('ij,nj->ni', Fi, (surface_points - Ci[None, :]))
+        w_i = local_i[:, 0]
+
+        m = np.abs(w_i) <= neighborhood_half_width
+        pts_local = surface_points[m]
+
+        if len(pts_local) > 0:
+            scene.add_geometry(_make_point_cloud(pts_local, color=(255, 200, 0, 70)))
+
+
+#    for i, s0 in enumerate(key_ts):
+#        m = np.abs(s_valid - s0) <= neighborhood_half_width
+#        pts_local = pts_valid[m]
+#        if len(pts_local) > 0:
+#            scene.add_geometry(_make_point_cloud(pts_local, color=(255, 200, 0, 70)))
+
+    # key centers
+    kp = _make_spheres(C, radius=key_sphere_radius, color=(255, 0, 255, 255))
+    if kp is not None:
+        scene.add_geometry(kp)
+
+    # frame axis direction markers
+    scene.add_geometry(_make_segments(C, C + frame_scale * T, color=(255, 120, 120, 255)))
+    scene.add_geometry(_make_segments(C, C + frame_scale * N, color=(120, 255, 120, 255)))
+    scene.add_geometry(_make_segments(C, C + frame_scale * B, color=(120, 120, 255, 255)))
+
+    # full radius bars
+    scene.add_geometry(_make_segments(C - rw[:, None] * T, C + rw[:, None] * T, color=(255, 0, 0, 255)))
+    scene.add_geometry(_make_segments(C - ru[:, None] * N, C + ru[:, None] * N, color=(0, 255, 0, 255)))
+    scene.add_geometry(_make_segments(C - rv[:, None] * B, C + rv[:, None] * B, color=(0, 0, 255, 255)))
+
+    # ellipses in cross-section plane
+    for i in range(0, len(key_ts), ellipse_stride):
+        epts = _ellipse_points_world(C[i], N[i], B[i], ru[i], rv[i], n=ellipse_samples)
+        scene.add_geometry(_make_polyline(epts, closed=True, color=(0, 255, 255, 255)))
+    #scene.show()
+    print("scene", flush=True)
+    print(name)
+    #exit()
+    scene.export(name+".glb")
+    #scene.dump(concatenate=True).remove_infinite_values().export(name+"_ellipse.ply")
+    scene.dump(concatenate=True).export(name+"_ellipse.ply")
+
+#    visualize_single_keyframe_rho_spikes(
+#    curve_core=curve_core,
+#    surface_points=surface_points,
+#    key_index=5,
+#    slab_half_width=0.002,
+#    name=name
+#    )
+
+    visualize_all_keyframes_rho_spikes(
+        curve_core=curve_core,
+        surface_points=surface_points,
+        slab_half_width=0.002,
+        max_spikes_per_key=80,
+        spike_samples=10,
+        name=name
+    )
+#    visualize_section_radius_uv(
+#        curve_core=curve_core,
+#        surface_points=surface_points,
+#        key_index=0,
+#        slab_half_width=0.0015,
+#        n_angle_bins=72,
+#        quantile=0.98,
+#        name=name
+#    )
+
+
+def visualize_single_keyframe_rho_spikes(
+    curve_core,
+    surface_points,
+    key_index,
+    slab_half_width=0.003,
+    ellipse_samples=64,
+    name="rho_debug"
+):
+    key_ts = np.asarray(curve_core.key_ts, dtype=np.float64)
+    s0 = key_ts[key_index:key_index+1]
+
+    intpl = curve_core.interpolate(s0)
+    C = intpl["points"][0]
+    frame = intpl["frame"][0]      # world -> local
+    yz_radius = intpl["radius"][0]
+
+    axes = frame.T
+    T = axes[:, 0]
+    N = axes[:, 1]
+    B = axes[:, 2]
+
+    ru = yz_radius[0]
+    rv = yz_radius[1]
+
+    pts = np.asarray(surface_points, dtype=np.float64)
+
+    # project all points into THIS keyframe's local frame
+    local = np.einsum('ij,nj->ni', frame, (pts - C[None, :]))
+    w = local[:, 0]
+    u = local[:, 1]
+    v = local[:, 2]
+
+    # thin slab for actual cross-section
+    mask = np.abs(w) <= slab_half_width
+    pts_slice = pts[mask]
+    local_slice = local[mask]
+
+    if len(pts_slice) == 0:
+        print("No points in slab.")
+        return
+
+    u_slice = local_slice[:, 1]
+    v_slice = local_slice[:, 2]
+    rho_slice = np.sqrt(u_slice**2 + v_slice**2)
+
+    # ellipse points in world
+    theta = np.linspace(0.0, 2.0 * np.pi, ellipse_samples, endpoint=False)
+    epts = (
+        C[None, :]
+        + (ru * np.cos(theta))[:, None] * N[None, :]
+        + (rv * np.sin(theta))[:, None] * B[None, :]
+    )
+
+    scene = trimesh.Scene()
+
+    # surface slice
+    colors = np.tile(np.array([[180, 180, 180, 100]], dtype=np.uint8), (len(pts_slice), 1))
+    scene.add_geometry(trimesh.points.PointCloud(pts_slice, colors=colors))
+
+    # center
+    sph = trimesh.creation.icosphere(subdivisions=1, radius=0.003)
+    sph.apply_translation(C)
+    sph.visual.vertex_colors = np.tile(np.array([[255, 0, 255, 255]], dtype=np.uint8), (len(sph.vertices), 1))
+    scene.add_geometry(sph)
+
+    # ellipse as point cloud
+    ecolors = np.tile(np.array([[255, 0, 0, 255]], dtype=np.uint8), (len(epts), 1))
+    scene.add_geometry(trimesh.points.PointCloud(epts, colors=ecolors))
+
+    # rho spikes: center -> each slice point
+    segs = np.stack([np.repeat(C[None, :], len(pts_slice), axis=0), pts_slice], axis=1)
+    path = trimesh.load_path(segs)
+    path.colors = np.tile(np.array([[0, 255, 0, 120]], dtype=np.uint8), (len(path.entities), 1))
+    scene.add_geometry(path)
+
+    # optional frame axes
+    axis_len = max(ru, rv) * 1.2
+    axes_segs = np.array([
+        [C, C + axis_len * T],
+        [C, C + axis_len * N],
+        [C, C + axis_len * B],
+    ])
+    axis_path = trimesh.load_path(axes_segs)
+    axis_colors = np.array([
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+    ], dtype=np.uint8)
+    axis_path.colors = axis_colors[:len(axis_path.entities)]
+    scene.add_geometry(axis_path)
+    all_pts = []
+    all_cols = []
+
+    # slice points
+    if len(pts_slice) > 0:
+        all_pts.append(pts_slice)
+        all_cols.append(np.tile(np.array([[180, 180, 180, 100]], dtype=np.uint8), (len(pts_slice), 1)))
+
+    # ellipse points
+    if len(epts) > 0:
+        epts_valid = epts[np.isfinite(epts).all(axis=1)]
+        all_pts.append(epts_valid)
+        all_cols.append(np.tile(np.array([[255, 0, 0, 255]], dtype=np.uint8), (len(epts_valid), 1)))
+
+    # center point
+    if np.isfinite(C).all():
+        all_pts.append(C[None, :])
+        all_cols.append(np.array([[255, 0, 255, 255]], dtype=np.uint8))
+    # rho spikes as sampled points
+    p0 = np.repeat(C[None, :], len(pts_slice), axis=0)
+    p1 = pts_slice
+
+    t = np.linspace(0, 1, 10)[:, None, None]
+    spike_pts = ((1 - t) * p0[None, :, :] + t * p1[None, :, :]).reshape(-1, 3)
+
+    all_pts.append(spike_pts)
+    all_cols.append(np.tile(np.array([[0,255,0,255]], dtype=np.uint8), (len(spike_pts),1)))
+
+    pts_export = np.vstack(all_pts)
+    cols_export = np.vstack(all_cols)
+
+    pc = trimesh.points.PointCloud(pts_export, colors=cols_export)
+    pc.export(name + "_rho.ply")
+    print("saved", name + "_rho.ply")
+
+    #scene.export(name + ".glb")
+    #scene.dump(concatenate=True).export(name+"_rho.ply")
+    #print("saved", name + ".glb")
+    print("rho min/max/mean:", rho_slice.min(), rho_slice.max(), rho_slice.mean())
+    print("ru, rv:", ru, rv)
+
+
+
+
+def sample_segments_as_points(p0, p1, n=12):
+    p0 = np.asarray(p0, dtype=np.float64)
+    p1 = np.asarray(p1, dtype=np.float64)
+
+    valid = np.isfinite(p0).all(axis=1) & np.isfinite(p1).all(axis=1)
+    p0 = p0[valid]
+    p1 = p1[valid]
+
+    if len(p0) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+
+    t = np.linspace(0.0, 1.0, n)[:, None, None]
+    pts = (1.0 - t) * p0[None, :, :] + t * p1[None, :, :]
+    return pts.reshape(-1, 3)
+
+
+def visualize_all_keyframes_rho_spikes(
+    curve_core,
+    surface_points,
+    slab_half_width=0.003,
+    ellipse_samples=64,
+    max_spikes_per_key=120,
+    spike_samples=12,
+    name="rho_all"
+):
+    key_ts = np.asarray(curve_core.key_ts, dtype=np.float64)
+    pts = np.asarray(surface_points, dtype=np.float64)
+
+    all_pts = []
+    all_cols = []
+
+    for key_index, s0 in enumerate(key_ts):
+        s_arr = np.array([s0], dtype=np.float64)
+
+        intpl = curve_core.interpolate(s_arr)
+        C = intpl["points"][0]
+        frame = intpl["frame"][0]      # world -> local
+        yz_radius = intpl["radius"][0]
+
+        if not np.isfinite(C).all() or not np.isfinite(frame).all() or not np.isfinite(yz_radius).all():
+            continue
+
+        axes = frame.T
+        T = axes[:, 0]
+        N = axes[:, 1]
+        B = axes[:, 2]
+
+        ru = yz_radius[0]
+        rv = yz_radius[1]
+
+        # project all points into THIS keyframe's local frame
+        local = np.einsum('ij,nj->ni', frame, (pts - C[None, :]))
+        w = local[:, 0]
+
+        # thin slab for actual cross-section
+        mask = np.abs(w) <= slab_half_width
+        pts_slice = pts[mask]
+        local_slice = local[mask]
+
+        if len(pts_slice) == 0:
+            continue
+
+        # optional subsample of slice points so spikes stay visible
+        if len(pts_slice) > max_spikes_per_key:
+            idx = np.random.choice(len(pts_slice), max_spikes_per_key, replace=False)
+            pts_slice = pts_slice[idx]
+            local_slice = local_slice[idx]
+
+        # ellipse points in world
+        theta = np.linspace(0.0, 2.0 * np.pi, ellipse_samples, endpoint=False)
+        epts = (
+            C[None, :]
+            + (ru * np.cos(theta))[:, None] * N[None, :]
+            + (rv * np.sin(theta))[:, None] * B[None, :]
+        )
+        epts = epts[np.isfinite(epts).all(axis=1)]
+
+        # 1. slice points
+        pts_slice_valid = pts_slice[np.isfinite(pts_slice).all(axis=1)]
+        if len(pts_slice_valid) > 0:
+            all_pts.append(pts_slice_valid)
+            all_cols.append(
+                np.tile(np.array([[180, 180, 180, 120]], dtype=np.uint8), (len(pts_slice_valid), 1))
+            )
+
+        # 2. ellipse points
+        if len(epts) > 0:
+            all_pts.append(epts)
+            all_cols.append(
+                np.tile(np.array([[255, 0, 0, 255]], dtype=np.uint8), (len(epts), 1))
+            )
+
+        # 3. center point
+        all_pts.append(C[None, :])
+        all_cols.append(np.array([[255, 0, 255, 255]], dtype=np.uint8))
+
+        # 4. rho spikes as sampled points
+        p0 = np.repeat(C[None, :], len(pts_slice_valid), axis=0)
+        p1 = pts_slice_valid
+        spike_pts = sample_segments_as_points(p0, p1, n=spike_samples)
+
+        if len(spike_pts) > 0:
+            all_pts.append(spike_pts)
+            all_cols.append(
+                np.tile(np.array([[0, 255, 0, 255]], dtype=np.uint8), (len(spike_pts), 1))
+            )
+
+    if len(all_pts) == 0:
+        print("No valid keyframes / slabs found.")
+        return
+
+    pts_export = np.vstack(all_pts)
+    cols_export = np.vstack(all_cols)
+
+    pc = trimesh.points.PointCloud(pts_export, colors=cols_export)
+    pc.export(name + "_rho_all.ply")
+    print("saved", name + "_rho_all.ply")
+
+
+
+def visualize_section_radius_uv(
+    curve_core,
+    surface_points,
+    key_index,
+    slab_half_width=0.002,
+    n_angle_bins=72,
+    quantile=0.98,
+    name='radius_uv'
+):
+    key_ts = np.asarray(curve_core.key_ts, dtype=np.float64)
+    s0 = key_ts[key_index:key_index+1]
+
+    intpl = curve_core.interpolate(s0)
+    C = intpl["points"][0]
+    frame = intpl["frame"][0]      # world -> local
+    yz_radius = intpl["radius"][0]
+
+    ru, rv = yz_radius[0], yz_radius[1]
+
+    pts = np.asarray(surface_points, dtype=np.float64)
+
+    # project into this keyframe's local frame
+    local = np.einsum('ij,nj->ni', frame, (pts - C[None, :]))
+    w = local[:, 0]
+    u = local[:, 1]
+    v = local[:, 2]
+
+    # thin slab
+    mask = np.abs(w) <= slab_half_width
+    u = u[mask]
+    v = v[mask]
+
+    if len(u) == 0:
+        print("No points in slab.")
+        return
+
+    rho = np.sqrt(u**2 + v**2)
+    theta = np.arctan2(v, u)
+
+    # stored ellipse in uv plane
+    t = np.linspace(0.0, 2.0*np.pi, 400)
+    u_ell = ru * np.cos(t)
+    v_ell = rv * np.sin(t)
+
+    # ellipse radial function
+    def r_ellipse(th):
+        return 1.0 / np.sqrt((np.cos(th)**2)/(ru**2 + 1e-12) +
+                             (np.sin(th)**2)/(rv**2 + 1e-12))
+
+    # directional boundary estimate from slice points
+    edges = np.linspace(-np.pi, np.pi, n_angle_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    r_surf = np.full(n_angle_bins, np.nan)
+
+    bin_ids = np.clip(np.digitize(theta, edges) - 1, 0, n_angle_bins - 1)
+    for b in range(n_angle_bins):
+        m = bin_ids == b
+        if np.sum(m) < 5:
+            continue
+        r_surf[b] = np.quantile(rho[m], quantile)
+
+    valid = np.isfinite(r_surf)
+    u_surf = r_surf[valid] * np.cos(centers[valid])
+    v_surf = r_surf[valid] * np.sin(centers[valid])
+
+    # plot 1: uv cross-section
+    plt.figure(figsize=(7, 7))
+    plt.scatter(u, v, s=4, alpha=0.25, label="slice points")
+    plt.plot(u_ell, v_ell, 'r-', linewidth=2, label="stored ellipse")
+    plt.plot(u_surf, v_surf, 'b.-', linewidth=2, markersize=4, label="directional boundary")
+    plt.scatter([0], [0], c='m', s=80, label="center")
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.xlabel("u")
+    plt.ylabel("v")
+    plt.title(f"Keyframe {key_index}: local cross-section")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(name+"_local_crosssec.jpg") #show()
+
+    # plot 2: radius vs angle
+    plt.figure(figsize=(10, 4))
+    th_plot = np.linspace(-np.pi, np.pi, 400)
+    plt.plot(th_plot, r_ellipse(th_plot), 'r-', linewidth=2, label="ellipse radius")
+    plt.plot(centers[valid], r_surf[valid], 'b.-', linewidth=2, markersize=4, label="surface directional radius")
+    plt.xlabel("theta")
+    plt.ylabel("radius")
+    plt.title(f"Keyframe {key_index}: radius as function of angle")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(name+"_radius_fn_angle.jpg")
+
+    # plot 3: residual eta
+    eta = (u**2)/(ru**2 + 1e-12) + (v**2)/(rv**2 + 1e-12)
+    plt.figure(figsize=(10, 4))
+    plt.hist(eta, bins=50)
+    plt.xlabel("eta = u^2/ru^2 + v^2/rv^2")
+    plt.ylabel("count")
+    plt.title(f"Keyframe {key_index}: ellipse residual")
+    plt.grid(True)
+    #plt.show()
+    plt.savefig(name+"_ellipse_residual.jpg")
+
+    print("eta mean:", eta.mean())
+    print("eta q95:", np.quantile(eta, 0.95))
+    print("eta max:", eta.max())

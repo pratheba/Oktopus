@@ -223,8 +223,8 @@ class CurveHandle():
     def generate_samples(self, num_samples):
         return self.core.generate_samples(num_samples)
 
-    def localize_samples(self, samples):
-        return self.core.localize_samples(samples)
+    def localize_samples(self, samples, update_curve=False, update_radius=False, update_wrap_radius=False, name=''):
+        return self.core.localize_samples(samples, update_curve=update_curve, update_radius=update_radius, update_wrap_radius=update_wrap_radius, name=name)
 
     def localize_samples_test(self, name, samples):
         return self.core.localize_samples_test(name, samples)
@@ -261,8 +261,16 @@ class CurveHandle():
         return samples_data, kidx
     
     def filter_grid_adapt(self, mc_grid, adapt_arg):
-        self.core.update_coords()
-        self.core.update_frame()
+        t = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
+        #print("loaded")
+        #print(t)
+        #self.core.key_points = t['key_points']
+        #self.core.key_ts = t['key_ts']
+        #self.core.key_radius = t['key_radius']
+        #self.core.key_frame = t['key_frame']
+        #self.update()
+        #self.core.update_coords()
+        #self.core.update_frame()
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
         accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
         kidx = kidx[inside]
@@ -398,7 +406,7 @@ class PWLACurve():
             # if some keypoints changed, update the curve
             self.update_coords()
             self.update_frame()
-
+            #self.update_radius()
             self.flag_points = False
             return
         
@@ -460,12 +468,6 @@ class PWLACurve():
         self.flag_points = True
         # self.flag_radius = False
 
-#    def calc_curve_length(self):
-#        pts = self.key_points
-#        edge_vec = pts[1:] - pts[:-1]
-#        edge_lengths = np.linalg.norm(edge_vec, axis=1)
-#        curve_length = np.sum(edge_lengths)
-#        return curve_length
 
     def set_points(self, points):
         assert (points.shape == self.key_points.shape)
@@ -587,26 +589,6 @@ class PWLACurve():
         self.z_axis = z_axis
         self.key_frame = np.stack([T, y_axis, z_axis], axis=1)
 
-#        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-#        if abs(np.dot(T[0], world_up)) > 0.95:
-#            world_up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-#
-#        N = np.zeros_like(T)
-#        B = np.zeros_like(T)
-#
-#        N0 = world_up - np.dot(world_up, T[0]) * T[0]
-#        N0 = N0 / (np.linalg.norm(N0) + 1e-12)
-#        N[0] = N0
-#        B[0] = np.cross(T[0], N[0])
-#
-#        for i in range(1, n):
-#            R = self.rotation_from_vectors(T[i-1], T[i])
-#            N[i] = R @ N[i-1]
-#            N[i] /= (np.linalg.norm(N[i]) + 1e-12)
-#
-#            B[i] = np.cross(T[i], N[i])
-#            B[i] /= (np.linalg.norm(B[i]) + 1e-12)
-         
         self.key_frame = np.stack([T, y_axis, z_axis], axis=1)
         self.rotation = None
         self.rot_slerp = None
@@ -664,6 +646,160 @@ class PWLACurve():
         self.curve_length = np.sum(edge_lengths)
         self.key_ts = np.cumsum(np.r_[0., edge_lengths]) / self.curve_length
 
+    def update_radius(self, bins, radius_yz):
+        #print(self.key_radius)
+        ry = np.interp(self.key_ts, bins, radius_yz[:, 0])
+        rz = np.interp(self.key_ts, bins, radius_yz[:, 1])
+        self.key_radius = np.stack([ry, rz], axis=1)
+        #print(self.key_radius)
+        #print("*********")
+
+    def update_radius_from_surfacepoints(self, points, n_bins=n_sample_curve, quantile=0.98, gaussian_smooth=1.0):
+        surface_points = np.array(surface_points, dtype=np.float64)
+        coord_points = self.curve_projection(surface_points)
+        valid_coord_index = np.logical_and(coord_points >= 0.0 and coord_points <= 1.0)
+
+        surface_points = surface_points[valid_coord_index]
+        coord_points = coord_points[valid_coord_index]
+
+        intpl = self.interpolate(coord_points)
+        coord_key_points_3D = intpl['points']
+        frame = intpl['frame']
+
+        samples_local = np.einsum('nij, nj -> ni', frame, (surface_points - coord_key_points_3D))
+        u = samples_local[:,1]
+        v = samples_local[:,2]
+
+        bin_edge = np.linspace(0,0, 1.0, n_bins+1)
+        bin_center = 0.5* (bin_edge[:-1]+bin_edge[1:])
+        bin_ids = np.clip(np.digitize(coord_points, bin_edge) -1, 0, n_bins-1)
+        
+        radius_y = np.full(n_bins, np.nan, dtype=np.float64)
+        radius_z = np.full(n_bins, np.nan, dtype=np.float64)
+
+        sample_count = np.zeros(n_bins, dtype=np.int32)        
+
+
+        for b in range(n_bins):
+            coords_in_b = (bin_ids == b)
+            sample_count[b] = np.sum(coords_in_b)
+            if sample_count[b] < min_count:
+                continue
+        
+            abs_u = np.abs(u[coords_in_b])
+            abs_v = np.abs(v[coords_in_b])
+            
+            radius_y[b] = np.quantile(abs_u, quantile)
+            radius_z[b] = np.quantile(abs_v, quantile)
+
+        valid_bins = np.isfinite(radius_y) & np.isfinite(radius_z)
+
+        radius_y = fill_invalid_bins(radius_y, valid_bins)
+        radius_z = fill_invalid_bins(radius_z, valid_bins)
+
+        if gaussian_smooth > 0:
+            radius_y = gaussian_filter1d(radius_y, sigma=gaussian_smooth)
+            radius_z = gaussian_filter1d(radius_z, sigma=gaussian_smooth)
+
+        radius_yz = np.stack([radius_y, radius_z], axis=1)
+        print("radius_yz",radius_yz)
+        self.update_radius(bin_center, radius_yz)
+        
+        return {"u": u,
+                "v": v,
+                "radius": radius_yz }
+
+
+    def update_radius_from_coords(self, coord_points, u, v, n_bins=n_sample_curve, quantile=0.98, gaussian_smooth=2.0, min_count=30):
+
+        bin_edge = np.linspace(0.0, 1.0, n_bins+1)
+        bin_center = 0.5* (bin_edge[:-1]+bin_edge[1:])
+        bin_ids = np.clip(np.digitize(coord_points, bin_edge) -1, 0, n_bins-1)
+        
+        radius_y = np.full(n_bins, np.nan, dtype=np.float64)
+        radius_z = np.full(n_bins, np.nan, dtype=np.float64)
+
+        sample_count = np.zeros(n_bins, dtype=np.int32)        
+
+        for b in range(n_bins):
+            coords_in_b = (bin_ids == b)
+            sample_count[b] = np.sum(coords_in_b)
+            if sample_count[b] < min_count:
+                continue
+        
+            abs_u = np.abs(u[coords_in_b])
+            abs_v = np.abs(v[coords_in_b])
+            
+            radius_y[b] = np.max(abs_u) #np.quantile(abs_u, quantile)
+            radius_z[b] = np.max(abs_v) #np.quantile(abs_v, quantile)
+
+        valid_bins = np.isfinite(radius_y) & np.isfinite(radius_z)
+
+        radius_y = fill_invalid_bins(radius_y, valid_bins)
+        radius_z = fill_invalid_bins(radius_z, valid_bins)
+
+        if gaussian_smooth > 0:
+            radius_y = gaussian_filter1d(radius_y, sigma=gaussian_smooth)
+            radius_z = gaussian_filter1d(radius_z, sigma=gaussian_smooth)
+
+        radius_yz = np.stack([radius_y, radius_z], axis=1)
+        #print("radius_yz",radius_yz)
+        self.update_radius(bin_center, radius_yz)
+        return radius_yz        
+
+    def update_wrap_profile_from_coords(self, coord_points, u, v, n_curve_bins=n_sample_curve, n_theta_bins=64, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=1.0, min_count = 10):
+        rho = np.sqrt(u*u + v*v)
+        theta = np.arctan2(v, u)
+        bin_edges_curve = np.linspace(0.0, 1.0, n_curve_bins+1)
+        bin_center_curve = 0.5 * (bin_edges_curve[:-1] + bin_edges_curve[1:])
+        bin_ids_curve = np.clip(np.digitize(coord_points, bin_edges_curve) -1, 0, n_curve_bins-1)
+
+        bin_edges_theta = np.linspace(-np.pi, np.pi, n_theta_bins + 1)
+        bin_center_theta = 0.5 * (bin_edges_theta[:-1] + bin_edges_theta[1:])
+        bin_ids_theta = np.clip(np.digitize(theta, bin_edges_theta) -1, 0, n_theta_bins-1)
+
+        r_wrap = np.full((n_curve_bins, n_theta_bins), np.nan, dtype=np.float64)
+        counts = np.zeros((n_curve_bins, n_theta_bins), dtype=np.int32)
+
+        for s in range(n_curve_bins):
+            for t in range(n_theta_bins):
+                m = (bin_ids_curve == s) & (bin_ids_theta == t)
+                counts[s,t] = np.sum(m)
+                if counts[s,t] < min_count:
+                    continue
+                r_wrap[s, t] = np.quantile(rho[m], quantile)
+
+        for s in range(n_curve_bins):
+            row = r_wrap[s]
+            valid = np.isfinite(row)
+            if np.any(valid):
+                r_wrap[s] = fill_invalid_theta(row, valid)
+       
+        for t in range(n_theta_bins):
+            col = r_wrap[:,t]
+            valid = np.isfinite(col)
+            if np.any(valid):
+                r_wrap[:,t] = fill_invalid_bins(col, valid) 
+
+        # gaussian smooth of Theta
+        if gaussian_smooth_theta > 0:
+            r_wrap = gaussian_filter1d(np.concatenate([r_wrap, r_wrap, r_wrap], axis=1), sigma=gaussian_smooth_theta, axis=1)[:, n_theta_bins:2*n_theta_bins]
+        if gaussian_smooth_curve > 0:
+            r_wrap = gaussian_filter1d(r_wrap, sigma=gaussian_smooth_curve, axis=0)
+
+
+        self.wrap_s_bins = bin_center_curve 
+        self.wrap_theta_bins = bin_center_theta
+        self.wrap_radius = r_wrap
+        self.wrap_radius_max = np.max(r_wrap, axis=1)
+
+        return {
+            "curve_bins": bin_center_curve,
+            "theta_bins": bin_center_theta,
+            "wrap_radius": r_wrap,
+            "wrap_radius_max": self.wrap_radius_max,
+            "counts": counts,
+        }
 
     def is_points_in_edge(self, points, vt0, vt1):
         # project points on line segment(edge), return if inside the edge 
@@ -866,7 +1002,7 @@ class PWLACurve():
         # And all are bounding to radius
         samples_local = samples_local0.copy()
         stats = compute_local_centering_stats(samples_local, sample_keypoint_map)
-        C_old, C_new = compute_centered_curve_world(self, stats)
+        C_old, C_new, C_key_new = compute_centered_curve_world(self, stats)
         C_new_smooth = gaussian_filter1d(C_new, sigma=2, axis=0)
         export_curve_points_as_ply(C_old, C_new_smooth, str(idx)+"_curve_compare_points.ply")
         export_shape_and_curves_as_ply(
@@ -884,12 +1020,16 @@ class PWLACurve():
         #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
 
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0):
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, update_wrap_radius=False, name=''):
+        #trimesh.Trimesh(vertices=pointcloudsamples, process=False).export("samples.ply")
+        #exit()
         sample_keypoint_map = self.curve_projection(pointcloudsamples)
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
         ### Keep only the points that fall within the rane of 0 and 1
+        if update_curve:
+            pointcloudsamples0 = pointcloudsamples.copy()
         sample_keypoint_map = sample_keypoint_map[sample_keypoint_map_range]
         pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
         sample_index = sample_index[sample_keypoint_map_range]
@@ -902,15 +1042,42 @@ class PWLACurve():
         yz_radius = intpl['radius']
         frame_mat = intpl['frame']
 
-        # If the end ball is None then x_radius  = 1.0 
-        x_radius = self.calc_x_radius(sample_keypoint_map)
-        radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
-
         # frame: (N, 3,3), vs (N, 3)
         # The vector of the keypoint to the skeletam point is rotated using the rotation from
         samples_local0 = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
         # And all are bounding to radius
         w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
+        if update_curve:
+            stats = compute_local_centering_stats(samples_local0, sample_keypoint_map)
+            C_old, C_new, C_key_unsmooth = compute_centered_curve_world(self, stats)
+            C_new_smooth = gaussian_filter1d(C_new, sigma=2.0, axis=0)
+            s_dense = 0.5 * (stats["edges"][:-1] + stats["edges"][1:])
+            C_key_smooth = resample_curve_to_key_ts(s_dense, C_new_smooth, self.key_ts)
+            #self.key_points = C_key_new
+            #print(self.key_points.shape)
+            #print(C_new_smooth.shape)
+            self.key_points = C_key_smooth
+            self.update_coords()
+            self.update_frame()
+            return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=True, name=name)
+        if update_radius:
+            self.update_radius_from_coords(sample_keypoint_map, u, v)
+            radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False)['radius']
+            #print(yz_radius.shape)
+            yz_radius = radius_yz.copy()
+            self.update_coords()
+            self.update_frame()
+            visualize_keyframes_with_ellipses_trimesh(curve_core=self, surface_points=pointcloudsamples, name=name)
+        if update_wrap_radius:
+            self.update_wrap_profile_from_coords(sample_keypoint_map, u, v)
+        #visualize_keyframes_with_ellipses_trimesh(curve_core=self, surface_points=pointcloudsamples, name=name)
+
+        # If the end ball is None then x_radius  = 1.0 
+        x_radius = self.calc_x_radius(sample_keypoint_map)
+        #print(yz_radius.shape)
+        #print(x_radius[:,None].shape)
+        radius = np.concatenate([x_radius[:,None], yz_radius], axis=1)
+
         samples_local = samples_local0.copy()
         samples_local /= (radius + 1e-12)
         rho = np.sqrt(v**2 + u**2)
@@ -1114,6 +1281,7 @@ class PWLACurve():
         self.key_points = points
         self.update_coords()
         self.update_frame()
+        #self.update_radius()
 
     def restore_stretch(self):
         self.key_ts = self.key_ts0.copy()
@@ -1321,8 +1489,29 @@ class PWLACurve():
 
         # map avatar coords -> accessory coords by arclen
         #avatar_coords = maybe_flip_coords(avatar_coords, True) #adapt_arg.get("flip_s", False))
+
+        t = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_3']
+        #print("loaded")
+        #print(t)
+        #accessory_curve_handle.core.key_points = t['key_points']
+        #accessory_curve_handle.core.key_ts = t['key_ts']
+        #self.core.key_radius = t['key_radius']
+        #accessory_curve_handle.core.key_frame = t['key_frame']
+        #accessory_curve_handle.update()
+        #accessory_curve_handle.core.update_coords()
+        #accessory_curve_handle.core.update_frame()
+
         acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core)
         #acc_coords = maybe_flip_coords(acc_coords, True) #adapt_arg.get("flip_s", False))
+
+#        import matplotlib.pyplot as plt
+#        plt.hist(acc_coords, bins=50)
+#        plt.title("Accessory coords coverage")
+#        plt.savefig("coords_coverage_acc.jpg")
+#        plt.hist(avatar_coords, bins=50)
+#        plt.title("Avatar coords coverage")
+#        plt.savefig("coords_coverage_avatar.jpg")
+        #exit()
 
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
 
@@ -1332,97 +1521,70 @@ class PWLACurve():
 
         acc_radius_y = acc_intpl["radius"][:,0]
         acc_radius_z = acc_intpl["radius"][:,1]
+
+        source_npz  = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
+        r_src = self.interpolate_wrap_radius_test1(avatar_coords, theta_avatar, source_npz['wrap_theta_bins'], source_npz['wrap_s_bins'], source_npz['wrap_radius'])
+        r_tgt = accessory_curve_handle.core.interpolate_wrap_radius_test1(acc_coords, theta_avatar, t['wrap_theta_bins'], t['wrap_s_bins'], t['wrap_radius'])
+
+        rho_avatar = np.sqrt(u_avatar**2 + v_avatar**2)
+        scale = r_tgt / (r_src + 1e-12)
+        rho_acc = rho_avatar * scale 
+
+        u_acc = 0.85*rho_acc * np.cos(theta_avatar)
+        v_acc = 0.85*rho_acc * np.sin(theta_avatar)
+
+        scale_y = acc_radius_y / (avatar_radius_y + 1e-12)
+        scale_z = acc_radius_z / (avatar_radius_z + 1e-12)
+        scale_w = tangent_acc / (tangent_avatar + 1e-12)
+        w_acc = w_avatar * scale_w 
+
+        
+
+
         #acc_frame = maybe_swap_nb(acc_intpl["frame"], True) #adapt_arg.get("swap_nb", False))
         acc_frame = acc_intpl["frame"] #adapt_arg.get("swap_nb", False))
         avatar_frame = avatar_data["frame_mat"]
 
-        #u_acc, v_acc = rotate_uv_avatar_to_acc(u_avatar, v_avatar,
-#                                       avatar_frame[:,1], avatar_frame[:,2],
-#                                       acc_frame[:,2], acc_frame[:,1],
-#                                       Ta=avatar_frame[:,0],
-#                                       Tb=acc_frame[:,0])
-        w_acc, u_acc, v_acc = rotate_wuv_avatar_to_acc(
-            w_avatar, u_avatar, v_avatar,
-            avatar_frame[:,0], avatar_frame[:,1], avatar_frame[:,2],
-            acc_frame[:,0],    acc_frame[:,1],    acc_frame[:,2],
-            project_SO3=True
-        )
-        delta = np.median(estimate_delta(avatar_frame[:,1], avatar_frame[:,2], acc_frame[:,1]))
-        cd, sd = np.cos(delta), np.sin(delta)
-        u2 =  cd*u_acc - sd*v_acc
-        v2 =  sd*u_acc + cd*v_acc
-        u_acc, v_acc = u2, v2
-#
-#        w_n_acc = w_acc / (tangent_acc + 1e-12)
-        #v_acc = -v_acc
-        #u_acc, v_acc = v_acc, u_acc
-        #acc_radius_y, acc_radius_z = acc_radius_z, acc_radius_y
-#        nbins = 64
-#        bins = np.clip((acc_coords * nbins).astype(np.int32), 0, nbins-1)
-#
-#        mean_u = np.zeros(nbins)
-#        mean_v = np.zeros(nbins)
-#        count  = np.zeros(nbins)
-#
-#        np.add.at(mean_u, bins, u_acc)
-#        np.add.at(mean_v, bins, v_acc)
-#        np.add.at(count,  bins, 1.0)
-#
-#        mean_u /= (count + 1e-12)
-#        mean_v /= (count + 1e-12)
-#        u_acc = u_acc - mean_u[bins]
-#        v_acc = v_acc - mean_v[bins]
+#        w_acc, u_acc, v_acc = rotate_wuv_avatar_to_acc(
+#            w_avatar, u_avatar, v_avatar,
+#            avatar_frame[:,0], avatar_frame[:,1], avatar_frame[:,2],
+#            acc_frame[:,0],    acc_frame[:,1],    acc_frame[:,2],
+#            project_SO3=True
+#        )
+#        delta = np.median(estimate_delta(avatar_frame[:,1], avatar_frame[:,2], acc_frame[:,1]))
+#        cd, sd = np.cos(delta), np.sin(delta)
+#        u2 =  cd*u_acc - sd*v_acc
+#        v2 =  sd*u_acc + cd*v_acc
+#        u_acc, v_acc = u2, v2
 
+        u_acc = 0.9*u_avatar * scale_y 
+        v_acc = 0.9*v_avatar * scale_z
 
-#        scale_y = (1.1*avatar_radius_y + 1e-12) / (acc_radius_y + 1e-12)
-#        scale_z = (1.1*avatar_radius_z + 1e-12) / (acc_radius_z + 1e-12)
-#        u_acc /= scale_y
-#        v_acc /= scale_z
-#        u_n_acc = u_acc / (acc_radius_y+ 1e-12)
-#        v_n_acc = v_acc / (acc_radius_z + 1e-12)
-        #u_n_acc /= scale_y
-        #v_n_acc /= scale_z
-        #u_acc *= 0.6
-        #v_acc *= 0.6
-
-        #print(avatar_radius_y)
-        #print(avatar_radius_z)
-        #u_n_acc = u_acc / (avatar_radius_y + 1e-12)
-        #v_n_acc = v_acc / (avatar_radius_z + 1e-12)
+        w_n_acc = w_acc / (tangent_acc + 1e-12)
+        u_n_acc = u_acc / (acc_radius_y + 1e-12)
+        v_n_acc = v_acc / (acc_radius_z + 1e-12)
 
         #theta_offset = np.deg2rad(adapt_arg.get('theta_offset_deg', -35.0))
-        theta_offset = 0
+        #theta_offset = 0
 
-        angles_acc = theta_avatar + theta_offset
-        angles_acc = (angles_acc + np.pi) % (2*np.pi) - np.pi
-        rho_scale = 0.9
-        rho_n_acc = rho_scale * rho_n_avatar
+        #angles_acc = theta_avatar + theta_offset
+        #angles_acc = (angles_acc + np.pi) % (2*np.pi) - np.pi
+        #rho_scale = 0.9
+        #rho_n_acc = rho_scale * rho_n_avatar
 
-        u_n_acc = rho_n_acc * np.cos(angles_acc)
-        v_n_acc = rho_n_acc * np.sin(angles_acc)
+        #u_n_acc = rho_n_acc * np.cos(angles_acc)
+        #v_n_acc = rho_n_acc * np.sin(angles_acc)
 
 
         vx_acc = 2.0 * acc_coords - 1.0
-        #samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
-        samples_local_acc = np.stack([w_n_avatar + vx_acc, u_n_acc, v_n_acc], axis=1)
-        #samples_local_acc = np.stack([w_n_acc + vx_acc, v_n_acc, u_n_acc], axis=1)
+        #samples_local_acc = np.stack([w_n_avatar + vx_acc, u_n_acc, v_n_acc], axis=1)
+        samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
 
-        # recompute consistent polar terms for boot
-        #angles_acc = np.arctan2(v_n_acconly, u_n_acconly)
-        #angles_acc = np.arctan2(v_n_acc, u_n_acc)
-        #angles_acc += delta
-        #rho_acc = np.sqrt((u_acc)**2 + (v_acc)**2)
-        #u_acc = rho_acc * np.cos(angles_acc)
-        #v_acc = rho_acc * np.sin(angles_acc)
-        #u_n_acc = u_acc / (avatar_radius_y + 1e-12)
-        #v_n_acc = v_acc / (avatar_radius_z + 1e-12)
-        #u_n_acc = u_acc / (1.2*acc_radius_y+ 1e-12)
-        #v_n_acc = v_acc / (1.2*acc_radius_z + 1e-12)
-        #rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
-        #samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
-        u_acc = u_n_acc * acc_radius_y
-        v_acc = v_n_acc * acc_radius_z
+        #u_acc = u_n_acc * acc_radius_y
+        #v_acc = v_n_acc * acc_radius_z
         rho_acc = np.sqrt(u_acc**2 + v_acc**2)
+        rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
+        angles_acc = np.arctan2(v_n_acc, u_n_acc)
 
         accessory_data = dict(avatar_data)
         accessory_data["coords"] = acc_coords
@@ -1535,6 +1697,119 @@ class PWLACurve():
         avatar_intpl = avatar_curve_handle.core.interpolate(avatar_arclen_coords)
 
         return accessory_intpl, avatar_intpl, avatar_arclen_coords
+
+    def interpolate_wrap_radius(self, ts, theta):
+        if not hasattr(self, "wrap_radius"):
+            return None
+
+        theta = (theta + np.pi) % (2*np.pi) - np.pi
+
+        out = np.empty_like(ts, dtype=np.float64)
+
+        for n in range(len(ts)):
+            # interpolate in s first
+            r_theta_grid = np.empty(len(self.wrap_theta_bins), dtype=np.float64)
+            for k in range(len(self.wrap_theta_bins)):
+                r_theta_grid[k] = np.interp(ts[n], self.wrap_s_bins, self.wrap_radius[:, k])
+
+            # periodic interpolation in theta
+            theta_grid = self.wrap_theta_bins
+            theta_ext = np.concatenate([theta_grid - 2*np.pi, theta_grid, theta_grid + 2*np.pi])
+            r_ext = np.concatenate([r_theta_grid, r_theta_grid, r_theta_grid])
+
+            out[n] = np.interp(theta[n], theta_ext, r_ext)
+
+        return out
+
+    def interpolate_wrap_radius_test1(self, ts, theta, wrap_theta_bins, wrap_s_bins, wrap_radius):
+        """
+        Vectorized interpolation of directional wrap radius.
+
+        Args:
+            ts:    (N,) curve coordinates in [0,1]
+            theta: (N,) angles in radians
+
+        Returns:
+            r:     (N,) interpolated directional radius
+        """
+
+        ts = np.asarray(ts, dtype=np.float64)
+        theta = np.asarray(theta, dtype=np.float64)
+
+        s_bins = wrap_s_bins              # (Ns,)
+        theta_bins = wrap_theta_bins      # (Nt,)
+        wrap = wrap_radius                # (Ns, Nt)
+
+        Ns = len(s_bins)
+        Nt = len(theta_bins)
+        N = len(ts)
+
+        # -----------------------------
+        # 1) linear interpolation in s
+        # -----------------------------
+        s_idx1 = np.searchsorted(s_bins, ts, side='right')
+        s_idx1 = np.clip(s_idx1, 1, Ns - 1)
+        s_idx0 = s_idx1 - 1
+
+        s0 = s_bins[s_idx0]
+        s1 = s_bins[s_idx1]
+        ws = (ts - s0) / (s1 - s0 + 1e-12)   # (N,)
+
+        # gather wrap values at the two neighboring s bins
+        r0 = wrap[s_idx0, :]   # (N, Nt)
+        r1 = wrap[s_idx1, :]   # (N, Nt)
+
+        r_s = (1.0 - ws[:, None]) * r0 + ws[:, None] * r1   # (N, Nt)
+
+        # --------------------------------
+        # 2) periodic linear interpolation in theta
+        # --------------------------------
+        period = 2.0 * np.pi
+        theta0 = theta_bins[0]
+        dtheta = theta_bins[1] - theta_bins[0]
+
+        # map theta into same periodic interval as theta_bins
+        theta_wrap = ((theta - theta0) % period) + theta0
+
+        # fractional theta-bin coordinate
+        t = (theta_wrap - theta0) / dtheta
+        th_idx0 = np.floor(t).astype(np.int64) % Nt
+        th_idx1 = (th_idx0 + 1) % Nt
+        wt = t - np.floor(t)   # (N,)
+
+        rows = np.arange(N)
+        rv0 = r_s[rows, th_idx0]
+        rv1 = r_s[rows, th_idx1]
+
+        out = (1.0 - wt) * rv0 + wt * rv1
+        return out
+
+    def interpolate_wrap_radius_test(self, ts, theta, wrap_theta_bins, wrap_s_bins, wrap_radius):
+
+        theta = (theta + np.pi) % (2*np.pi) - np.pi
+
+        out = np.empty_like(ts, dtype=np.float64)
+
+
+        print(len(ts))
+        print(len(wrap_theta_bins))
+        exit()
+
+        for n in range(len(ts)):
+            # interpolate in s first
+            print(n, flush=True)
+            r_theta_grid = np.empty(len(wrap_theta_bins), dtype=np.float64)
+            for k in range(len(wrap_theta_bins)):
+                r_theta_grid[k] = np.interp(ts[n], wrap_s_bins, wrap_radius[:, k])
+
+            # periodic interpolation in theta
+            theta_grid = wrap_theta_bins
+            theta_ext = np.concatenate([theta_grid - 2*np.pi, theta_grid, theta_grid + 2*np.pi])
+            r_ext = np.concatenate([r_theta_grid, r_theta_grid, r_theta_grid])
+
+            out[n] = np.interp(theta[n], theta_ext, r_ext)
+
+        return out
 
     def periodic_interpolate(self, ts_detail, ts, radius):
         x = np.mod(ts_detail, 1.0)
