@@ -2,6 +2,23 @@ import torch
 import numpy as np
 import trimesh
 import matplotlib.pyplot as plt
+from typing import NamedTuple
+
+class Bin(NamedTuple):
+    edge: np.ndarray
+    center: np.ndarray
+    ids: np.ndarray
+
+def get_bins(points, n_bins, istheta=False):
+    if istheta:
+        bin_edge = np.linspace(-np.pi, np.pi, n_bins + 1)
+    else:
+        bin_edge = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_center = 0.5 * (bin_edge[:-1] + bin_edge[1:])
+    bin_ids = np.clip(np.digitize(points, bin_edge) - 1, 0, n_bins-1)
+    return Bin(bin_edge, bin_center, bin_ids) 
+
+
 
 def smoothstep01(x):
     return x * x * (3 - 2*x)
@@ -225,15 +242,15 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=100, min_count=
             continue
 
         uv = np.stack([u[m], v[m]], axis=-1)
-        mu = uv.mean(axis=0)
+        mu = np.median(uv, axis=0) #uv.mean(axis=0)
         r = np.linalg.norm(uv, axis=-1)
-        r_mean = r.mean()
+        r_mean = np.quantile(r, 0.9) #r.mean()
 
         offset_uv[b] = mu
         offset_rel[b] = np.linalg.norm(mu) / (r_mean + 1e-12)
         per_bin_points.append(uv)
 
-    valid_mask = ~np.isnan(offset_rel)
+    valid_mask = (~np.isnan(offset_rel) & (counts >= min_count) & (offset_rel < 0.35))
 
     return {
         "offset_uv": offset_uv,
@@ -521,6 +538,7 @@ def compute_centered_curve_world(curve_core, stats):
     B = frame[:,2,:] #axes[:,:,2]
 
     C_new = C.copy()
+    alpha = 1.0 #0.3
 
     for i in range(len(s)):
         if not valid[i]:
@@ -528,7 +546,7 @@ def compute_centered_curve_world(curve_core, stats):
 
         mu_u, mu_v = uv[i]
         delta = mu_u * N[i] + mu_v * B[i]
-        C_new[i] = C[i] + delta
+        C_new[i] = C[i] + alpha* delta
 
     #C_key_new = resample_curve_to_key_ts(s, C_new, curve_core.key_ts)
 

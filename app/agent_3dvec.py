@@ -504,6 +504,7 @@ class Agent():
                 adapt_arg = {
                     'accessory_curve_handle': accessory_curve_handle,
                     'avatar_curve_handle': curve,
+                    'wrap_radius': adapt_config['wrap_radius'],
                     'device': self.device,
                     'avatar_curve_idx': self.feat_dict[key],
                     'accessory_curve_idx': self.feat_dict[accessory_key],

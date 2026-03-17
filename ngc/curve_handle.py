@@ -248,7 +248,7 @@ class CurveHandle():
         return samples_data, kidx
     
     def filter_grid_adapt(self, mc_grid, adapt_arg):
-        t = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
+        #t = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
         #print("loaded")
         #print(t)
         #self.core.key_points = t['key_points']

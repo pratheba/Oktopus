@@ -188,10 +188,10 @@ def ngc_dataset(arg):
             output_val_file = op.join(output_val_path, file_name)
             output_all_file = op.join(output_all_path, file_name)
 
-            #if op.exists(output_train_file):
+            #if op.exists(output_all_file):
             #    print('Exists: ', item_path)
             #    pbar.update(1)
-            #    #continue
+            #    continue
 
             handle = Handle()
             handle.load(handle_file)
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 320000,
-        'n_space_samples' : 40000,
+        'n_surface_samples' : 3200000,
+        'n_space_samples' : 400000,
     }
     ngc_dataset(arg)
