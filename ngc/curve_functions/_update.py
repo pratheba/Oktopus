@@ -3,9 +3,8 @@ from curve_utils.curve_utils import get_bins, fill_invalid_theta, fill_invalid_b
 from scipy.ndimage import gaussian_filter1d
 from ._interpolate import interpolate_wrap_radius1
 
-n_sample_curve = 200
 
-def update_wrap_occupancy_from_coords(self, coord_points, u, v, n_curve_bins=n_sample_curve, quantile=0.75, gaussian_smooth=2.0, min_count=50):
+def update_wrap_occupancy_from_coords(self, coord_points, u, v, n_curve_bins=24, quantile=0.75, gaussian_smooth=2.0, min_count=50):
     bin_data = get_bins(coord_points, n_curve_bins)
     rho = np.sqrt(u**2 + v**2)
     theta = np.arctan2(v, u)
@@ -31,7 +30,7 @@ def update_wrap_occupancy_from_coords(self, coord_points, u, v, n_curve_bins=n_s
     return occupancy
 
      
-def update_wrap_profile_from_coords(self, coord_points, w, u, v, n_curve_bins=n_sample_curve, n_theta_bins=36, quantile=0.97, gaussian_smooth_curve=2.0, gaussian_smooth_theta=0.75, min_count = 25, radius_type = 'wrap'):
+def update_wrap_profile_from_coords(self, coord_points, w, u, v, n_curve_bins=24, n_theta_bins=36, quantile=0.97, gaussian_smooth_curve=2.0, gaussian_smooth_theta=0.75, min_count = 25, radius_type = 'wrap'):
     rho = np.sqrt(u*u + v*v)
     theta = np.arctan2(v, u)
     #bin_edges_curve = np.linspace(0.0, 1.0, n_curve_bins+1)

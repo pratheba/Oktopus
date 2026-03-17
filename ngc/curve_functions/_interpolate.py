@@ -9,10 +9,6 @@ from scipy.ndimage import gaussian_filter1d
 from curve_utils import *
 
 
-n_sample_curve = 200
-n_sample_circle = 120
-
-
 def interpolate(self, non_uniform_linear_skeletal_points, points=True, radius=True, frame=True):
     res = {}
     # key_points: (N, 3); key_radius: (N, 2)

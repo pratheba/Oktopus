@@ -13,9 +13,11 @@ from curve_functions._frame import *
 from curve_functions._update import update_wrap_profile_from_coords, update_wrap_occupancy_from_coords
 
 
+#n_sample_curve = 200
+#n_sample_circle = 120
+
 n_sample_curve = 200
 n_sample_circle = 120
-
 
 class PWLACurve():
     """docstring for PWLACurve."""
@@ -344,7 +346,7 @@ class PWLACurve():
                 "v": v,
                 "radius": radius_yz }
 
-    def update_radius_from_coords(self, coord_points, w, u, v, n_bins=n_sample_curve, quantile=0.98, gaussian_smooth=2.0, min_count=30, radius_type='train'):
+    def update_radius_from_coords(self, coord_points, w, u, v, n_bins=24, quantile=0.98, gaussian_smooth=2.0, min_count=30, radius_type='train'):
         bin_edge = np.linspace(0.0, 1.0, n_bins+1)
         bin_center = 0.5* (bin_edge[:-1]+bin_edge[1:])
         bin_ids = np.clip(np.digitize(coord_points, bin_edge) -1, 0, n_bins-1)
@@ -407,7 +409,7 @@ class PWLACurve():
         return self.key_cylinder_radius
 
 
-    def update_cylinder_radius_from_coords(self, coord_points, w, u, v, n_bins=n_sample_curve, quantile=0.98, gaussian_smooth=2.0, min_count=150, eps=0.02, isotropic=False):
+    def update_cylinder_radius_from_coords(self, coord_points, w, u, v, n_bins=24, quantile=0.98, gaussian_smooth=2.0, min_count=150, eps=0.02, isotropic=False):
         bin_edge = np.linspace(0.0, 1.0, n_bins + 1)
         bin_center = 0.5 * (bin_edge[:-1] + bin_edge[1:])
         bin_ids = np.clip(np.digitize(coord_points, bin_edge) - 1, 0, n_bins - 1)
@@ -801,8 +803,8 @@ class PWLACurve():
             return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=True, name=name)
 
         if update_radius:
-            update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=n_sample_curve, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
-            update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=n_sample_curve, quantile=0.97, min_count=50)
+            update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=24, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
+            update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=24, quantile=0.7, min_count=50)
 
             ################# Uncomment later for curve center and cylinder #################################
 #            self.update_radius_from_coords(sample_keypoint_map, w, u, v)
@@ -1248,8 +1250,8 @@ class PWLACurve():
         # map avatar coords -> accessory coords by arclen
         #avatar_coords = maybe_flip_coords(avatar_coords, True) #adapt_arg.get("flip_s", False))
 
-        source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
-        target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_3']
+        source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_6']
+        target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_0']
 
         acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core)
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
@@ -1272,15 +1274,12 @@ class PWLACurve():
             r_src = interpolate_wrap_radius1(self, avatar_coords, theta_avatar, source_npz['key_wrap_radius'], source_npz['wrap_theta_bins'], source_npz['wrap_s_bins'])
             r_tgt = interpolate_wrap_radius1(accessory_curve_handle.core, acc_coords, theta_avatar, target_npz['key_wrap_radius'], target_npz['wrap_theta_bins'], target_npz['wrap_s_bins']) 
 
-            #print("occ key:", source_npz.keys() if hasattr(source_npz, "keys") else type(source_npz))
-            #print("occ shape:", np.asarray(source_npz['key_occupancy_rho']).shape)
-            #print("s_bins shape:", np.asarray(source_npz['wrap_s_bins']).shape)
-            occ_src = interpolate_occ_profile1(self, avatar_coords, source_npz['key_occupancy_rho'], source_npz['wrap_s_bins'])
-            occ_tgt = interpolate_occ_profile1(accessory_curve_handle.core, acc_coords, target_npz['key_occupancy_rho'], target_npz['wrap_s_bins'])
+            #occ_src = interpolate_occ_profile1(self, avatar_coords, source_npz['key_occupancy_rho'], source_npz['wrap_s_bins'])
+            #occ_tgt = interpolate_occ_profile1(accessory_curve_handle.core, acc_coords, target_npz['key_occupancy_rho'], target_npz['wrap_s_bins'])
 
-            occ_scale = ( occ_tgt) / (occ_src + 1e-12)
+            #occ_scale = ( occ_tgt) / (occ_src + 1e-12)
 
-            scale = ( 0.8* r_tgt) / (r_src + 1e-12)
+            scale = (0.7* r_tgt) / (r_src + 1e-12)
             #scale *= occ_scale
             
             rho_acc = rho_avatar * scale 
