@@ -1262,7 +1262,8 @@ class PWLACurve():
         arcfrac_src_0 = np.interp(src_0, self.key_ts, arclen_src)
         arcfrac_src_1 = np.interp(src_1, self.key_ts, arclen_src)
         denom = max(abs(arcfrac_src_1 - arcfrac_src_0), 1e-12)
-        u = (coord_src - arcfrac_src_0) / denom 
+        #u = (arcfrac_src - arcfrac_src_0) / denom 
+        u = (arcfrac_src - arcfrac_src_0) / denom 
         if arcfrac_src_1 < arcfrac_src_0:
             u = -u
         u = np.clip(u, 0.0, 1.0)
@@ -1289,9 +1290,9 @@ class PWLACurve():
         src_0 = 0.0
         src_1 = 0.4
         tgt_0 = 1.0
-        tgt_1 = 0.3
+        tgt_1 = 0.0
         mock_deg = 90.0
-        phi = np.deg2rad(45.0) #adapt_arg["tilt_deg"])
+        phi = np.deg2rad(30.0) #adapt_arg["tilt_deg"])
         valid_map = (avatar_coords >= src_0) & (avatar_coords <= src_1)
 
         # keep only avatar samples from the allowed region
@@ -1337,6 +1338,9 @@ class PWLACurve():
 
         acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core, src_0, src_1, tgt_0, tgt_1)
         #acc_coords = accessory_curve_handle.core.key_ts
+        #u = np.clip(avatar_coords, 0.0, 1.0)
+        #acc_coords = tgt_0 + u * (tgt_1 - tgt_0)
+        #acc_coords = 1.0 - np.clip(acc_coords, 0.0, 1.0) 
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
 
         # optional rigid tilt of target curve
@@ -1345,7 +1349,7 @@ class PWLACurve():
         anchor_info = accessory_curve_handle.core.interpolate(
             np.array([anchor_s], dtype=np.float64)
         )
-        print(anchor_info)
+        #print(anchor_info)
         anchor_point = anchor_info["points"][0]
         anchor_frame = anchor_info["frame"][0]   # [T,N,B]
 
@@ -1367,7 +1371,7 @@ class PWLACurve():
             phi 
         )
 
-        acc_intpl["curve"] = curve_rot
+        acc_intpl["points"] = curve_rot
         acc_intpl["frame"] = frame_rot
 
 #        R = np.array([
@@ -1443,7 +1447,7 @@ class PWLACurve():
         else:
             #mock_deg = 0.0
             delta_theta = np.deg2rad(mock_deg)
-            scale = 0.7
+            scale = 0.9
             scale_rho = scale * 0.5 * (scale_y + scale_z)
            ######### ORIGINAL WORKING ##############
             #u_acc = scale *u_avatar * scale_y
@@ -1460,7 +1464,9 @@ class PWLACurve():
             u_acc = rho_acc * np.cos(theta_acc)
             v_acc = rho_acc * np.sin(theta_acc)
             w_acc = w_avatar * scale_w 
-            
+
+        #v_acc = -v_acc
+        #w_acc = -w_acc 
 
         #q_src = rho_avatar / (r_src + 1e-12)
         #q_tgt = rho_acc / (r_tgt + 1e-12)

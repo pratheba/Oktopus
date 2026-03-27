@@ -43,13 +43,17 @@ def _normalize(v, eps=1e-12):
         return v * 0.0
     return v / n
 
+
 def axis_angle_to_matrix(axis, angle_rad):
     """
     axis: (3,)
-    returns R: (3,3)
+    angle_rad: scalar
+    returns: (3,3)
     """
-    a = _normalize(np.asarray(axis, dtype=np.float64))
-    x, y, z = a
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / (np.linalg.norm(axis) + 1e-12)
+
+    x, y, z = axis
     c = np.cos(angle_rad)
     s = np.sin(angle_rad)
     C = 1.0 - c
@@ -60,6 +64,7 @@ def axis_angle_to_matrix(axis, angle_rad):
         [z*x*C - y*s,   z*y*C + x*s, c + z*z*C  ],
     ], dtype=np.float64)
     return R
+
 
 def align_and_twist_local_offsets(w, u, v, frame_src, frame_tgt, delta_theta=0.0):
     """
