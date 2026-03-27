@@ -12,9 +12,8 @@ from curve_utils import *
 n_sample_curve = 200
 n_sample_circle = 120
 
-def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, update_wrap_radius=False, name=''):
-    #trimesh.Trimesh(vertices=pointcloudsamples, process=False).export("samples.ply")
-    #exit()
+
+def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, name=''):
     sample_keypoint_map = self.curve_projection(pointcloudsamples)
     sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
     sample_index = np.arange(pointcloudsamples.shape[0])
@@ -27,7 +26,7 @@ def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update
     sample_index = sample_index[sample_keypoint_map_range]
 
     # interpolate with the new additional non linear skeletal keypoints
-    intpl = self.interpolate(sample_keypoint_map)
+    intpl = self.interpolate(sample_keypoint_map, radius_type='train')
 
     ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
     proj_vs = intpl['points']
@@ -41,28 +40,80 @@ def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update
     w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
     if update_curve:
         stats = compute_local_centering_stats(samples_local0, sample_keypoint_map)
-        C_old, C_new, C_key_unsmooth = compute_centered_curve_world(self, stats)
-        C_new_smooth = gaussian_filter1d(C_new, sigma=2.0, axis=0)
+        #C_old, C_new, C_key_unsmooth = compute_centered_curve_world(self, stats)
+        C_old, C_new = compute_centered_curve_world(self, stats)
         s_dense = 0.5 * (stats["edges"][:-1] + stats["edges"][1:])
-        C_key_smooth = resample_curve_to_key_ts(s_dense, C_new_smooth, self.key_ts)
-        #self.key_points = C_key_new
-        #print(self.key_points.shape)
-        #print(C_new_smooth.shape)
-        self.key_points = C_key_smooth
+        #C_key_smooth = resample_curve_to_key_ts(s_dense, C_new_smooth, self.key_ts)
+        s_target = np.linspace(0.0, 1.0, n_sample_curve)
+        C_key_old_smooth = resample_curve_to_key_ts(s_dense, C_old, s_target)
+        old_frame = self.get_new_frame(C_key_old_smooth) #key_frame 
+        #self.update_frame()
+        #old_frame = self.key_frame 
+        old_T = old_frame[:, 0, :]
+
+        C_new_smooth = gaussian_filter1d(C_new, sigma=2.0, axis=0)
+        C_key_smooth = resample_curve_to_key_ts(s_dense, C_new_smooth, s_target)
+        z0 = self.z_axis[0] if getattr(self, "z_axis", None) is not None else None
+        self.set_resamples(C_key_smooth, z_axis0=z0)
         self.update_coords()
-        self.update_frame()
+        #C_new_smooth = gaussian_filter1d(C_new, sigma=2, axis=0)
+        export_curve_points_as_ply(C_key_old_smooth, C_key_smooth, str(idx)+"_curve_compare_points.ply")
+        export_shape_and_curves_as_ply(
+            points=pointcloudsamples,
+            C_old=C_old,
+            C_new=C_new_smooth,
+            out_path=str(idx)+"_shape_and_curves.ply"
+        new_frame = self.get_new_frame(self.key_points) #key_frame 
+        new_T = new_frame[:, 0, :]
+        auto_N = new_frame[:, 1, :]
+        xfer_N = self.key_frame[:, 1, :]
+
+        dots = np.sum(auto_N * xfer_N, axis=1)
+        print("normal alignment min/max:", dots.min(), dots.max())
+        print("normal alignment mean:", dots.mean())
+
+        self.key_frame = transfer_frame_orientation(
+            old_frame=old_frame,
+            old_tangent=old_T,
+            new_tangent=new_T,
+            enforce_continuity=True,
+            orthonormalize=True,
+        )
+        self.z_axis = self.key_frame[:, 2, :].copy()
+        self.y_axis = self.key_frame[:, 1, :].copy()
+        #self.update_frame()
+        #C_key_smooth = resample_curve_to_key_ts(s_dense, C_old, s_target)
+        #self.update_frame()
+
+
         return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=True, name=name)
+
     if update_radius:
-        self.update_radius_from_coords(sample_keypoint_map, u, v)
-        radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False)['radius']
-        #print(yz_radius.shape)
-        yz_radius = radius_yz.copy()
-        self.update_coords()
-        self.update_frame()
-        visualize_keyframes_with_ellipses_trimesh(curve_core=self, surface_points=pointcloudsamples, name=name)
-    if update_wrap_radius:
-        self.update_wrap_profile_from_coords(sample_keypoint_map, u, v)
-    #visualize_keyframes_with_ellipses_trimesh(curve_core=self, surface_points=pointcloudsamples, name=name)
+        update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=24, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
+        update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=24, quantile=0.7, min_count=50)
+
+        ################# Uncomment later for curve center and cylinder #################################
+#            self.update_radius_from_coords(sample_keypoint_map, w, u, v)
+#            #self.update_wrap_profile_from_coords(sample_keypoint_map, w, u, v, radius_type='wrap')
+#            self.update_cylinder_radius_from_coords(sample_keypoint_map, w, u, v, radius_type='cylinder')
+#            #self.update_cylinder_radius_from_wrap(eps=0.03, isotropic=False)
+#            radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False, radius_type='train')['radius']
+#            #print(yz_radius.shape)
+#            yz_radius = radius_yz.copy()
+#            self.update_coords()
+#            # 3D trimesh overlay
+#            visualize_keyframes_with_profiles_trimesh(
+#                self,
+#                pointcloudsamples,
+#                sample_keypoint_map,
+#                name=name,
+#                show_train=False,
+#                show_cylinder=True,
+#                show_wrap=False,
+#                export_glb=False,
+#                export_ply=True
+#            )
+
 
     # If the end ball is None then x_radius  = 1.0 
     x_radius = self.calc_x_radius(sample_keypoint_map)

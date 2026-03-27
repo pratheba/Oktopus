@@ -222,10 +222,57 @@ class MCGrid():
         voxel[kid] = True
         return voxel
 
-    def extract_mesh(self, face_flip=True):
+    def extract_mesh(self, face_flip=True, pad=2, keep_largest=True):
+        config = self.grid_config
+        N1 = self.reso + 1
+
+        sdf_val = self.val_grid.reshape(N1, N1, N1)
+        valid = (~self.empty_marks).reshape(N1, N1, N1)
+
+        if not np.any(valid):
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), dtype=np.int64), process=False)
+
+        ijk = np.argwhere(valid)
+        mn = np.maximum(ijk.min(axis=0) - pad, 0)
+        mx = np.minimum(ijk.max(axis=0) + pad, N1 - 1)
+
+        sdf_crop = sdf_val[mn[0]:mx[0]+1, mn[1]:mx[1]+1, mn[2]:mx[2]+1]
+
+        verts, faces, _, _ = skimage.measure.marching_cubes(
+            sdf_crop,
+            level=config['level'],
+            spacing=[config['step']] * 3
+        )
+
+        crop_origin = config['origin'] + mn * config['step']
+        verts = verts + crop_origin
+
+        if config['do_flip']:
+            verts_align = np.zeros_like(verts)
+            verts_align[:, 0] = verts[:, 2]
+            verts_align[:, 1] = verts[:, 1]
+            verts_align[:, 2] = verts[:, 0]
+        else:
+            verts_align = verts
+
+        if face_flip:
+            faces = faces[:, [0, 2, 1]]
+
+        mesh = trimesh.Trimesh(vertices=verts_align, faces=faces, process=False)
+
+        if keep_largest and len(mesh.faces) > 0:
+            parts = mesh.split(only_watertight=False)
+            if len(parts) > 0:
+                mesh = max(parts, key=lambda m: len(m.faces))
+
+        return mesh
+
+
+    def extract_mesh1(self, face_flip=True, pad=2, keep_largest=True):
         config = self.grid_config
         N1 = self.reso + 1
         sdf_val = self.val_grid.reshape(N1, N1, N1)
+        valid = (~self.empty_marks).reshape(N1, N1, N1)
         verts, faces, _, _ = skimage.measure.marching_cubes(
             sdf_val,
             level=config['level'],

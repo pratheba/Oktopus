@@ -259,9 +259,9 @@ class CurveHandle():
         #self.core.update_coords()
         #self.core.update_frame()
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
-        accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+        accessory_data, avatar_data, inside= self.core.localize_samples_adapt(samples, adapt_arg)
         kidx = kidx[inside]
-        return accessory_data, avatar_data, kidx
+        return accessory_data, avatar_data, kidx, inside
 
     def filter_grid_adapt_test(self, mc_grid, adapt_arg):
         self.core.update_coords()

@@ -111,9 +111,9 @@ class Handle():
             sidx_bbox = sidx[inbbox]
 
             # Localize the samples for each curve
-            curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
+            #curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
             if "_on" in name:
-                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=False, update_radius=True, name=name+'_'+str(cid))
+                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=True, update_radius=True, name=name+'_'+str(cid))
                 key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_train_radius': curve.core.key_train_radius, 'key_cylinder_radius': curve.core.key_cylinder_radius, 'key_frame': curve.core.key_frame,
                             'key_wrap_radius': curve.core.key_wrap_radius, 'key_occupancy_rho': curve.core.key_occupancy_rho, 'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, 
                             'wrap_radius_max': curve.core.wrap_radius_max}

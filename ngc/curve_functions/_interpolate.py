@@ -212,12 +212,14 @@ def interpolate_stretch(self, ts, stretch_arg):
     return intpl, ts
 
 def interpolate_theta(self, theta, wrap_radius, theta_bins):
-    theta = np.mod(theta, 2.0 * np.pi)
+    period = 2.0 * np.pi
+    theta0 = theta_bins[0]
+    theta = ((theta - theta0) % period) + theta0 # np.mod(theta, 2.0 * np.pi)
 
     num_theta_bins = theta_bins.shape[0]
     dtheta_bins = theta_bins[1] - theta_bins[0]
 
-    delta_theta = theta / dtheta_bins
+    delta_theta = (theta - theta0) / dtheta_bins
     t0 = np.floor(delta_theta).astype(np.int64) % num_theta_bins
     t1 = (t0 + 1) % num_theta_bins
     theta_period = delta_theta - np.floor(delta_theta)
@@ -226,7 +228,7 @@ def interpolate_theta(self, theta, wrap_radius, theta_bins):
     return wrap_theta
 
 
-def interpolate_wrap_radius2(self, ts, theta, wrap, theta_bins, s_bins):
+def interpolate_wrap_radius1(self, ts, theta, wrap, theta_bins, s_bins):
     ts = np.asarray(ts, dtype=np.float64)
     theta = np.asarray(theta, dtype=np.float64)
     wrap = np.asarray(wrap, dtype=np.float64)
@@ -244,8 +246,7 @@ def interpolate_wrap_radius2(self, ts, theta, wrap, theta_bins, s_bins):
 
     return out
 
-def interpolate_wrap_radius1(self, ts, theta, wrap, theta_bins, s_bins):
-
+def interpolate_wrap_radius2(self, ts, theta, wrap, theta_bins, s_bins):
         ts = np.asarray(ts, dtype=np.float64)
         theta = np.asarray(theta, dtype=np.float64)
 

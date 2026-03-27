@@ -506,11 +506,12 @@ class Agent():
                     'avatar_curve_handle': curve,
                     'wrap_radius': adapt_config['wrap_radius'],
                     'device': self.device,
+                    'infer_scale': 1.35,
                     'avatar_curve_idx': self.feat_dict[key],
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
 
-                accessory_data, avatar_data, kidx = curve.filter_grid_adapt(mc_grid, adapt_arg)
+                accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(mc_grid, adapt_arg)
                 acc_vals, acc_vals_base = self.__inference_vals(accessory_data, accessory_key, batch_size=batch_size)
                 #avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
                 #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
@@ -520,7 +521,9 @@ class Agent():
 
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals - delta , kidx, mode="overwrite")
+                acc_grid.update_grid(acc_vals - delta , kidx, mark=True, mode="overwrite")
+                print("num valid voxels:", np.sum(~acc_grid.empty_marks))
+                print("num total voxels:", acc_grid.empty_marks.shape[0])
                 mesh_acc = acc_grid.extract_mesh()
                 mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
                 mesh_acc.export(op.join(output_folder, f"{count}_acc_vals.ply"))

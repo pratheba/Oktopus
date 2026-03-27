@@ -325,7 +325,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 3200000,
-        'n_space_samples' : 400000,
+        'n_surface_samples' : 320000,
+        'n_space_samples' : 40000,
     }
     ngc_dataset(arg)

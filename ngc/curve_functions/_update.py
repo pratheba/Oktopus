@@ -33,6 +33,8 @@ def update_wrap_occupancy_from_coords(self, coord_points, u, v, n_curve_bins=24,
 def update_wrap_profile_from_coords(self, coord_points, w, u, v, n_curve_bins=24, n_theta_bins=36, quantile=0.97, gaussian_smooth_curve=2.0, gaussian_smooth_theta=0.75, min_count = 25, radius_type = 'wrap'):
     rho = np.sqrt(u*u + v*v)
     theta = np.arctan2(v, u)
+    #print(rho)
+    #exit()
     #bin_edges_curve = np.linspace(0.0, 1.0, n_curve_bins+1)
     #bin_center_curve = 0.5 * (bin_edges_curve[:-1] + bin_edges_curve[1:])
     #bin_ids_curve = np.clip(np.digitize(coord_points, bin_edges_curve) -1, 0, n_curve_bins-1)
@@ -46,7 +48,7 @@ def update_wrap_profile_from_coords(self, coord_points, w, u, v, n_curve_bins=24
     radius_theta_wrap = np.full((n_curve_bins, n_theta_bins), np.nan, dtype=np.float64)
     counts = np.zeros((n_curve_bins, n_theta_bins), dtype=np.int32)
 
-    slab_half_width = 2.0 / n_curve_bins
+    slab_half_width = 1.0 / n_curve_bins
     slab_mask = np.abs(w) <= slab_half_width
 
     for s in range(n_curve_bins):
@@ -82,6 +84,9 @@ def update_wrap_profile_from_coords(self, coord_points, w, u, v, n_curve_bins=24
     self.wrap_theta_bins = bin_theta.center
     self.key_wrap_radius = radius_theta_wrap
     self.wrap_radius_max = np.max(radius_theta_wrap, axis=1)
+
+    #print(self.key_wrap_radius)
+    #exit()
 
     return {
         "curve_bins": bin_curve.center,

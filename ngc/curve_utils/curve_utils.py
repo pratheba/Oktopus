@@ -18,6 +18,103 @@ def get_bins(points, n_bins, istheta=False):
     bin_ids = np.clip(np.digitize(points, bin_edge) - 1, 0, n_bins-1)
     return Bin(bin_edge, bin_center, bin_ids) 
 
+def rigid_rotate_curve_and_frames(curve_pts, frames, anchor_point, axis, angle_rad):
+    """
+    curve_pts: (N,3)
+    frames:    (N,3,3), columns [T,N,B]
+    anchor_point: (3,)
+    axis: (3,) world-space rotation axis
+    angle_rad: scalar
+
+    Returns:
+        curve_rot:  (N,3)
+        frames_rot: (N,3,3)
+    """
+    R = axis_angle_to_matrix(axis, angle_rad)
+
+    curve_rot = (curve_pts - anchor_point[None, :]) @ R.T + anchor_point[None, :]
+    frames_rot = np.matmul(R[None, :, :], frames)   # rotate T,N,B in world
+
+    return curve_rot, frames_rot
+
+def _normalize(v, eps=1e-12):
+    n = np.linalg.norm(v)
+    if n < eps:
+        return v * 0.0
+    return v / n
+
+def axis_angle_to_matrix(axis, angle_rad):
+    """
+    axis: (3,)
+    returns R: (3,3)
+    """
+    a = _normalize(np.asarray(axis, dtype=np.float64))
+    x, y, z = a
+    c = np.cos(angle_rad)
+    s = np.sin(angle_rad)
+    C = 1.0 - c
+
+    R = np.array([
+        [c + x*x*C,     x*y*C - z*s, x*z*C + y*s],
+        [y*x*C + z*s,   c + y*y*C,   y*z*C - x*s],
+        [z*x*C - y*s,   z*y*C + x*s, c + z*z*C  ],
+    ], dtype=np.float64)
+    return R
+
+def align_and_twist_local_offsets(w, u, v, frame_src, frame_tgt, delta_theta=0.0):
+    """
+    frame_src, frame_tgt: (N,3,3), columns [T,N,B]
+    delta_theta: scalar or (N,) extra twist around tangent T
+    """
+    x_local = np.stack([w, u, v], axis=1)[:, :, None]   # (N,3,1)
+
+    # Full frame alignment: source local -> target local
+    R_align = np.matmul(np.transpose(frame_tgt, (0, 2, 1)), frame_src)   # (N,3,3)
+    x_aligned = np.matmul(R_align, x_local)[:, :, 0]   # (N,3)
+
+    w2 = x_aligned[:, 0]
+    u2 = x_aligned[:, 1]
+    v2 = x_aligned[:, 2]
+
+    # Optional extra twist around tangent T
+    if np.isscalar(delta_theta):
+        c = np.cos(delta_theta)
+        s = np.sin(delta_theta)
+    else:
+        c = np.cos(delta_theta)
+        s = np.sin(delta_theta)
+
+    u3 = c * u2 - s * v2
+    v3 = s * u2 + c * v2
+
+    return w2, u3, v3
+
+def rotate_local_offsets_between_frames(w, u, v, frame_src, frame_tgt):
+    """
+    frame_src, frame_tgt: (N,3,3), columns [T, N, B]
+    w,u,v: (N,)
+
+    Returns rotated local coords in target frame:
+        [w_new, u_new, v_new]
+    """
+    x_local = np.stack([w, u, v], axis=1)[:, :, None]   # (N,3,1)
+
+    # target_local = F_tgt^T @ F_src @ source_local
+    R = np.matmul(np.transpose(frame_tgt, (0, 2, 1)), frame_src)   # (N,3,3)
+    x_new = np.matmul(R, x_local)[:, :, 0]   # (N,3)
+
+    return x_new[:, 0], x_new[:, 1], x_new[:, 2]
+
+
+def twist_in_nb_plane(u, v, delta_theta):
+    """
+    Rotate in target N-B plane around tangent T.
+    """
+    c = np.cos(delta_theta)
+    s = np.sin(delta_theta)
+    u2 = c * u - s * v
+    v2 = s * u + c * v
+    return u2, v2
 
 
 def smoothstep01(x):
@@ -216,7 +313,7 @@ def compute_side_imbalance(verts, curve_pts, T, N, B, slab_half_width=0.01, min_
 
     return out
 
-def compute_local_centering_stats(samples_local0, s_vals, n_bins=100, min_count=20):
+def compute_local_centering_stats(samples_local0, s_vals, n_bins=24, min_count=50):
     """
     samples_local0: (N,3) local coords before radius normalization
     s_vals:         (N,)  projected curve coordinate in [0,1]
@@ -225,6 +322,7 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=100, min_count=
     v = samples_local0[:, 2]
 
     edges = np.linspace(0.0, 1.0, n_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
     bin_ids = np.clip(np.digitize(s_vals, edges) - 1, 0, n_bins - 1)
 
     offset_uv = np.full((n_bins, 2), np.nan)
@@ -244,13 +342,31 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=100, min_count=
         uv = np.stack([u[m], v[m]], axis=-1)
         mu = np.median(uv, axis=0) #uv.mean(axis=0)
         r = np.linalg.norm(uv, axis=-1)
-        r_mean = np.quantile(r, 0.9) #r.mean()
+        r_quant = np.quantile(r, 0.9) #r.mean()
+        rel = np.linalg.norm(mu) / (r_quant + 1e-12)
+       
+        if rel < 0.35:
+            offset_uv[b] = mu
+            offset_rel[b] = rel # np.linalg.norm(mu) / (r_mean + 1e-12)
+            per_bin_points.append(uv)
+        else:
+            per_bin_points.append(None)
 
-        offset_uv[b] = mu
-        offset_rel[b] = np.linalg.norm(mu) / (r_mean + 1e-12)
-        per_bin_points.append(uv)
+    valid_mask = (~np.isnan(offset_rel))  #& (counts >= min_count) & (offset_rel < 0.35))
 
-    valid_mask = (~np.isnan(offset_rel) & (counts >= min_count) & (offset_rel < 0.35))
+    if np.any(valid_mask):
+        good = np.where(valid_mask)[0]
+        bad = np.where(~valid_mask)[0]
+
+    if len(good) == 1:
+        offset_uv[bad] = offset_uv[good[0]]
+        offset_rel[bad] = offset_rel[good[0]]
+    elif len(good) > 1:
+        offset_uv[bad, 0] = np.interp(bad, good, offset_uv[good, 0])
+        offset_uv[bad, 1] = np.interp(bad, good, offset_uv[good, 1])
+
+        # optional: interpolate rel too
+        offset_rel[bad] = np.interp(bad, good, offset_rel[good])
 
     return {
         "offset_uv": offset_uv,
@@ -258,6 +374,7 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=100, min_count=
         "counts": counts,
         "valid_mask": valid_mask,
         "edges": edges,
+        "centers": centers,
         "per_bin_points": per_bin_points,
     }
 
@@ -515,7 +632,7 @@ def resample_curve_to_key_ts(s_dense, C_dense, key_ts):
         C_key[:, d] = np.interp(key_ts, s_dense, C_dense[:, d])
     return C_key
 
-def compute_centered_curve_world(curve_core, stats):
+def compute_centered_curve_world(curve_core, stats, alpha=1.0):
     """
     Convert local centroid offsets into world-space curve corrections.
     """
@@ -524,7 +641,7 @@ def compute_centered_curve_world(curve_core, stats):
     valid = stats["valid_mask"]
 
     edges = stats["edges"]
-    s = 0.5 * (edges[:-1] + edges[1:])
+    s = stats["centers"] # 0.5 * (edges[:-1] + edges[1:])
 
     # interpolate curve frame
     intpl = curve_core.interpolate(s)
@@ -538,13 +655,14 @@ def compute_centered_curve_world(curve_core, stats):
     B = frame[:,2,:] #axes[:,:,2]
 
     C_new = C.copy()
-    alpha = 1.0 #0.3
 
     for i in range(len(s)):
-        if not valid[i]:
-            continue
-
         mu_u, mu_v = uv[i]
+        if np.isnan(mu_u) or np.isnan(mu_v):
+            continue
+        #if not valid[i]:
+        #    continue
+
         delta = mu_u * N[i] + mu_v * B[i]
         C_new[i] = C[i] + alpha* delta
 
@@ -919,3 +1037,50 @@ def get_radius_with_eps(radius, eps):
     else:
         radius += eps
     return radius
+
+
+def remove_duplicate_consecutive_points(points, eps=1e-10):
+    if len(points) <= 1:
+        return points
+
+    d = np.linalg.norm(points[1:] - points[:-1], axis=1)
+    keep = np.ones(len(points), dtype=bool)
+    keep[1:] = d > eps
+
+    pts = points[keep]
+    if len(pts) < 2:
+        return points[[0, -1]]
+    return pts
+
+
+def find_supported_s_interval(s_vals, n_bins=64, min_count=10, margin=0.01):
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    hist, _ = np.histogram(s_vals, bins=edges)
+
+    thresh = max(min_count, int(0.05 * hist.max()))
+    valid = hist >= thresh
+
+    if not np.any(valid):
+        return 0.0, 1.0, hist, edges
+
+    ids = np.where(valid)[0]
+    s_min = max(0.0, edges[ids[0]] - margin)
+    s_max = min(1.0, edges[ids[-1] + 1] + margin)
+    return s_min, s_max, hist, edges
+
+
+def prune_curve_points_by_s_interval(curve_points, s_min, s_max, n_out):
+    s_old = np.linspace(0.0, 1.0, len(curve_points))
+
+    keep = (s_old >= s_min) & (s_old <= s_max)
+    s_keep = s_old[keep]
+    p_keep = curve_points[keep]
+
+    if len(p_keep) < 2:
+        return curve_points
+
+    s_new = np.linspace(s_min, s_max, n_out)
+    x = np.interp(s_new, s_keep, p_keep[:, 0])
+    y = np.interp(s_new, s_keep, p_keep[:, 1])
+    z = np.interp(s_new, s_keep, p_keep[:, 2])
+    return np.stack([x, y, z], axis=-1)
