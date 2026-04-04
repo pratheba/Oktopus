@@ -1,0 +1,106 @@
+{
+  "combine_surface_only": [
+    {
+      "keep_id": 0,
+      "absorb_ids": [1,2],
+      "name": "shaft",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.25,
+      "center_max_shift_frac": 0.3,
+      "center_smooth_win": 7
+    }, 
+    {
+      "keep_id": 3,
+      "absorb_ids": [3],
+      "name": "sole",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.25,
+      "center_max_shift_frac": 0.3,
+      "center_smooth_win": 7
+    },
+    {
+      "keep_id": 4,
+      "absorb_ids": [4],
+      "name": "foot",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.25,
+      "center_max_shift_frac": 0.3,
+      "center_smooth_win": 7
+    }
+  ],
+  "smooth": [
+    {
+      "id": 0,
+      "window": 15,
+      "iterations": 4
+    },
+    {
+      "id": 3,
+      "window": 15,
+      "iterations": 4
+    },
+    {
+      "id": 4,
+      "window": 15,
+      "iterations": 2
+    }
+  ],
+  "crop": [
+   {
+      "id": 0,
+      "start_frac": 0.5,
+      "end_frac": 0.6
+    },
+   {
+      "id": 3,
+      "start_frac": 0.2,
+      "end_frac": 0.3
+    },
+    {
+      "id": 4,
+      "start_frac": 0.5,
+      "end_frac": 0.9
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 1.3,
+      "extend_burial_alpha": 1.3,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 0,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.3,
+      "extend_burial_alpha": 1.3,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 3,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.4,
+      "extend_burial_alpha": 1.4,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 4,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 1.2,
+      "extend_burial_alpha": 1.2,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ]
+}

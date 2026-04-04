@@ -1,0 +1,35 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 165,
+      "n_surface_all": 5914
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 234,
+      "n_surface_all": 6708
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 163,
+      "n_surface_all": 725
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 161,
+      "n_surface_all": 1266
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 200,
+      "n_surface_all": 2128
+    }
+  ],
+  "out_npz": "postprocess/input/npz/boots_unitbb_preprocess_segments.npz"
+}
