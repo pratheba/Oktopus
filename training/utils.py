@@ -19,6 +19,60 @@ def save_checkpoint(self, epoch, loss, base_lr, detail_lr, filename):
 
         torch.save(model_dict, filename)
 
+
+def load_checkpoint(
+    model,
+    checkpoint_dir,
+    device,
+    checkpoint='final',
+    optim_base=None,
+    optim_detail=None,
+    scheduler_base=None,
+    scheduler_detail=None,
+    strict=False,
+):
+    if checkpoint in ['final', 'post']:
+        ckpt_name = f'model_{checkpoint}.pth'
+    elif checkpoint == 'train':
+        ckpt_name = 'best_model_train.pth'
+    else:
+        # either explicit filename or epoch-style name
+        ckpt_name = checkpoint
+
+    ckpt_path = os.path.join(checkpoint_dir, 'train', f'checkpoints/{ckpt_name}')
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    # model
+    model.load_state_dict(ckpt['model'], strict=strict)
+
+    # optimizers
+    if optim_base is not None and 'optimizer_base' in ckpt:
+        optim_base.load_state_dict(ckpt['optimizer_base'])
+
+    if optim_detail is not None and 'optimizer_detail' in ckpt:
+        optim_detail.load_state_dict(ckpt['optimizer_detail'])
+
+    # schedulers
+    if scheduler_base is not None and 'scheduler_base' in ckpt:
+        scheduler_base.load_state_dict(ckpt['scheduler_base'])
+
+    if scheduler_detail is not None and 'scheduler_detail' in ckpt:
+        scheduler_detail.load_state_dict(ckpt['scheduler_detail'])
+
+    # metadata
+    epoch = ckpt.get('epoch', None)
+    loss = ckpt.get('loss', None)
+    lr_base = ckpt.get('lr_base', None)
+    lr_detail = ckpt.get('lr_detail', None)
+
+    return {
+        'epoch': epoch,
+        'loss': loss,
+        'lr_base': lr_base,
+        'lr_detail': lr_detail,
+        'checkpoint_path': ckpt_path,
+    }
+
 def load_model(model, device, checkpoint_path, checkpoint='final'): 
     cpu_device = torch.device('cpu')
 

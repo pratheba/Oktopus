@@ -380,26 +380,63 @@ def extend_dense(poly, support_points, extend_radius_alpha=2.5, extend_burial_al
     return np.vstack([exts[0], poly, exts[1]])
 
 
-def radii_from_support(keypoints, support_points):
+def radii_from_support(
+    keypoints,
+    support_points,
+    q_train=0.85,
+    q_wrap=0.95,
+    q_cyl=0.998,
+    cyl_margin=0.08,
+    cyl_relative_margin=0.02,
+):
+    keypoints = np.asarray(keypoints, dtype=np.float64)
+    support_points = np.asarray(support_points, dtype=np.float64)
+
     if len(support_points) == 0:
         z = np.full(len(keypoints), 0.01, dtype=np.float64)
         return z, z.copy(), z.copy()
 
     _, sp, _, dist = nearest_polyline_projection(keypoints, support_points)
-    bins = np.linspace(0, 1, len(keypoints) + 1)
+
+    bins = np.linspace(0.0, 1.0, len(keypoints) + 1)
     bid = np.clip(np.digitize(sp, bins) - 1, 0, len(keypoints) - 1)
 
-    r = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_train = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_wrap = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_cyl = np.full(len(keypoints), np.nan, dtype=np.float64)
+
     for i in range(len(keypoints)):
         m = bid == i
-        if np.any(m):
-            r[i] = np.quantile(dist[m], 0.85)
+        if not np.any(m):
+            continue
 
-    good = np.isfinite(r)
-    x = np.arange(len(r))
-    r = np.interp(x, x[good], r[good]) if np.any(good) else np.full(len(r), 0.01, dtype=np.float64)
-    return r, r.copy(), 1.1 * r
+        d = dist[m]
+        d = d[np.isfinite(d)]
+        if len(d) == 0:
+            continue
 
+        r_train[i] = np.quantile(d, q_train)
+        r_wrap[i] = np.quantile(d, q_wrap)
+
+        base_cyl = np.quantile(d, q_cyl)
+        r_cyl[i] = base_cyl * (1.0 + cyl_relative_margin) + cyl_margin
+
+    def fill_nan(r, fallback=0.01):
+        good = np.isfinite(r)
+        x = np.arange(len(r))
+        if np.any(good):
+            return np.interp(x, x[good], r[good])
+        return np.full(len(r), fallback, dtype=np.float64)
+
+    r_train = fill_nan(r_train, fallback=0.01)
+    r_wrap = fill_nan(r_wrap, fallback=0.01)
+    r_cyl = fill_nan(r_cyl, fallback=0.02)
+
+    # enforce monotonic safety relationship
+    r_wrap = np.maximum(r_wrap, r_train)
+    r_cyl = np.maximum(r_cyl, r_wrap)
+
+    return r_train, r_wrap, r_cyl
 
 def canonicalize_curve_order(poly):
     p0 = poly[0]

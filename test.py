@@ -23,7 +23,7 @@ def start_test(opt):
 
     exp_name = 'train'
     #log_path = op.join(root_path, 'results', exp_name)
-    data_root = op.join(opt.root_path, 'Pack50Dataset')
+    data_root = op.join(opt.root_path, 'Pack10Dataset')
 
     #output_path = op.join(root_path, 'inference', exp_name)
     os.makedirs(output_path, exist_ok=True)
@@ -37,7 +37,7 @@ def start_test(opt):
     # Marching Cubes config
     config_path = './exp/train/manipulation'
     grid_config = {
-        'reso': 512,
+        'reso': 1024,
         'level': 0.,
         'size': 1.2,
     }
@@ -57,7 +57,7 @@ def start_test(opt):
 #    agent('part_adapt', arg)
 #    print('time cost: ', time()-t0)
 
-    shape_name = 'armadillo'
+    shape_name = 'oktopus_9_v1'
 
     arg = {
         'exp_name': 'adapt',
@@ -69,6 +69,17 @@ def start_test(opt):
     }
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
+#    shape_name = 'armadillo'
+#    arg = {
+#        'exp_name': 'mix',
+#        'data_root': data_root, 
+#        'mc_grid': mc_grid,
+#        'output_folder': op.join(output_path, f'{shape_name}'),
+#        'shape': shape_name,
+#        'mixing_file': op.join(config_path, f'mix_{shape_name}.yaml'),
+#    }
+#    agent('part_mixing', arg)
+#    print('time cost: ', time()-t0)
     
 #    arg = {
 #        'exp_name': 'mix',

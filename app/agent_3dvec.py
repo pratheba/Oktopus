@@ -52,7 +52,8 @@ class Agent():
         self.shape_global_curveids = {}
         for idx, shape_name in enumerate(shapes):
             item_path = op.join(data_root, f'{shape_name}')
-            handle_path = op.join(item_path, 'handle/std_handle.pkl')
+            #handle_path = op.join(item_path, 'handle/std_handle.pkl')
+            handle_path = op.join(item_path, 'handle/std_handle.npz')
             handle = utils.load_handle(handle_path)
             handles[shape_name] = handle
             shape_curve_ids = []
@@ -81,7 +82,8 @@ class Agent():
 
     def load_shape_handle(self, data_root, shape_name):
         item_path = op.join(data_root, f'{shape_name}')
-        handle_path = op.join(item_path, 'handle/std_handle.pkl')
+        #handle_path = op.join(item_path, 'handle/std_handle.pkl')
+        handle_path = op.join(item_path, 'handle/std_handle.npz')
         handle = utils.load_handle(handle_path)
         return handle
 
@@ -179,8 +181,6 @@ class Agent():
             vals_base = vals_base.squeeze()
             vals = vals.detach().cpu().numpy()
             vals_base = vals_base.detach().cpu().numpy()
-
-
         return vals, vals_base
     
     def __mix_inference(self, curve_data, mix_arg, batch_size=None):
@@ -472,9 +472,434 @@ class Agent():
         return f0, grads, good
         #grads /= n
         #return f0, grads
+    def filter_grid_dependent_runtime(self, mc_grid, adapt_arg):
+        """
+        Support-first dependent path:
+        parent support already exists in world space,
+        instantiate child support from parent anchor,
+        filter/localize directly on child runtime support.
+        """
+        parent_support_data = adapt_arg["parent_support_data"]
+
+        parent_curve_key = adapt_arg["parent_accessory_key"]
+        child_curve_key = adapt_arg["accessory_key"]
+
+        parent_curve_handle = self.curve_from_key(parent_curve_key)
+        child_curve_handle = self.curve_from_key(child_curve_key)
+
+        parent_anchor = parent_curve_handle.core._compute_anchor_from_support(
+            parent_support_data,
+            at=adapt_arg.get("parent_anchor_at", "end"),
+            coord=adapt_arg.get("parent_anchor_coord", None),
+        )
+
+        dep_template = adapt_arg["dep_template"]
+
+        parent_anchor_meta = dep_template["parent_anchor_meta"]
+        #global_scale = float(adapt_arg.get("scale", 1.0))
+        #global_scale = float(
+        #    adapt_arg.get(
+        #        "scale",
+        #        parent_support_data.get("assembly_scale", 1.0)
+        #    )
+        #)
+        global_scale = float(parent_support_data.get("assembly_scale", 1.0))
+        global_scale *= float(adapt_arg.get("scale", 1.0))
+        use_parent_aniso = bool(adapt_arg.get("use_parent_anisotropic_scale", True))
+
+        if use_parent_aniso:
+            scale_w = global_scale * (
+                parent_anchor["x_radius"] / (parent_anchor_meta["x_radius"] + 1e-12)
+            )
+            scale_y = global_scale * (
+                parent_anchor["radius"][0] / (parent_anchor_meta["radius"][0] + 1e-12)
+            )
+            scale_z = global_scale * (
+                parent_anchor["radius"][1] / (parent_anchor_meta["radius"][1] + 1e-12)
+            )
+        else:
+            scale_w = global_scale
+            scale_y = global_scale
+            scale_z = global_scale
+
+        runtime_child_support = child_curve_handle.core._build_dependent_support_from_anchor(
+            dep_template,
+            parent_anchor,
+            scale_w=scale_w,
+            scale_y=scale_y,
+            scale_z=scale_z,
+            radius_scale_y=scale_y,
+            radius_scale_z=scale_z,
+        )
+
+        child_data, kidx = child_curve_handle.filter_grid_on_runtime_support(
+            mc_grid,
+            runtime_child_support,
+            norm=adapt_arg.get("infer_scale", 1.35),
+        )
+
+        print("parent assembly_scale =", parent_support_data.get("assembly_scale", None))
+        print("child config scale    =", adapt_arg.get("scale", 1.0))
+        print("final global_scale    =", global_scale)
+
+        return child_data, runtime_child_support, kidx
+
+
+
+    def split_template_from_key(self, accessory_key, split_s, child_s0, child_s1):
+        if not hasattr(self, "_split_template_cache"):
+            self._split_template_cache = {}
+
+        cache_key = (accessory_key, float(split_s), float(child_s0), float(child_s1))
+        if cache_key not in self._split_template_cache:
+            curve_handle = self.curve_from_key(accessory_key)
+            self._split_template_cache[cache_key] = self.build_split_curve_template(
+                curve_handle=curve_handle,
+                split_s=split_s,
+                child_s0=child_s0,
+                child_s1=child_s1,
+            )
+        return self._split_template_cache[cache_key]
+
+    def build_attached_curve_template(
+        self,
+        parent_curve_handle,
+        child_curve_handle,
+        parent_joint_s,
+        child_joint_s,
+        child_s0=0.0,
+        child_s1=1.0,
+        n_samples=None,
+    ):
+        parent_core = parent_curve_handle.core
+        child_core = child_curve_handle.core
+
+        parent_core.update_coords()
+        parent_core.update_frame()
+        child_core.update_coords()
+        child_core.update_frame()
+
+        if n_samples is None:
+            #child_coords = np.asarray(child_core.key_ts, dtype=np.float64)
+            s_all = np.asarray(child_core.key_ts, dtype=np.float64)
+            keep = (s_all >= min(child_s0, child_s1)) & (s_all <= max(child_s0, child_s1))
+            child_coords = s_all[keep]
+            if child_coords.shape[0] < 2:
+                child_coords = np.linspace(child_s0, child_s1, 100)
+        else:
+            child_coords = np.linspace(child_s0, child_s1, n_samples)
+
+        parent_info = parent_core.interpolate(np.array([parent_joint_s], dtype=np.float64))
+        p0 = parent_info["points"][0].copy()
+        F0 = parent_info["frame"][0].copy()
+        r0 = parent_info["radius"][0].copy()
+        x0 = float(parent_core.calc_x_radius(np.array([parent_joint_s], dtype=np.float64))[0])
+
+        child_info = child_core.interpolate(child_coords)
+        child_points = np.asarray(child_info["points"], dtype=np.float64)
+        child_frames = np.asarray(child_info["frame"], dtype=np.float64)
+        child_radius = np.asarray(child_info["radius"], dtype=np.float64)
+        child_x_radius = np.asarray(child_core.calc_x_radius(child_coords), dtype=np.float64)
+
+        local_points = (child_points - p0[None, :]) @ F0.T
+        local_frames = np.einsum("kij,jm->kim", child_frames, F0.T)
+
+        template = {
+            "local_points": local_points,
+            "local_frames": local_frames,
+            "radius": child_radius.copy(),
+            "coords": child_coords.copy(),
+            "x_radius": child_x_radius.copy(),
+            "parent_anchor_meta": {
+                "radius": r0.copy(),
+                "x_radius": x0,
+            },
+            "parent_joint_s": float(parent_joint_s),
+            "child_joint_s": float(child_joint_s),
+            "parent_curve_name": parent_curve_handle.name,
+            "child_curve_name": child_curve_handle.name,
+        }
+        return template
+
+    def compute_root_assembly_scale(self, avatar_curve_handle, accessory_curve_handle, src_0, src_1, tgt_0, tgt_1):
+        L_avatar = self.interval_length_on_curve(avatar_curve_handle, src_0, src_1)
+        L_accessory = self.interval_length_on_curve(accessory_curve_handle, tgt_0, tgt_1)
+        return L_avatar / (L_accessory + 1e-12)
+
+
+    def interval_length_on_curve(self, curve_handle, s0, s1):
+        pts = curve_handle.core.interpolate(np.array([s0, s1], dtype=np.float64))["points"]
+        return float(np.linalg.norm(pts[1] - pts[0]))
+
+    def attached_template_from_keys(self, parent_key, child_key, parent_joint_s, child_joint_s, child_s0=0.0, child_s1=1.0):
+        parent_curve_handle = self.curve_from_key(parent_key)
+        child_curve_handle = self.curve_from_key(child_key)
+        return self.build_attached_curve_template(
+            parent_curve_handle=parent_curve_handle,
+            child_curve_handle=child_curve_handle,
+            parent_joint_s=parent_joint_s,
+            child_joint_s=child_joint_s,
+            child_s0=child_s0,
+            child_s1=child_s1,
+        )
+
+    def build_split_curve_template(
+        self,
+        curve_handle,
+        split_s=0.6,
+        child_s0=0.6,
+        child_s1=1.0,
+        n_samples=None,
+    ):
+        """
+        Build a dependent template from a suffix of the SAME original curve.
+
+        Parent anchor = original curve at split_s
+        Child support  = original curve over [child_s0, child_s1], expressed
+                         in parent-anchor local coordinates.
+
+        Returns template dict compatible with localize_samples_dependent().
+        """
+        core = curve_handle.core
+        core.update_coords()
+        core.update_frame()
+
+        if n_samples is None:
+            # use original key_ts inside range
+            s_all = np.asarray(core.key_ts, dtype=np.float64)
+            keep = (s_all >= min(child_s0, child_s1)) & (s_all <= max(child_s0, child_s1))
+            child_coords_global = s_all[keep]
+            if child_coords_global.shape[0] < 2:
+                child_coords_global = np.linspace(child_s0, child_s1, 100)
+        else:
+            child_coords_global = np.linspace(child_s0, child_s1, n_samples)
+
+        # anchor at split point
+        split_info = core.interpolate(np.array([split_s], dtype=np.float64))
+        p0 = split_info["points"][0].copy()
+        F0 = split_info["frame"][0].copy()      # rows [T,N,B]
+        r0 = split_info["radius"][0].copy()
+        x0 = float(core.calc_x_radius(np.array([split_s], dtype=np.float64))[0])
+
+        child_info = core.interpolate(child_coords_global)
+        child_points = np.asarray(child_info["points"], dtype=np.float64)
+        child_frames = np.asarray(child_info["frame"], dtype=np.float64)
+        child_radius = np.asarray(child_info["radius"], dtype=np.float64)
+        child_x_radius = np.asarray(core.calc_x_radius(child_coords_global), dtype=np.float64)
+
+        # world delta -> anchor local [w,u,v]
+        local_points = (child_points - p0[None, :]) @ F0.T
+
+        # child frame relative to anchor frame
+        local_frames = np.einsum("kij,jm->kim", child_frames, F0.T)
+
+        # normalize child coords to [0,1] for the dependent template
+        #denom = max(abs(child_s1 - child_s0), 1e-12)
+        #child_coords_local = (child_coords_global - child_s0) / denom
+        #child_coords_local = np.clip(child_coords_local, 0.0, 1.0)
+        child_coords_local = child_coords_global.copy()
+
+        template = {
+            "local_points": local_points,
+            "local_frames": local_frames,
+            "radius": child_radius.copy(),
+            "coords": child_coords_local.copy(),
+            "x_radius": child_x_radius.copy(),
+            "parent_anchor_meta": {
+                "radius": r0.copy(),
+                "x_radius": x0,
+            },
+            # helpful debug/meta
+            "source_curve_key": getattr(curve_handle, "name", "unknown"),
+            "split_s": float(split_s),
+            "child_s0": float(child_s0),
+            "child_s1": float(child_s1),
+        }
+        template["local_points"][0] = np.zeros(3, dtype=np.float64)
+        return template
 
     @torch.no_grad()
     def action_part_adapt(self, arg):
+        output_folder = arg['output_folder']
+        exp_name = arg['exp_name']
+        mc_grid = arg['mc_grid']
+        shape_name = arg['shape']
+        config = utils.load_yaml_file(arg['adapt_file'])
+
+        data_root = arg['data_root']
+        handle = self.load_shape_handle(data_root, shape_name)
+        out_name = f'{shape_name}_{exp_name}'
+        os.makedirs(output_folder, exist_ok=True)
+
+        batch_size = 64**3
+        mc_grid.clear_grid(val=10.0)
+
+        adapted_support_cache = {}
+        cc = 0
+
+        for item in config:
+            target_key = item['target_key']
+            accessory_key = item['accessory_key']
+            mode = item.get('mode', 'direct')
+            print(target_key)
+
+            for curve in handle.curves:
+                key = self.encode_key(shape_name, curve.name)
+                if key != target_key:
+                    print(key)
+                    continue
+                print("success")
+                print(key)
+
+                curve_grid = utils.create_grid_like(mc_grid)
+                curve_grid.clear_grid(val=10.0)
+
+                adapt_arg = {
+                    'mode': mode,
+                    'avatar_curve_handle': curve,
+                    'device': self.device,
+                    'infer_scale': 1.35,
+                    'avatar_curve_idx': self.feat_dict[key],
+                    'accessory_curve_idx': self.feat_dict[accessory_key],
+                }
+                adapt_arg.update(item)
+
+                if mode == 'direct':
+                    accessory_curve_handle = self.curve_from_key(accessory_key)
+                    root_scale = self.compute_root_assembly_scale(
+                        avatar_curve_handle=curve,
+                        accessory_curve_handle=accessory_curve_handle,
+                        src_0=float(adapt_arg["src_0"]),
+                        src_1=float(adapt_arg["src_1"]),
+                        tgt_0=float(adapt_arg["tgt_0"]),
+                        tgt_1=float(adapt_arg["tgt_1"]),
+                    )
+                    adapt_arg['accessory_curve_handle'] = accessory_curve_handle
+
+                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
+
+                    cache_key = item.get("cache_as", accessory_key)
+
+                    # IMPORTANT:
+                    # For direct mode, store the actual support used by inference.
+                    acc_coords = accessory_data["coords"]
+                    #acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
+                    adapted_support_cache[cache_key] = {
+                        "coords": acc_coords.copy(),
+                        "points": accessory_data["runtime_points"].copy(),
+                        "frame": accessory_data["runtime_frame"].copy(),
+                        "radius": accessory_data["radius"].copy(),
+                        "x_radius": accessory_data["x_radius"].copy(),
+                        "assembly_scale": root_scale,
+                        #"x_radius": accessory_curve_handle.core.calc_x_radius(acc_coords).copy(),
+                    }
+                    #adapted_support_cache[cache_key]["assembly_scale"] = root_scale
+                elif mode == 'dependent_split':
+                    parent_accessory_key = adapt_arg['parent_accessory_key']
+                    parent_support_key = adapt_arg.get('parent_support_key', parent_accessory_key)
+
+                    if parent_support_key not in adapted_support_cache:
+                        raise ValueError(f"Missing parent cached support: {parent_support_key}")
+
+                    adapt_arg['parent_support_data'] = adapted_support_cache[parent_support_key]
+
+                    split_s = float(adapt_arg['split_t_src_0'])
+                    child_s0 = float(adapt_arg['split_t_src_0'])
+                    child_s1 = float(adapt_arg['split_t_src_1'])
+
+                    adapt_arg['dep_template'] = self.split_template_from_key(
+                        accessory_key=accessory_key,
+                        split_s=split_s,
+                        child_s0=child_s0,
+                        child_s1=child_s1,
+                    )
+
+                    accessory_data, runtime_child_support, kidx = self.filter_grid_dependent_runtime(
+                        curve_grid,
+                        adapt_arg,
+                    )
+
+                    cache_key = item.get("cache_as", f"{accessory_key}_split")
+                    adapted_support_cache[cache_key] = {
+                        "coords": runtime_child_support["coords"].copy(),
+                        "points": runtime_child_support["points"].copy(),
+                        "frame": runtime_child_support["frame"].copy(),
+                        "radius": runtime_child_support["radius"].copy(),
+                        "x_radius": runtime_child_support.get("x_radius", np.ones_like(runtime_child_support["coords"])).copy(),
+                        "assembly_scale": runtime_child_support.get(
+                            "assembly_scale",
+                            adapt_arg['parent_support_data'].get("assembly_scale", 1.0)
+                        ),
+                    }
+
+
+                elif mode == 'dependent':
+                    parent_accessory_key = adapt_arg['parent_accessory_key']
+                    if parent_accessory_key not in adapted_support_cache:
+                        raise ValueError(f"Missing parent cached support: {parent_accessory_key}")
+
+                    adapt_arg['parent_support_data'] = adapted_support_cache[parent_accessory_key]
+                    #adapt_arg['dep_template'] = self.dependent_template_from_key(accessory_key)
+                    parent_joint_s = float(adapt_arg['parent_joint_s'])
+                    child_joint_s = float(adapt_arg.get('child_joint_s', 0.0))
+                    child_s0 = float(adapt_arg.get("child_s0", 0.0))
+                    child_s1 = float(adapt_arg.get("child_s1", 1.0))
+
+                    adapt_arg['dep_template'] = self.attached_template_from_keys(
+                        parent_key=parent_accessory_key,
+                        child_key=accessory_key,
+                        parent_joint_s=parent_joint_s,
+                        child_joint_s=child_joint_s,
+                        child_s0=child_s0,
+                        child_s1=child_s1
+                    )
+                    curve_grid = utils.create_grid_like(mc_grid, res=256)
+                    curve_grid.clear_grid(val=10.0)
+
+                    accessory_data, runtime_child_support, kidx = self.filter_grid_dependent_runtime(curve_grid, adapt_arg)
+
+                    cache_key = item.get("cache_as", accessory_key)
+                    adapted_support_cache[cache_key] = {
+                        "coords": runtime_child_support["coords"].copy(),
+                        "points": runtime_child_support["points"].copy(),
+                        "frame": runtime_child_support["frame"].copy(),
+                        "radius": runtime_child_support["radius"].copy(),
+                        "x_radius": runtime_child_support.get("x_radius", np.ones_like(runtime_child_support["coords"])).copy(),
+                    }
+
+                else:
+                    raise ValueError(f"Unknown adapt mode: {mode}")
+
+                acc_vals, acc_vals_base = self.__inference_vals(
+                    accessory_data, accessory_key, batch_size=batch_size
+                )
+
+                delta = 0.01
+                acc_grid = utils.create_grid_like(mc_grid)
+                acc_grid.clear_grid(val=10.0)
+                acc_grid.update_grid(acc_vals - delta, kidx, mark=True, mode="overwrite")
+
+                #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
+                #print("num total voxels:", acc_grid.empty_marks.shape[0])
+
+                mesh_acc = acc_grid.extract_mesh()
+                if len(mesh_acc.faces) > 0:
+                    parts = mesh_acc.split(only_watertight=False)
+                    if len(parts) > 0:
+                        mesh_acc = max(parts, key=lambda m: len(m.faces))
+                    mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
+
+                cc += 1
+                mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
+
+        mesh = mc_grid.extract_mesh1()
+        mesh_file = op.join(output_folder, f'{out_name}.ply')
+        os.makedirs(op.dirname(mesh_file), exist_ok=True)
+        mesh.export(mesh_file)
+
+
+    @torch.no_grad()
+    def action_part_adapt1(self, arg):
         output_folder = arg['output_folder']
         exp_name = arg['exp_name']
         mc_grid = arg['mc_grid']
@@ -488,110 +913,90 @@ class Agent():
 
         batch_size = 64**3
         count = 0
-        for curve in handle.curves:
-            key = self.encode_key(shape_name, curve.name)
-            print(key)
-            count += 1
-
-            if key in config:
-                adapt_config = config[key]
-                accessory_key = adapt_config['accessory_key']
-
-                if accessory_key == 'None':
+        acc_grid = utils.create_grid_like(mc_grid)
+        acc_grid.clear_grid(val=10.0)
+        mc_grid.clear_grid(val=10.0)
+        
+        cc = 0 
+        adapted_support_cache = {}
+        for item in config:
+            target_key = item['target_key']
+            mode = item.get('mode', 'direct')
+            accessory_key = item['accessory_key']
+            for curve in handle.curves:
+                key = self.encode_key(shape_name, curve.name)
+                print(key)
+                if key != target_key:
                     continue
-                
-                accessory_curve_handle = self.curve_from_key(accessory_key)
+                count += 1
+                curve_grid = utils.create_grid_like(mc_grid)
+                curve_grid.clear_grid(val=10.0)
+
                 adapt_arg = {
-                    'accessory_curve_handle': accessory_curve_handle,
+                    #'accessory_curve_handle': accessory_curve_handle,
                     'avatar_curve_handle': curve,
-                    'wrap_radius': adapt_config['wrap_radius'],
                     'device': self.device,
                     'infer_scale': 1.35,
                     'avatar_curve_idx': self.feat_dict[key],
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
+                adapt_arg.update(item)
 
-                accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(mc_grid, adapt_arg)
+                if mode == 'direct':
+                    accessory_curve_handle = self.curve_from_key(accessory_key)
+                    adapt_arg['accessory_curve_handle'] = accessory_curve_handle
+                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
+                    adapted_support_cache[accessory_key] = {
+                        "coords": accessory_data["coords"].copy(),
+                        "points": accessory_curve_handle.core.interpolate(accessory_data["coords"])["points"].copy(),
+                        "frame": accessory_data["frame"].copy(),
+                        "radius": accessory_data["radius"].copy(),
+                        "x_radius": accessory_curve_handle.core.calc_x_radius(accessory_data["coords"]).copy(),
+                    }
+                elif mode == 'dependent':
+                    adapt_arg['dep_template'] = self.dependent_template_from_key(accessory_key)
+
+                    # if ever needed for wrap radius on dependent support
+                    #adapt_arg['target_core_for_wrap'] = self.template_core_from_key(accessory_key)
+
+                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
+
+                    adapted_support_cache[accessory_key] = {
+                        "coords": accessory_data["coords"].copy(),
+                        "points": accessory_data["points"].copy(),
+                        "frame": accessory_data["frame"].copy(),
+                        "radius": accessory_data["radius"].copy(),
+                        "x_radius": accessory_data.get("x_radius", np.ones_like(accessory_data["coords"])).copy(),
+                    }
                 acc_vals, acc_vals_base = self.__inference_vals(accessory_data, accessory_key, batch_size=batch_size)
-                #avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
-                #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
-                #vals = np.minimum(avatar_vals, acc_vals - 2e-3)
+                    #avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
+                    #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
+                    #vals = np.minimum(avatar_vals, acc_vals - 2e-3)
+    #                vals = acc_vals
                 delta = 0.01  # boot outward
-                gap   = 0.01  # required clearance above leg
+                #gap   = 0.01  # required clearance above leg
 
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals - delta , kidx, mark=True, mode="overwrite")
-                print("num valid voxels:", np.sum(~acc_grid.empty_marks))
-                print("num total voxels:", acc_grid.empty_marks.shape[0])
+                vals = acc_vals - delta
+                acc_grid.update_grid(vals, kidx, mark=True, mode="overwrite")
                 mesh_acc = acc_grid.extract_mesh()
                 mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
-                mesh_acc.export(op.join(output_folder, f"{count}_acc_vals.ply"))
+                mesh_acc.export(op.join(output_folder, f"{cc}_acc_vals.ply"))
+                cc += 1
+                mc_grid.update_grid(vals, kidx, mode='minimum')
 
+                #else:
+                #    curve_data, kidx = curve.filter_grid(curve_grid)
+                #    vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
+                #    mc_grid.update_grid(vals, kidx, mode='minimum')
 
-                phi, valid = self.phi_curve(curve, key, mesh_acc.vertices)
-                #print(phi[0:100])
-                #print(phi[100:200])
-                #print("d min/max", phi.min(), phi.max())
-                #exit()
+                #print(np.max(vals), np.min(vals))
+                count += 1
 
-#                avatar_grid = utils.create_grid_like(mc_grid)
-#                avatar_grid.clear_grid(val=10.0)
-#                avatar_grid.update_grid(avatar_vals  , kidx, mode="overwrite")
-#                mesh_avatar = avatar_grid.extract_mesh()
-#                mesh_avatar = max(mesh_avatar.split(only_watertight=False), key=lambda m: len(m.faces))
-#                mesh_avatar.export(op.join(output_folder, f"avatar_vals.ply"))
+                #mc_grid.update_grid(vals, kidx, mode='minimum')
 
-                #acc_delta = acc_vals - delta
-                #outside_avatar_offset = (gap - avatar_vals)   # == gap - avatar_vals
-
-                #acc_grid.clear_grid(val=10.0)
-                #acc_grid.update_grid(acc_delta, kidx, mode="overwrite")
-                #mesh_acc = acc_grid.extract_mesh()
-                #mesh_acc.export(op.join(output_folder, f"acc_delta_vals.ply"))
-
-                #acc_clipped = np.maximum(acc_delta, outside_avatar_offset)
-
-                #acc_grid.clear_grid(val=10.0)
-                #acc_grid.update_grid(acc_clipped, kidx, mode="overwrite")
-                #mesh_acc = acc_grid.extract_mesh()
-                #mesh_acc.export(op.join(output_folder, f"acc_clipped_vals.ply"))
-
-                #vals = np.minimum(avatar_vals, acc_clipped)  # if you want both leg+boot
-                # or just boot_clipped if you want boot surface only
-                #vals = np.minimum(avatar_vals, acc_vals - 0.01)
-                #print("acc  min/max", acc_vals.min(), acc_vals.max())
-                #print("leg  min/max", avatar_vals.min(), avatar_vals.max())
-                #print("mix  min/max", vals.min(), vals.max())
-                vals = acc_vals
-                acc_vertices = mesh_acc.vertices.copy()
-                max_step = 0.005
-
-                for it in range(30):
-                    d, n, good = self.phi_and_grad_curve(curve, key, acc_vertices, h=1e-2)
-                    print("d min/max", d.min(), d.max())
-                    pen = gap - d
-                    mask = (pen > 0) & good
-                    if not np.any(mask):
-                        break
-                    disp = pen[mask][:,None] * n[mask]
-                    dn = np.linalg.norm(disp, axis=1)
-                    s = np.minimum(1.0, max_step / (dn + 1e-12))
-                    disp *= s[:,None]
-                    acc_vertices[mask] += disp
-                    
-                    #acc_vertices[mask] += (pen[mask][:,None]) * n[mask]
-                    # optional: constrained smoothing step here
-                mesh_acc.vertices = acc_vertices
-                mesh_acc.export(op.join(output_folder, f"fixed.ply"))
-
-            else:
-                curve_data, kidx = curve.filter_grid(mc_grid)
-                vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
-
-            mc_grid.update_grid(vals, kidx, mode='minimum')
-
-        mesh = mc_grid.extract_mesh()
+        mesh = mc_grid.extract_mesh1()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
@@ -607,9 +1012,10 @@ class Agent():
         data_root = arg['data_root']
         handle = self.load_shape_handle(data_root, shape_name)
         # out_name = exp_name
-        out_name = f'{shape_name}_{exp_name}'
+        out_name = f'{shape_name}_{exp_name}_mix'
 
         batch_size = 64**3
+        cc = 0
         for curve in handle.curves:
             key = self.encode_key(shape_name, curve.name)
             print(key)
@@ -642,8 +1048,9 @@ class Agent():
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
         mesh = mc_grid.extract_mesh()
+        os.makedirs(output_folder, exist_ok=True)
         mesh_file = op.join(output_folder, f'{out_name}.ply')
-        os.makedirs(op.dirname(mesh_file), exist_ok=True)
+        #os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
 
     @torch.no_grad()

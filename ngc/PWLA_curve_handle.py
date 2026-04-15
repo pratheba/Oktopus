@@ -19,6 +19,7 @@ from curve_functions._update import update_wrap_profile_from_coords, update_wrap
 
 n_sample_curve = 200
 n_sample_circle = 120
+#n_sample_points = 12
 
 class PWLACurve():
     """docstring for PWLACurve."""
@@ -41,19 +42,49 @@ class PWLACurve():
     
     def set_curve(self, arg):
         # self.step = arg['resample_step']
-        self.key_points = arg['key_points']
+        #self.key_points = arg['key_points']
+        total_points = arg['keypoints'].shape[0]
+        #r = np.sort(r)
+        #r = r + 1
+        #r = np.insert(r, 0, 0)
+        #r = np.append(r, total_points-1)
         # NOTE: radius: (N, 2), y-z radius
-        self.key_train_radius = arg.get('key_train_radius', arg.get('key_radius'))
-        self.key_cylinder_radius = arg.get('key_cylinder_radius', self.key_train_radius.copy())
+        self.key_points = arg['keypoints']
+        curve_length, _ = self.calc_curve_length()
+        print("c length = ", curve_length, flush=True)
+        ### Have length of 2 to have 36b key pints
+        n_sample_points = int(36 * curve_length)
+        r = np.linspace(0,total_points-1, n_sample_points, dtype=int) #np.random.randint(total_points-1, size=n_sample_points-2)
+        #self.key_points = arg['keypoints']
+        self.key_points = self.key_points[r] 
+        self.key_train_radius = np.array(arg['radius_train'])
+        self.key_cylinder_radius = (np.array(arg.get('radius_cylinder', self.key_train_radius.copy())))
+        #max_train_radius = np.max(self.key_train_radius)
+        #max_cylinder_radius = np.max(self.key_cylinder_radius)
+        #self.key_train_radius = np.full(self.key_train_radius.shape, max_train_radius)
+        #self.key_cylinder_radius = np.full(self.key_cylinder_radius.shape, max_cylinder_radius)
+        self.key_train_radius = self.key_train_radius[r]
+        self.key_cylinder_radius = self.key_cylinder_radius[r]
+        self.key_train_radius = np.tile(np.array(self.key_train_radius),2).reshape(-1, self.key_train_radius.shape[0]).T 
+        self.key_cylinder_radius = np.tile(np.array(self.key_cylinder_radius),2).reshape(-1, self.key_cylinder_radius.shape[0]).T
+        #self.key_train_radius = arg.get('key_train_radius', arg.get('key_radius'))
+        #self.key_cylinder_radius = arg.get('key_cylinder_radius', self.key_train_radius.copy())
         self.key_radius = self.key_train_radius
-        self.key_wrap_radius = arg.get('key_wrap_radius', None)
+        x_axis = arg['frame_t'][r] #self.estimate_tangent(self.key_points)
+        z_axis = arg['frame_v'][r]#arg['z_axis']
+        #print(self.key_radius.shape)
+        #print(self.key_radius.shape)
+
+        self.key_wrap_radius = arg.get('radius_wrap', None)
         self.key_occupancy_rho = arg.get('key_occupancy_rho', None)
         self.wrap_s_bins = arg.get('wrap_s_bins', None)
         self.wrap_theta_bins = arg.get('wrap_theta_bins', None)
         self.wrap_radius_max = arg.get('wrap_radius_max', None)
 
-        x_axis = self.estimate_tangent(self.key_points)
-        z_axis = arg['z_axis']
+        #x_axis = self.estimate_tangent(self.key_points)
+        #x_axis = arg['frame_t'][r] #self.estimate_tangent(self.key_points)
+        #z_axis = arg['frame_v'][r] #arg['z_axis']
+        
         if len(z_axis.shape) == 1:
             z_axis = np.tile(z_axis, (x_axis.shape[0], 1))
         
@@ -628,11 +659,11 @@ class PWLACurve():
         xneg = np.logical_not(xpos)
 
         norms_max = np.linalg.norm(samples_local, axis=1, ord=np.inf)
-        if self.start_ball_x is None:
-            norms_cyl[xneg] = np.maximum(norms_cyl[xneg], norms_max[xneg])
+        #if self.start_ball_x is None:
+        norms_cyl[xneg] = np.maximum(norms_cyl[xneg], norms_max[xneg])
 
-        if self.end_ball_x is None:
-            norms_cyl[xpos] = np.maximum(norms_cyl[xpos], norms_max[xpos])
+        #if self.end_ball_x is None:
+        norms_cyl[xpos] = np.maximum(norms_cyl[xpos], norms_max[xpos])
             
         return norms_cyl - 1.
     
@@ -715,17 +746,18 @@ class PWLACurve():
         samples_local0 = np.einsum('nij,nj->ni', frame_mat, (pointcloudsamples - proj_vs))
         # And all are bounding to radius
         samples_local = samples_local0.copy()
-        stats = compute_local_centering_stats(samples_local, sample_keypoint_map, n_bins=24, min_count=150)
+        #stats = compute_local_centering_stats(samples_local, sample_keypoint_map, n_bins=24, min_count=150)
         #C_old, C_new, C_key_new = compute_centered_curve_world(self, stats)
-        C_old, C_new = compute_centered_curve_world(self, stats)
-        C_new_smooth = gaussian_filter1d(C_new, sigma=2, axis=0)
-        export_curve_points_as_ply(C_old, C_new_smooth, str(idx)+"_curve_compare_points.ply")
-        export_shape_and_curves_as_ply(
-            points=pointcloudsamples,
-            C_old=C_old,
-            C_new=C_new_smooth,
-            out_path=str(idx)+"_shape_and_curves.ply"
-        )
+        #C_old, C_new = compute_centered_curve_world(self, stats)
+        #C_new_smooth = gaussian_filter1d(C_new, sigma=2, axis=0)
+        #export_curve_points_as_ply(C_old, C_new_smooth, str(idx)+"_curve_compare_points.ply")
+        #export_shape_and_curves_as_ply(
+        #    points=pointcloudsamples,
+        #    C_old=C_old,
+        #    C_new=C_new_smooth,
+        #    out_path=str(idx)+"_shape_and_curves.ply"
+        #)
+        trimesh.Trimesh(vertices = np.array(samples_local), process=False).export(str(idx)+"_localsample.ply")
 
         #plot_centroid_offsets_from_origin(stats)
         #plot_centered_curve_local_projections(stats)
@@ -903,6 +935,7 @@ class PWLACurve():
         # [0,1] -> [-1,1]
         vx = 2*sample_keypoint_map - 1
         samples_local[:, 0] += vx
+        
         return {
             'samples': pointcloudsamples[inside_cyl],
             'samples_local': samples_local[inside_cyl],
@@ -1065,8 +1098,6 @@ class PWLACurve():
         avatar_curve_handle = adapt_arg['avatar_curve_handle']
         avatar_curve_length, cum_length = avatar_curve_handle.core.calc_curve_length()
         avatar_arclen = cum_length / (avatar_curve_length + 1e-12)
-
-
 
         acc_arclen_coords = np.interp(ts, self.key_ts, accessory_arclen)
         avatar_arclen_coords = np.interp(acc_arclen_coords, avatar_arclen, avatar_curve_handle.core.key_ts)
@@ -1247,247 +1278,723 @@ class PWLACurve():
         curve_length, cum_length = self.calc_curve_length()  # your version returns (L, cumulative)
         return cum_length / (curve_length + 1e-12)
 
-    
-    def map_coords_to_by_arclen(self, coords_src, target_core, src_0: float = 0.0, src_1: float = 1.0, tgt_0: float = 0.0, tgt_1 : float = 1.0):
+    def interpolate_runtime_support(self, runtime_support, query_coords):
         """
-        Map coords on this curve -> coords on target curve using normalized arc-length.
-        coords_src: (N,) in [0,1] (same space as self.key_ts)
-        """
-        arclen_src = self.normalized_arclen_keypoints()
-        arclen_tgt = target_core.normalized_arclen_keypoints()
-        # coords_src -> arc fraction
-        coord_src = np.clip(coords_src, src_0, src_1)
-        arcfrac_src = np.interp(coords_src, self.key_ts, arclen_src)
+        Interpolate an explicit runtime support object.
 
-        arcfrac_src_0 = np.interp(src_0, self.key_ts, arclen_src)
-        arcfrac_src_1 = np.interp(src_1, self.key_ts, arclen_src)
-        denom = max(abs(arcfrac_src_1 - arcfrac_src_0), 1e-12)
-        #u = (arcfrac_src - arcfrac_src_0) / denom 
-        u = (arcfrac_src - arcfrac_src_0) / denom 
-        if arcfrac_src_1 < arcfrac_src_0:
+        runtime_support:
+            {
+                "coords":   (K,),
+                "points":   (K,3),
+                "frame":    (K,3,3),   # rows [T,N,B]
+                "radius":   (K,2),     # yz radii
+                "x_radius": (K,) optional
+            }
+        """
+        s = np.asarray(runtime_support["coords"], dtype=np.float64)
+        q = np.clip(np.asarray(query_coords, dtype=np.float64), s[0], s[-1])
+
+        points = np.zeros((len(q), 3), dtype=np.float64)
+        for j in range(3):
+            points[:, j] = np.interp(q, s, runtime_support["points"][:, j])
+
+        frames = self._interp_frames(s, runtime_support["frame"], q)
+
+        radius = np.zeros((len(q), 2), dtype=np.float64)
+        radius[:, 0] = np.interp(q, s, runtime_support["radius"][:, 0])
+        radius[:, 1] = np.interp(q, s, runtime_support["radius"][:, 1])
+
+        if "x_radius" in runtime_support:
+            x_radius = np.interp(q, s, runtime_support["x_radius"])
+        else:
+            x_radius = np.ones(len(q), dtype=np.float64)
+
+        return {
+            "points": points,
+            "frame": frames,
+            "radius": radius,
+            "x_radius": x_radius,
+            "coords": q,
+        }
+
+
+    def runtime_support_projection(self, runtime_support, samples, N_discrete=n_sample_curve):
+        """
+        Project world samples onto an explicit runtime support.
+
+        Returns:
+            sample_coords: (M,) support coords for each sample, or -1 if invalid.
+        """
+        s0 = float(runtime_support["coords"][0])
+        s1 = float(runtime_support["coords"][-1])
+        s_dense = np.linspace(s0, s1, N_discrete, endpoint=True)
+
+        dense = self.interpolate_runtime_support(runtime_support, s_dense)
+        skeletal_verts = dense["points"]
+
+        tree = KDTree(skeletal_verts)
+        _, vidx = tree.query(samples)
+
+        sample_coords = -1.0 * np.ones(samples.shape[0], dtype=np.float64)
+        num_vert = skeletal_verts.shape[0]
+
+        for vid in range(num_vert):
+            ids = np.where(vidx == vid)[0]
+            if len(ids) == 0:
+                continue
+
+            pts = samples[ids]
+
+            if 0 < vid < num_vert - 1:
+                sample_coords[ids] = s_dense[vid]
+
+                in1, px1 = self.is_points_in_edge(
+                    pts,
+                    (skeletal_verts[vid],   s_dense[vid]),
+                    (skeletal_verts[vid+1], s_dense[vid+1]),
+                )
+                in2, px2 = self.is_points_in_edge(
+                    pts,
+                    (skeletal_verts[vid-1], s_dense[vid-1]),
+                    (skeletal_verts[vid],   s_dense[vid]),
+                )
+
+                in_p = np.logical_xor(in1, in2)
+                px = (in1 * px1 + in2 * px2)[in_p]
+                sample_coords[ids[in_p]] = px
+
+            elif vid == 0:
+                in1, px1 = self.is_points_in_edge(
+                    pts,
+                    (skeletal_verts[vid],   s_dense[vid]),
+                    (skeletal_verts[vid+1], s_dense[vid+1]),
+                )
+                sample_coords[ids[in1]] = px1[in1]
+
+            else:
+                in2, px2 = self.is_points_in_edge(
+                    pts,
+                    (skeletal_verts[vid-1], s_dense[vid-1]),
+                    (skeletal_verts[vid],   s_dense[vid]),
+                )
+                sample_coords[ids[in2]] = px2[in2]
+
+        return sample_coords
+
+
+    def localize_samples_on_runtime_support(self, samples, runtime_support, norm=1.0):
+        """
+        Localize world samples directly against an explicit runtime support.
+        This is the support-first analogue of localize_samples(...).
+        """
+        sample_coords = self.runtime_support_projection(runtime_support, samples)
+        smin = float(runtime_support["coords"][0])
+        smax = float(runtime_support["coords"][-1])
+
+        valid = np.logical_and(sample_coords >= smin, sample_coords <= smax)
+
+        sample_index = np.arange(samples.shape[0])
+        sample_coords = sample_coords[valid]
+        samples_valid = samples[valid]
+        sample_index = sample_index[valid]
+
+        intpl = self.interpolate_runtime_support(runtime_support, sample_coords)
+
+        proj_vs = intpl["points"]
+        frame_mat = intpl["frame"]
+        yz_radius = intpl["radius"]
+        x_radius = intpl["x_radius"]
+
+        radius3 = np.concatenate([x_radius[:, None], yz_radius], axis=1)
+
+        samples_local0 = np.einsum('nij,nj->ni', frame_mat, (samples_valid - proj_vs))
+        w = samples_local0[:, 0]
+        u = samples_local0[:, 1]
+        v = samples_local0[:, 2]
+
+        rho = np.sqrt(u**2 + v**2)
+
+        samples_local = samples_local0 / (radius3 + 1e-12)
+        u_n = samples_local[:, 1]
+        v_n = samples_local[:, 2]
+        angle = np.arctan2(v_n, u_n)
+        rho_n = np.sqrt(u_n**2 + v_n**2)
+
+        norms = np.linalg.norm(samples_local, axis=1)
+        inside_cyl = (norms <= norm)
+        inside = sample_index[inside_cyl]
+
+        vx = 2.0 * sample_coords - 1.0
+        samples_local[:, 0] += vx
+
+        return {
+            "samples": samples_valid[inside_cyl],
+            "samples_local": samples_local[inside_cyl],
+            "coords": sample_coords[inside_cyl],
+            "rho": rho[inside_cyl],
+            "rho_n": rho_n[inside_cyl],
+            "angles": angle[inside_cyl],
+            "radius": yz_radius[inside_cyl],
+            "frame": frame_mat[inside_cyl],
+            "points": proj_vs[inside_cyl],
+            "x_radius": x_radius[inside_cyl],
+        }, inside
+
+    def _interp_frames(self, s_src, F_src, s_q):
+        s_src = np.asarray(s_src, dtype=np.float64)
+        F_src = np.asarray(F_src, dtype=np.float64)
+        s_q = np.asarray(s_q, dtype=np.float64)
+
+        out = np.zeros((len(s_q), 3, 3), dtype=np.float64)
+        for a in range(3):
+            for b in range(3):
+                out[:, a, b] = np.interp(s_q, s_src, F_src[:, a, b])
+
+        for i in range(len(s_q)):
+            T = out[i, 0]
+            N = out[i, 1]
+
+            T = T / (np.linalg.norm(T) + 1e-12)
+            N = N - np.dot(N, T) * T
+            N = N / (np.linalg.norm(N) + 1e-12)
+            B = np.cross(T, N)
+            B = B / (np.linalg.norm(B) + 1e-12)
+
+            out[i] = np.stack([T, N, B], axis=0)
+        return out
+
+    def _compute_anchor_from_support(self, support_data, at="end", coord=None):
+        coords = np.asarray(support_data["coords"], dtype=np.float64)
+
+        if at == "start":
+            idx = 0
+        elif at == "end":
+            idx = -1
+        elif at == "coord":
+            if coord is None:
+                raise ValueError("coord must be provided when at='coord'")
+            idx = int(np.argmin(np.abs(coords - float(coord))))
+        else:
+            raise ValueError(f"Unknown anchor mode: {at}")
+
+        out = {
+            "point": support_data["points"][idx].copy(),
+            "frame": support_data["frame"][idx].copy(),
+            "radius": support_data["radius"][idx].copy(),
+            "coord": float(support_data["coords"][idx]),
+        }
+
+        if "x_radius" in support_data:
+            out["x_radius"] = float(support_data["x_radius"][idx])
+        else:
+            out["x_radius"] = 1.0
+        return out
+
+    def _compute_anchor_from_support_old(self, support_data, attach="end", coord=None):
+        coords = np.array(support_data["coords"], dtype=np.float64)
+        if attach == "start":
+            idx = 0
+        elif attach == "end":
+            idx = -1
+        elif attach == "coord":
+            if coord is None:
+                raise ValueError("coord must be provided when at='coord'")
+            idx = int(np.argmin(np.abs(coords - float(coord))))
+        else:
+            raise ValueError(f"Unknown anchor mode: {attach}")
+        out = {
+            "point": support_data["points"][idx].copy(),
+            "frame": support_data["frame"][idx].copy(),
+            "radius": support_data["radius"][idx].copy(),
+            "coord": float(support_data["coords"][idx]),
+        }
+
+        if "x_radius" in support_data:
+            out["x_radius"] = float(support_data["x_radius"][idx])
+        else:
+            out["x_radius"] = 1.0
+        return out
+
+
+    def _build_dependent_support_from_anchor(
+        self,
+        dep_template,
+        parent_anchor,
+        scale_w=1.0,
+        scale_y=1.0,
+        scale_z=1.0,
+        radius_scale_y=1.0,
+        radius_scale_z=1.0,
+    ):
+        """
+        dep_template:
+            local_points : (K,3) in parent-anchor local [w,u,v]
+            local_frames : (K,3,3) relative to parent-anchor frame
+            radius       : (K,2)
+            coords       : (K,)
+            x_radius     : (K,) optional
+        """
+        Fp = parent_anchor["frame"]   # rows [T,N,B]
+        p0 = parent_anchor["point"]
+
+        local_points = dep_template["local_points"].copy()
+        local_points[:, 0] *= scale_w
+        local_points[:, 1] *= scale_y
+        local_points[:, 2] *= scale_z
+
+        points = p0[None, :] + local_points @ Fp
+        frames = np.einsum("kij,jm->kim", dep_template["local_frames"], Fp)
+
+        radius = dep_template["radius"].copy()
+        radius[:, 0] *= radius_scale_y
+        radius[:, 1] *= radius_scale_z
+
+        out = {
+            "points": points,
+            "frame": frames,
+            "radius": radius,
+            "coords": dep_template["coords"].copy(),
+        }
+
+        if "x_radius" in dep_template:
+            out["x_radius"] = dep_template["x_radius"].copy() * scale_w
+
+        return out
+
+
+    def _interpolate_dependent_support(self, support, query_coords):
+        s = np.asarray(support["coords"], dtype=np.float64)
+        q = np.clip(np.asarray(query_coords, dtype=np.float64), s[0], s[-1])
+
+        points = np.zeros((len(q), 3), dtype=np.float64)
+        for j in range(3):
+            points[:, j] = np.interp(q, s, support["points"][:, j])
+
+        frames = self._interp_frames(s, support["frame"], q)
+
+        radius = np.zeros((len(q), 2), dtype=np.float64)
+        radius[:, 0] = np.interp(q, s, support["radius"][:, 0])
+        radius[:, 1] = np.interp(q, s, support["radius"][:, 1])
+
+        out = {
+            "points": points,
+            "frame": frames,
+            "radius": radius,
+            "coords": q,
+        }
+
+        if "x_radius" in support:
+            out["x_radius"] = np.interp(q, s, support["x_radius"])
+
+        return out
+
+
+    def rotate_frames_about_tangent(self, frames, angle_rad):
+        """
+        frames: (N,3,3) with rows [T,N,B]
+        rotate N,B around T by angle_rad
+        """
+        frames = np.asarray(frames, dtype=np.float64).copy()
+
+        c = np.cos(angle_rad)
+        s = np.sin(angle_rad)
+
+        T = frames[:, 0, :]
+        N = frames[:, 1, :]
+        B = frames[:, 2, :]
+
+        N_new = c * N + s * B
+        B_new = -s * N + c * B
+
+        out = frames.copy()
+        out[:, 0, :] = T
+        out[:, 1, :] = N_new
+        out[:, 2, :] = B_new
+        return out
+    
+    def map_coords_to_by_arclen(
+        self,
+        coords_src,
+        target_core,
+        src_0: float = 0.0,
+        src_1: float = 1.0,
+        tgt_0: float = 0.0,
+        tgt_1: float = 1.0):
+        eps = 1e-12
+        coords_src = np.asarray(coords_src, dtype=np.float64)
+
+        arclen_src = np.asarray(self.normalized_arclen_keypoints(), dtype=np.float64)
+        arclen_tgt = np.asarray(target_core.normalized_arclen_keypoints(), dtype=np.float64)
+
+        ts_src = np.asarray(self.key_ts, dtype=np.float64)
+        ts_tgt = np.asarray(target_core.key_ts, dtype=np.float64)
+
+        coords_src_clip = np.clip(coords_src, min(src_0, src_1), max(src_0, src_1))
+
+        arc_src = np.interp(coords_src_clip, ts_src, arclen_src)
+        arc_src_0 = np.interp(src_0, ts_src, arclen_src)
+        arc_src_1 = np.interp(src_1, ts_src, arclen_src)
+
+        denom = max(abs(arc_src_1 - arc_src_0), eps)
+        u = (arc_src - arc_src_0) / denom
+        if arc_src_1 < arc_src_0:
             u = -u
         u = np.clip(u, 0.0, 1.0)
-        # arc fraction -> target coords
-        arcfrac_tgt_0 = np.interp(tgt_0, target_core.key_ts, arclen_tgt)
-        arcfrac_tgt_1 = np.interp(tgt_1, target_core.key_ts, arclen_tgt)
-        arcfrac_tgt = arcfrac_tgt_0 + u * (arcfrac_tgt_1 - arcfrac_tgt_0)
 
-        coords_tgt = np.interp(arcfrac_tgt, arclen_tgt, target_core.key_ts)
+        arc_tgt_0 = np.interp(tgt_0, ts_tgt, arclen_tgt)
+        arc_tgt_1 = np.interp(tgt_1, ts_tgt, arclen_tgt)
+        arc_tgt = arc_tgt_0 + u * (arc_tgt_1 - arc_tgt_0)
+
+        keep = np.r_[True, np.diff(arclen_tgt) > eps]
+        arclen_tgt_mono = arclen_tgt[keep]
+        ts_tgt_mono = ts_tgt[keep]
+
+        if arclen_tgt_mono.shape[0] < 2:
+            return np.full_like(coords_src, fill_value=tgt_0, dtype=np.float64)
+
+        coords_tgt = np.interp(arc_tgt, arclen_tgt_mono, ts_tgt_mono)
         return coords_tgt
 
-    def localize_samples_adapt(self, vs, adapt_arg):
-        # calculate the neareast points and find inside points
-        #avatar_data, inside = self.localize_samples(vs, norm=adapt_arg['infer_scale'])
+        return accessory_data, avatar_data, inside_final
+
+    def localize_samples_split_dependent(self, vs, dep_arg):
+        """
+        Same as dependent localization, but dep_template is built from a suffix
+        of the SAME original accessory curve.
+        """
+        return self.localize_samples_dependent(vs, dep_arg)
+
+    def localize_samples_dependent(self, vs, dep_arg):
+        """
+        Dependent support localization:
+        - localize samples on avatar as source
+        - crop source interval [src_0, src_1]
+        - map to dependent coords [tgt_0, tgt_1]
+        - build dependent support from parent anchor
+        - apply shaft-like scaling for local quantities
+        """
         avatar_data, inside = self.localize_samples(vs, norm=10.0)
 
-        accessory_curve_handle = adapt_arg['accessory_curve_handle']
-        accessory_curve_handle.core.update_coords()
-        accessory_curve_handle.core.update_frame()
+        src_0 = dep_arg["src_0"]
+        src_1 = dep_arg["src_1"]
+        tgt_0 = dep_arg["tgt_0"]
+        tgt_1 = dep_arg["tgt_1"]
 
-        avatar_coords = avatar_data["coords"]                         
-        #avatar_coords_clamped = np.clip(avatar_coords, 0.5, 1.0)
-        #alpha = np.clip((avatar_coords - 0.5) / 0.05, 0.0, 1.0)
-        src_0 = 0.0
-        src_1 = 0.4
-        tgt_0 = 1.0
-        tgt_1 = 0.0
-        mock_deg = 90.0
-        phi = np.deg2rad(30.0) #adapt_arg["tilt_deg"])
-        valid_map = (avatar_coords >= src_0) & (avatar_coords <= src_1)
+        avatar_coords = avatar_data["coords"]
+        valid_map = (avatar_coords >= min(src_0, src_1)) & (avatar_coords <= max(src_0, src_1))
 
-        # keep only avatar samples from the allowed region
         for k, v in avatar_data.items():
             if isinstance(v, np.ndarray) and v.shape[0] == valid_map.shape[0]:
                 avatar_data[k] = v[valid_map]
 
         inside_final = inside.copy()
         inside_final = inside_final[valid_map]
-        #inside_idx = np.where(inside)[0]
-        #inside_final[inside_idx[~valid_map]] = False
 
-        avatar_coords = avatar_data["coords"]                         
-        avatar_samples_local = avatar_data["samples_local"].copy()   
+        avatar_coords = avatar_data["coords"]
+        avatar_samples_local = avatar_data["samples_local"].copy()
 
         vx_avatar = 2.0 * avatar_coords - 1.0
         w_n_avatar = avatar_samples_local[:, 0] - vx_avatar
         u_n_avatar = avatar_samples_local[:, 1]
         v_n_avatar = avatar_samples_local[:, 2]
 
+        avatar_radius_y = avatar_data["radius"][:, 0]
+        avatar_radius_z = avatar_data["radius"][:, 1]
+        tangent_avatar = self.calc_x_radius(avatar_coords)
+
+        w_avatar = w_n_avatar * (tangent_avatar + 1e-12)
+        u_avatar = u_n_avatar * (avatar_radius_y + 1e-12)
+        v_avatar = v_n_avatar * (avatar_radius_z + 1e-12)
+
+        rho_avatar = np.sqrt(u_avatar**2 + v_avatar**2)
+        theta_avatar = np.arctan2(v_avatar, u_avatar)
+
+        dep_coords = tgt_0 + ((avatar_coords - src_0) / (src_1 - src_0 + 1e-12)) * (tgt_1 - tgt_0)
+
+        parent_support_data = dep_arg["parent_support_data"]
+        parent_anchor = self._compute_anchor_from_support(
+            parent_support_data,
+            at=dep_arg.get("parent_anchor_at", "end"),
+            coord=dep_arg.get("parent_anchor_coord", None)
+        )
+
+        dep_template = dep_arg["dep_template"]
+        parent_anchor_meta = dep_template["parent_anchor_meta"]
+
+        global_scale = float(dep_arg.get("scale", 1.0))
+        use_parent_aniso = bool(dep_arg.get("use_parent_anisotropic_scale", True))
+
+        if use_parent_aniso:
+            scale_w = global_scale * (
+                parent_anchor["x_radius"] / (parent_anchor_meta["x_radius"] + 1e-12)
+            )
+            scale_y = global_scale * (
+                parent_anchor["radius"][0] / (parent_anchor_meta["radius"][0] + 1e-12)
+            )
+            scale_z = global_scale * (
+                parent_anchor["radius"][1] / (parent_anchor_meta["radius"][1] + 1e-12)
+            )
+        else:
+            scale_w = global_scale
+            scale_y = global_scale
+            scale_z = global_scale
+
+        dep_support = self._build_dependent_support_from_anchor(
+            dep_template,
+            parent_anchor,
+            scale_w=scale_w,
+            scale_y=scale_y,
+            scale_z=scale_z,
+            radius_scale_y=scale_y,
+            radius_scale_z=scale_z,
+        )
+
+        dep_intpl = self._interpolate_dependent_support(dep_support, dep_coords)
+
+        tangent_dep = dep_intpl.get("x_radius", np.ones_like(dep_coords))
+        dep_radius_y = dep_intpl["radius"][:, 0]
+        dep_radius_z = dep_intpl["radius"][:, 1]
+
+        delta_theta = np.deg2rad(float(dep_arg.get("rot_deg", 0.0)))
+        theta_tgt = theta_avatar + delta_theta
+
+        scale_w_sample = tangent_dep / (tangent_avatar + 1e-12)
+        scale_y_sample = dep_radius_y / (avatar_radius_y + 1e-12)
+        scale_z_sample = dep_radius_z / (avatar_radius_z + 1e-12)
+
+        if dep_arg.get("wrap_radius", False):
+            source_npz = np.load(dep_arg["wrap_npz_src"], allow_pickle=True)["arr_0"].item()[dep_arg["wrap_src_key"]]
+            target_npz = np.load(dep_arg["wrap_npz_tgt"], allow_pickle=True)["arr_0"].item()[dep_arg["wrap_tgt_key"]]
+
+            r_src = interpolate_wrap_radius1(
+                self, avatar_coords, theta_avatar,
+                source_npz["key_wrap_radius"],
+                source_npz["wrap_theta_bins"],
+                source_npz["wrap_s_bins"]
+            )
+            r_tgt = interpolate_wrap_radius1(
+                dep_arg["target_core_for_wrap"], dep_coords, theta_tgt,
+                target_npz["key_wrap_radius"],
+                target_npz["wrap_theta_bins"],
+                target_npz["wrap_s_bins"]
+            )
+
+            scale_rho = (global_scale * r_tgt) / (r_src + 1e-12)
+        else:
+            scale_rho = global_scale * 0.5 * (scale_y_sample + scale_z_sample)
+
+        rho_dep = rho_avatar * scale_rho
+        u_dep = rho_dep * np.cos(theta_tgt)
+        v_dep = rho_dep * np.sin(theta_tgt)
+        w_dep = w_avatar * scale_w_sample
+
+        w_n_dep = w_dep / (tangent_dep + 1e-12)
+        u_n_dep = u_dep / (dep_radius_y + 1e-12)
+        v_n_dep = v_dep / (dep_radius_z + 1e-12)
+
+        vx_dep = 2.0 * dep_coords - 1.0
+        samples_local_dep = np.stack([w_n_dep + vx_dep, u_n_dep, v_n_dep], axis=1)
+
+        rho_n_dep = np.sqrt(u_n_dep**2 + v_n_dep**2)
+        angles_dep = np.arctan2(v_n_dep, u_n_dep)
+
+        dependent_data = dict(avatar_data)
+        dependent_data["coords"] = dep_coords
+        dependent_data["samples_local"] = samples_local_dep
+        dependent_data["angles"] = angles_dep
+        dependent_data["rho_n"] = rho_n_dep
+        dependent_data["rho"] = rho_dep
+        dependent_data["radius"] = dep_intpl["radius"]
+        dependent_data["frame"] = dep_intpl["frame"]
+        dependent_data["points"] = dep_intpl["points"]
+        dependent_data["x_radius"] = tangent_dep
+
+        return dependent_data, avatar_data, inside_final
+
+
+
+    def localize_samples_adapt(self, vs, adapt_arg):
+        avatar_data, inside = self.localize_samples(vs, norm=10.0)
+
+        accessory_curve_handle = adapt_arg['accessory_curve_handle']
+        accessory_curve_handle.core.update_coords()
+        accessory_curve_handle.core.update_frame()
+
+        avatar_coords = avatar_data["coords"]
+        src_0 = adapt_arg['src_0']
+        src_1 = adapt_arg['src_1']
+        tgt_0 = adapt_arg['tgt_0']
+        tgt_1 = adapt_arg['tgt_1']
+        mock_deg = adapt_arg['rot_deg']
+        phi = np.deg2rad(0.0)
+
+        valid_map = (avatar_coords >= src_0) & (avatar_coords <= src_1)
+        for k, v in avatar_data.items():
+            if isinstance(v, np.ndarray) and v.shape[0] == valid_map.shape[0]:
+                avatar_data[k] = v[valid_map]
+
+        inside_final = inside.copy()
+        inside_final = inside_final[valid_map]
+
+        avatar_coords = avatar_data["coords"]
+        avatar_samples_local = avatar_data["samples_local"].copy()
+
+        vx_avatar = 2.0 * avatar_coords - 1.0
+        w_n_avatar = avatar_samples_local[:, 0] - vx_avatar
+        u_n_avatar = avatar_samples_local[:, 1]
+        v_n_avatar = avatar_samples_local[:, 2]
 
         avatar_radius_y = avatar_data["radius"][:,0]
         avatar_radius_z = avatar_data["radius"][:,1]
-
-        #tangent_avatar = self.calc_x_radius(avatar_coords_clamped)          
-        tangent_avatar = self.calc_x_radius(avatar_coords)          
+        tangent_avatar = self.calc_x_radius(avatar_coords)
         w_avatar = w_n_avatar * (tangent_avatar + 1e-12)
         u_avatar = u_n_avatar * (avatar_radius_y)
         v_avatar = v_n_avatar * (avatar_radius_z)
 
         rho_avatar = np.sqrt(u_avatar**2 + v_avatar**2)
-        rho_n_avatar = np.sqrt(u_n_avatar**2 + v_n_avatar**2)
         theta_avatar = np.arctan2(v_avatar, u_avatar)
-        angle_avatar = np.arctan2(v_n_avatar, u_n_avatar)
 
-        #w_avatar = w_avatar * alpha
-        #u_avatar = u_avatar * alpha
-        #v_avatar = v_avatar * alpha
-        #rho_avatar = rho_avatar * alpha
+        acc_coords = self.map_coords_to_by_arclen(
+            avatar_coords, accessory_curve_handle.core, src_0, src_1, tgt_0, tgt_1
+        )
+        avatar_world_points = self.interpolate(avatar_coords, radius=False, frame=False)["points"]
+        avatar_world_frames = self.interpolate(avatar_coords, points=False, radius=False)["frame"]
 
-        # map avatar coords -> accessory coords by arclen
-        #avatar_coords = maybe_flip_coords(avatar_coords, True) #adapt_arg.get("flip_s", False))
-
-        acc_coords = self.map_coords_to_by_arclen(avatar_coords, accessory_curve_handle.core, src_0, src_1, tgt_0, tgt_1)
-        #acc_coords = accessory_curve_handle.core.key_ts
-        #u = np.clip(avatar_coords, 0.0, 1.0)
-        #acc_coords = tgt_0 + u * (tgt_1 - tgt_0)
-        #acc_coords = 1.0 - np.clip(acc_coords, 0.0, 1.0) 
+        delta_theta = np.deg2rad(mock_deg)
+        runtime_frames = self.rotate_frames_about_tangent(avatar_world_frames, delta_theta)
         acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
 
-        # optional rigid tilt of target curve
-        #if adapt_arg.get("use_rigid_tilt", False):
-        anchor_s = 0.0 #adapt_arg.get("tilt_anchor_s", 0.1)
-        anchor_info = accessory_curve_handle.core.interpolate(
-            np.array([anchor_s], dtype=np.float64)
-        )
-        #print(anchor_info)
-        anchor_point = anchor_info["points"][0]
-        anchor_frame = anchor_info["frame"][0]   # [T,N,B]
+        # --- optional rigid pose correction on accessory support ---
+        use_rigid_tilt = bool(adapt_arg.get("use_rigid_tilt", False))
+        pose_restore_alpha = float(adapt_arg.get("pose_restore_alpha", 1.0))
+        anchor_mode = adapt_arg.get("tilt_anchor_mode", "start")   # "start" or "end"
 
-        axis_name = "B" #adapt_arg.get("tilt_axis", "B")
-        if axis_name == "T":
-            axis = anchor_frame[:, 0]
-        elif axis_name == "N":
-            axis = anchor_frame[:, 1]
-        else:
-            axis = anchor_frame[:, 2]
+        if use_rigid_tilt:
+            # original accessory segment direction over [tgt_0, tgt_1]
+            boot_info = accessory_curve_handle.core.interpolate(
+                np.array([tgt_0, tgt_1], dtype=np.float64)
+            )
+            p_boot0 = boot_info["points"][0]
+            p_boot1 = boot_info["points"][1]
+            d_boot = p_boot1 - p_boot0
 
-        #angle_rad = np.deg2rad(adapt_arg.get("tilt_deg", 0.0))
+            # current avatar/support direction over [src_0, src_1]
+            avatar_info = self.interpolate(np.array([src_0, src_1], dtype=np.float64))
+            p_av0 = avatar_info["points"][0]
+            p_av1 = avatar_info["points"][1]
+            d_avatar = p_av1 - p_av0
 
-        curve_rot, frame_rot = rigid_rotate_curve_and_frames(
-            acc_intpl["points"],
-            acc_intpl["frame"],
-            anchor_point,
-            axis,
-            phi 
-        )
+            def _normalize1(v, eps=1e-12):
+                v = np.asarray(v, dtype=np.float64)
+                n = np.linalg.norm(v)
+                if n < eps:
+                    return v * 0.0
+                return v / n
 
-        acc_intpl["points"] = curve_rot
-        acc_intpl["frame"] = frame_rot
+            a = _normalize1(d_avatar)
+            b = _normalize1(d_boot)
 
-#        R = np.array([
-#            [ np.cos(phi), 0, np.sin(phi)],
-#            [ 0,           1, 0          ],
-#            [-np.sin(phi), 0, np.cos(phi)]
-#        ])
-#
-#        frame_tgt = acc_intpl["frame"]
-#        frame_tgt = np.matmul(R[None, :, :], frame_tgt)
-#
-#        acc_intpl["frame"] = frame_tgt
+            axis = np.cross(a, b)
+            axis_n = np.linalg.norm(axis)
+            dot = np.clip(np.dot(a, b), -1.0, 1.0)
 
+            if axis_n < 1e-12:
+                if dot > 0.0:
+                    axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+                    phi = 0.0
+                else:
+                    tmp = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+                    if abs(np.dot(a, tmp)) > 0.9:
+                        tmp = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+                    axis = _normalize1(np.cross(a, tmp))
+                    phi = np.pi
+            else:
+                axis = axis / axis_n
+                phi = np.arctan2(axis_n, dot)
 
-        #accessory_curve_handle.core.update_coords()
-        #accessory_curve_handle.core.update_frame()
+            phi = pose_restore_alpha * phi
+            Rw = axis_angle_to_matrix(axis, phi)
+
+            # convert world rotation into each sample's local [T,N,B] coordinates
+        F = acc_intpl["frame"]   # rows [T,N,B] in your current usage
+
         tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
 
         acc_radius_y = acc_intpl["radius"][:,0]
         acc_radius_z = acc_intpl["radius"][:,1]
-        #frame_src = avatar_data["frame"]
-        #frame_tgt = acc_intpl["frame"]
         delta_theta = np.deg2rad(mock_deg)
-
-        #w_rot, u_rot, v_rot = align_and_twist_local_offsets( 
-        #    w_avatar, u_avatar, v_avatar,
-        #    frame_src, frame_tgt, delta_theta
-        #)
-        #scale_w = tangent_acc / (tangent_avatar + 1e-12)
-        #w_acc = w_rot * scale_w
-
-        #scale_y = acc_radius_y / (avatar_radius_y + 1e-12)
-        #scale_z = acc_radius_z / (avatar_radius_z + 1e-12)
-
-        #u_acc = u_rot * scale_y
-        #v_acc = v_rot * scale_z
 
         scale_w = tangent_acc / (tangent_avatar + 1e-12)
         scale_y = acc_radius_y / (avatar_radius_y + 1e-12)
         scale_z = acc_radius_z / (avatar_radius_z + 1e-12)
+        
+        test_scale_y = acc_radius_y * 0.1
+        test_scale_z = acc_radius_z * 0.1
 
         if adapt_arg['wrap_radius']:
-            source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_11']
-            target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_3']
+            source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_9']
+            target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_0']
 
-            #mock_deg = 90.0
             theta_src = theta_avatar
             theta_tgt = theta_avatar + delta_theta
-            r_src = interpolate_wrap_radius1(self, avatar_coords, theta_src, source_npz['key_wrap_radius'], source_npz['wrap_theta_bins'], source_npz['wrap_s_bins'])
-            r_tgt = interpolate_wrap_radius1(accessory_curve_handle.core, acc_coords, theta_tgt, target_npz['key_wrap_radius'], target_npz['wrap_theta_bins'], target_npz['wrap_s_bins']) 
 
-            #r_src = interpolate_wrap_radius1(self, avatar_coords, theta_avatar, source_npz['key_wrap_radius'], source_npz['wrap_theta_bins'], source_npz['wrap_s_bins'])
-            #r_tgt = interpolate_wrap_radius1(accessory_curve_handle.core, acc_coords, theta_avatar, target_npz['key_wrap_radius'], target_npz['wrap_theta_bins'], target_npz['wrap_s_bins']) 
+            r_src = interpolate_wrap_radius1(
+                self, avatar_coords, theta_src,
+                source_npz['key_wrap_radius'],
+                source_npz['wrap_theta_bins'],
+                source_npz['wrap_s_bins']
+            )
+            r_tgt = interpolate_wrap_radius1(
+                accessory_curve_handle.core, acc_coords, theta_tgt,
+                target_npz['key_wrap_radius'],
+                target_npz['wrap_theta_bins'],
+                target_npz['wrap_s_bins']
+            )
 
-            occ_src = interpolate_occ_profile1(self, avatar_coords, source_npz['key_occupancy_rho'], source_npz['wrap_s_bins'])
-            occ_tgt = interpolate_occ_profile1(accessory_curve_handle.core, acc_coords, target_npz['key_occupancy_rho'], target_npz['wrap_s_bins'])
-
-            occ_scale = ( occ_tgt) / (occ_src + 1e-12)
-
-            scale = (0.8* r_tgt) / (r_src + 1e-12)
-            scale *= occ_scale
-
-            #scale_rho = scale * 0.5 * (scale_y + scale_z)
-
+            scale = (adapt_arg['scale'] * r_tgt) / (r_src + 1e-12)
             rho_acc = rho_avatar * scale
-            w_acc = w_avatar * scale_w 
-            u_acc = rho_acc * np.cos(theta_tgt)
-            v_acc = rho_acc * np.sin(theta_tgt)
-            
-            #rho_acc = rho_avatar * scale 
-            #u_acc = rho_acc * np.cos(theta_avatar)
-            #v_acc = rho_acc * np.sin(theta_avatar)
+
         else:
-            #mock_deg = 0.0
-            delta_theta = np.deg2rad(mock_deg)
-            scale = 0.9
+            scale = adapt_arg['scale']
             scale_rho = scale * 0.5 * (scale_y + scale_z)
-           ######### ORIGINAL WORKING ##############
-            #u_acc = scale *u_avatar * scale_y
-            #v_acc = scale *v_avatar * scale_z
-            #rho_acc = np.sqrt(u_acc**2 + v_acc**2)
-           ######################################
+            scale_rho = np.full_like(rho_avatar, scale)
+            rho_acc = 10 *rho_avatar * scale_rho
+            theta_tgt = theta_avatar + delta_theta
 
-            #w_acc = scale_rho * w_avatar #* scale_w 
-            #u_acc = scale_rho *u_avatar 
-            #v_acc = scale_rho *v_avatar 
-            #rho_acc = np.sqrt(u_acc**2 + v_acc**2)
-            rho_acc = rho_avatar * scale_rho
-            theta_acc = theta_avatar + delta_theta 
-            u_acc = rho_acc * np.cos(theta_acc)
-            v_acc = rho_acc * np.sin(theta_acc)
-            w_acc = w_avatar * scale_w 
+        u_acc = rho_acc * np.cos(theta_tgt)
+        v_acc = rho_acc * np.sin(theta_tgt)
+        w_acc = w_avatar * scale_w
 
-        #v_acc = -v_acc
-        #w_acc = -w_acc 
+        if use_rigid_tilt:
+            w_iso = w_acc / (tangent_acc + 1e-12)
+            u_iso = u_acc / (acc_radius_y + 1e-12)
+            v_iso = v_acc / (acc_radius_z + 1e-12)
+            local_iso = np.stack([w_iso, u_iso, v_iso], axis=1)
+            #local_vec = np.stack([w_acc, u_acc, v_acc], axis=1)
 
-        #q_src = rho_avatar / (r_src + 1e-12)
-        #q_tgt = rho_acc / (r_tgt + 1e-12)
-        #occ_src = np.median(q_src)    #or quantile(q_src, 0.7 or 0.8)
-        #occ_tgt = np.median(q_tgt)    #or quantile(q_tgt, 0.7 or 0.8)
-        #beta = occ_tgt / (occ_src + 1e-12)
+            local_iso_rot = np.zeros_like(local_iso)
+            for i in range(local_iso.shape[0]):
+                Fi = F[i]                  # shape (3,3)
+                R_local = Fi @ Rw @ Fi.T   # world rotation expressed in local coordinates
+                local_iso_rot[i] = (R_local @ local_iso[i][:, None]).ravel()
+            #w_acc = local_vec_rot[:, 0]
+            #u_acc = local_vec_rot[:, 1]
+            #v_acc = local_vec_rot[:, 2]
+            w_iso = local_iso_rot[:, 0]
+            u_iso = local_iso_rot[:, 1]
+            v_iso = local_iso_rot[:, 2]
+            w_acc = w_iso * tangent_acc
+            u_acc = u_iso * acc_radius_y
+            v_acc = v_iso * acc_radius_z
+            rho_acc = np.sqrt(u_acc**2 + v_acc**2)
 
-        #rho_acc = beta * rho_avatar * scale 
 
         w_n_acc = w_acc / (tangent_acc + 1e-12)
         u_n_acc = u_acc / (acc_radius_y + 1e-12)
         v_n_acc = v_acc / (acc_radius_z + 1e-12)
-
-
         vx_acc = 2.0 * acc_coords - 1.0
-        #samples_local_acc = np.stack([w_n_avatar + vx_acc, u_n_acc, v_n_acc], axis=1)
         samples_local_acc = np.stack([w_n_acc + vx_acc, u_n_acc, v_n_acc], axis=1)
 
-        #u_acc = u_n_acc * acc_radius_y
-        #v_acc = v_n_acc * acc_radius_z
-        #rho_acc = np.sqrt(u_acc**2 + v_acc**2)
         rho_n_acc = np.sqrt(u_n_acc**2 + v_n_acc**2)
         angles_acc = np.arctan2(v_n_acc, u_n_acc)
 
@@ -1497,8 +2004,11 @@ class PWLACurve():
         accessory_data["angles"] = angles_acc
         accessory_data["rho_n"] = rho_n_acc
         accessory_data["rho"] = rho_acc
-        accessory_data["radius"] = acc_intpl["radius"]   # <-- keep canonicalV
+        accessory_data["radius"] = acc_intpl["radius"]
         accessory_data["frame"] = acc_intpl["frame"]
+        accessory_data["runtime_points"] = avatar_world_points
+        accessory_data["runtime_frame"] = runtime_frames# avatar_world_frames
+        accessory_data["x_radius"] = tangent_acc
 
         return accessory_data, avatar_data, inside_final
 
@@ -1539,6 +2049,9 @@ class PWLACurve():
                 key_radius = self.key_cylinder_radius
             else:
                 raise ValueError(f'Unknown radius type: {radius_type}')
+            #print(self.key_ts)
+            #print(key_radius)
+            #print("********")
             rs_ts = np.stack([
                 np.interp(ts, self.key_ts, key_radius[:, 0]),
                 np.interp(ts, self.key_ts, key_radius[:, 1])

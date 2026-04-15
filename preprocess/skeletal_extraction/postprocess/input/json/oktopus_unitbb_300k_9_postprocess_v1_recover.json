@@ -1,0 +1,216 @@
+{
+  "split": [
+    {
+      "id": 4,
+      "at_frac": 0.7,
+      "new_ids": [4, 100],
+      "names": ["t1", "body"]
+    },
+    {
+      "id": 5,
+      "at_frac": 0.3,
+      "new_ids": [101, 5],
+      "names": ["body", "t2"]
+    },
+    {
+      "id": 6,
+      "at_frac": 0.2,
+      "new_ids": [102, 6],
+      "names": ["t3", "body"]
+    },
+    {
+      "id": 10,
+      "at_frac": 0.55,
+      "new_ids": [10, 103],
+      "names": ["body","t4"]
+    },
+    {
+      "id": 11,
+      "at_frac": 0.75,
+      "new_ids": [11, 104],
+      "names": ["t5", "body"]
+    },
+    {
+      "id": 12,
+      "at_frac": 0.8,
+      "new_ids": [12, 105],
+      "names": ["t6", "body"]
+    }
+  ],
+  "combine_surface_only": [
+    {
+      "keep_id": 1,
+      "absorb_ids": [0,1,2,3,9,100,101,102,103,104,105],
+      "name": "body",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.2,
+      "center_max_shift_frac": 0.2,
+      "center_smooth_win": 7
+    } 
+  ],
+  "crop": [
+    {
+      "id": 4,
+      "start_frac": 0.1,
+      "end_frac": 1.0
+    },
+    {
+      "id": 5,
+      "start_frac": 0.0,
+      "end_frac": 0.9
+    },
+    {
+      "id": 6,
+      "start_frac": 0.0,
+      "end_frac": 0.9
+    },
+    {
+      "id": 10,
+      "start_frac": 0.2,
+      "end_frac": 1.0
+    },
+    {
+      "id": 12,
+      "start_frac": 0.2,
+      "end_frac": 1.0
+    }
+   ],
+  "extend": [
+    {
+      "id": 4,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 5,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 6,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 12,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "recenter": [
+    {
+      "id": 0,
+      "center_shift_scale": 0.8,
+      "center_max_shift_frac": 0.8,
+      "center_smooth_win": 3,
+      "center_iters": 4
+    },
+    {
+      "id": 4,
+      "center_shift_scale": 0.5,
+      "center_max_shift_frac": 0.5,
+      "center_smooth_win": 4,
+      "center_iters": 8
+    },
+    {
+      "id": 5,
+      "center_shift_scale": 0.5,
+      "center_max_shift_frac": 0.4,
+      "center_smooth_win": 5,
+      "center_iters": 2
+    },
+    {
+      "id": 6,
+      "center_shift_scale": 0.5,
+      "center_max_shift_frac": 0.5,
+      "center_smooth_win": 5,
+      "center_iters": 2
+    },
+    {
+      "id": 10,
+      "center_shift_scale": 0.5,
+      "center_max_shift_frac": 0.4,
+      "center_smooth_win": 5,
+      "center_iters": 2
+    },
+    {
+      "id": 11,
+      "center_shift_scale": 0.5,
+      "center_max_shift_frac": 0.4,
+      "center_smooth_win": 5,
+      "center_iters": 2
+    },
+    {
+      "id": 12,
+      "center_shift_scale": 0.9,
+      "center_max_shift_frac": 0.9,
+      "center_smooth_win": 5,
+      "center_iters": 2
+    }
+  ],
+  "retain_ids" : [1,4,5,6,7,8,10,11,12],
+  "rename_final": [
+    {
+      "old_id": 1,
+      "new_id": 0,
+      "new_name": "body"
+    },
+    {
+      "old_id": 4,
+      "new_id": 1,
+      "new_name": "t1"
+    },
+    {
+      "old_id": 5,
+      "new_id": 2,
+      "new_name": "t2"
+    },
+    {
+      "old_id": 6,
+      "new_id": 3,
+      "new_name": "t3"
+    },
+    {
+      "old_id": 7,
+      "new_id": 4,
+      "new_name": "t4"
+    },
+    {
+      "old_id": 8,
+      "new_id": 5,
+      "new_name": "t5"
+    },
+    {
+      "old_id": 10,
+      "new_id": 6,
+      "new_name": "t6"
+    },
+    {
+      "old_id": 11,
+      "new_id": 7,
+      "new_name": "t7"
+    },
+    {
+      "old_id": 12,
+      "new_id": 8,
+      "new_name": "t8"
+    }
+  ]
+}

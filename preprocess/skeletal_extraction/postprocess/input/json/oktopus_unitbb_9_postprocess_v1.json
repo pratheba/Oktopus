@@ -1,0 +1,51 @@
+{
+  "combine_surface_only": [
+    {
+      "keep_id": 8,
+      "absorb_ids": [2, 4, 9, 14, 15, 16, 17, 18, 19],
+      "name": "body",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.8,
+      "center_max_shift_frac": 0.8,
+      "center_smooth_win": 7
+    }, 
+    {
+      "keep_id": 5,
+      "absorb_ids": [6,7],
+      "name": "t1",
+      "center_shift_scale": 1.0,
+      "center_max_shift_frac": 1.0,
+      "center_smooth_win": 2,
+      "center_iter": 6
+    }
+  ],
+  "crop": [
+   {
+      "id": 0,
+      "start_frac": 0.2,
+      "end_frac": 0.8
+    },
+   {
+      "id": 3,
+      "start_frac": 0.2,
+      "end_frac": 0.8
+    },
+    {
+      "id": 8,
+      "start_frac": 0.0,
+      "end_frac": 0.4
+    }
+  ],
+  "extend": [
+    {
+      "id": 8,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 1.3,
+      "extend_burial_alpha": 1.3,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ]
+}

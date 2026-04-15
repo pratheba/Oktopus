@@ -1,0 +1,46 @@
+{
+  "combine_surface_only": [
+    {
+      "keep_id": 0,
+      "absorb_ids": [1],
+      "name": "boot"
+    } 
+  ],
+  "smooth": [
+    {
+      "id": 0,
+      "window": 20,
+      "iterations": 4
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.6,
+      "extend_burial_alpha": 1.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 0,
+      "extend_start":true,
+      "extend_end": false,
+      "extend_radius_alpha": 0.6,
+      "extend_burial_alpha": 0.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "retain_ids": [0],
+  "recenter": [
+    {
+      "id": 0,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 10,
+      "center_iters": 10
+    }
+  ]
+}

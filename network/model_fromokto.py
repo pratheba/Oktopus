@@ -414,7 +414,6 @@ class NGCNet(nn.Module):
         res = {key:val.unsqueeze(0) for key,val in res.items()}
         return res
 
-
 class FiLMEncoder(nn.Module):
     """docstring for FiLMEncoder."""
     def __init__(self, dim, out_dim, cond_dim):

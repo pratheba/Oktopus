@@ -36,7 +36,7 @@ def start_inference(opt):
         })
         arg = {
             'mc_grid': mc_grid,
-            'data_root': 'Pack50Dataset',
+            'data_root': 'Pack10Dataset',
             'output_folder': output_path,
             'checkpoint': checkpoint,
         }

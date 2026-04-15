@@ -43,6 +43,12 @@ def _normalize(v, eps=1e-12):
         return v * 0.0
     return v / n
 
+def _normalize1(v, eps=1e-12):
+    v = np.asarray(v, dtype=np.float64)
+    n = np.linalg.norm(v)
+    if n < eps:
+        return v * 0.0
+    return v / n
 
 def axis_angle_to_matrix(axis, angle_rad):
     """
@@ -369,7 +375,6 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=24, min_count=5
     elif len(good) > 1:
         offset_uv[bad, 0] = np.interp(bad, good, offset_uv[good, 0])
         offset_uv[bad, 1] = np.interp(bad, good, offset_uv[good, 1])
-
         # optional: interpolate rel too
         offset_rel[bad] = np.interp(bad, good, offset_rel[good])
 

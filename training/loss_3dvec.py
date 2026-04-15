@@ -50,41 +50,33 @@ class LossHandler():
     def soft_trunc(self,x, tau): 
         return tau * torch.tanh(x / tau)
 
-
-    def sdf_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
+    def sdf_base_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
         out_sdf = output['sdf']
         #out_detail_sdf = output['sdf_detail']
         B, n = out_sdf.shape
         gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
         return metric_fn(out_sdf, gt_sdf)
-        #gt_sdf = self.soft_trunc(gt_sdf, clamp) #.clamp(-clamp, clamp)
-        if epoch < E0:
-            out_base_sdf = output['sdf_base']
-            B, n = out_base_sdf.shape
-            gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
-            if clamp > 0:
-                gt_base_sdf = gt_base_sdf[:,:n].clamp(-clamp, clamp)
-            #if epoch > 1000: 
-            #out_sdf = self.soft_trunc(out_sdf, clamp) #.clamp(-tau, tau)
-            #gt_sdf = gt['sdf'].view_as(out_base_sdf)
+
+
+    def sdf_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
+        out_sdf = output['sdf']
+        out_base_sdf = output['sdf_base']
+        out_detail_sdf = output['sdf_res']
+        out_detail_res = output['detail_res']
+
+        gt_sdf = gt['sdf'].view_as(out_sdf)
+        gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
+
+        if epoch <= E0:
             return metric_fn(out_base_sdf, gt_base_sdf)
-            #return metric_fn(out_sdf, gt_sdf)
         elif epoch < E1:
-            mask = torch.abs(output['sdf_base'].detach()) < 0.1
-            out_detail_sdf = output['sdf_detail']
-            gt_sdf = gt['sdf_residual'].view_as(out_detail_sdf)
-            if not (clamp is None):
-                gt_sdf = gt_sdf.clamp(-clamp, clamp)
-            #gt_sdf = gt_sdf.clamp(-clamp, clamp)
-            return metric_fn(out_detail_sdf[mask], gt_sdf[mask])
+            gt_residual_sdf = gt['sdf_res'].view_as(out_detail_sdf)
+            mask = torch.abs(out_base_sdf.detach()) < 0.1
+            return metric_fn(out_sdf, gt_sdf) + 0.05 * metric_fn(out_detail_res[mask], gt_residual_sdf[mask])
         else:
-            out_sdf = output['sdf']
-            out_base_sdf = output['sdf_base']
-            out_detail_sdf = output['sdf_detail']
-            gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
-            gt_residual_sdf = gt['sdf_residual'].view_as(out_residual_sdf)
-            gt_sdf = gt['sdf'].view_as(out_sdf)
-            return (1e-3*metric_fn(out_sdf, gt_sdf) + (metric_fn(out_base_sdf, gt_base_sdf) + metric_fn(out_detail_sdf, gt_residual_sdf))/2)
+            gt_residual_sdf = gt['sdf_res'].view_as(out_detail_sdf)
+            mask = torch.abs(out_base_sdf.detach()) < 0.1
+            return metric_fn(out_sdf, gt_sdf) + 0.05*metric_fn(out_base_sdf, gt_base_sdf) + 0.05*metric_fn(out_detail_res[mask], gt_residual_sdf[mask])
  
     def sdf_query_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']
@@ -234,7 +226,7 @@ class LossHandler():
             if hasattr(self, name):
                 func = getattr(self, name)
             else:
-                raise NameError('Not defined loss name')
+                raise NameError(f'Not defined {loss} {name}')
             if 'tv' in name:
                 loss_term = func(output, loss['factor'])
                 res[name] = loss_term

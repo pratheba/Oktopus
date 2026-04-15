@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from dotted.collection import DottedDict
 from time import time
-from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint, load_model
+from training.utils import get_optimizer, get_lr_scheduler, save_checkpoint, load_model, load_checkpoint
 from loss_3dvec import config_loss
 import network, data
 
@@ -83,6 +83,7 @@ class Trainer:
         #E0, E1 = 2000, 4500
         reset_epoch = 12000
         reset_count = 0
+        print("numberof iterations = ", len(train_dataloader))
 
         with tqdm(total=len(train_dataloader) * opt.num_epochs) as pbar:
             for epoch in range(opt.num_epochs):
@@ -113,7 +114,6 @@ class Trainer:
                     # joint
                     self.set_requires_grad(self.model.base_parameters(), True)
                     self.set_requires_grad(self.model.detail_parameters(), True)
-
 
                 # -----------------------
                 # training
@@ -170,28 +170,30 @@ class Trainer:
 
                     pbar.update(1)
                     # default to be only one parameter group
-                    current_base_lr = self.optim_base.param_groups[0]['lr']
-                    current_detail_lr = self.optim_detail.param_groups[0]['lr']
-                    writer.add_scalar('base_lr', current_base_lr, total_steps)
-                    writer.add_scalar('detail_lr', current_detail_lr, total_steps)
+                current_base_lr = self.optim_base.param_groups[0]['lr']
+                current_detail_lr = self.optim_detail.param_groups[0]['lr']
+                writer.add_scalar('base_lr', current_base_lr, total_steps)
+                writer.add_scalar('detail_lr', current_detail_lr, total_steps)
 
-                    #message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
-                    #        epoch, total_steps, train_loss, current_lr)
-                    #tqdm.write(message)
-                    if best_train_loss >= epoch_train_loss:
-                        best_train_loss = epoch_train_loss
-                        best_train_epoch = epoch
-                        save_checkpoint(self, best_train_epoch, best_train_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'best_model_train.pth'))
+                #message = "Epoch {}|Iter:{}, Loss {:0.4f}, Lr {:0.4f}".format(
+                #        epoch, total_steps, train_loss, current_lr)
+                #tqdm.write(message)
+                epoch_train_loss /= num_items
+                if best_train_loss >= epoch_train_loss:
+                    best_train_loss = epoch_train_loss
+                    best_train_epoch = epoch
+                    save_checkpoint(self, best_train_epoch, best_train_loss, current_base_lr, current_detail_lr, os.path.join(checkpoints_dir, 'best_model_train.pth'))
 
-                    if not total_steps % opt.steps_til_summary:
-                        message = "Epoch train {}|Iter:{}, Loss {:0.4f}, B_Lr {:0.8f}, D_Lr {:0.8f}\n".format(
-                            epoch, total_steps, epoch_train_loss, current_base_lr, current_detail_lr)
-                        for name, loss in losses.items():
-                            message = message + '{}(X{}): {:.4f}, \n'.format(name, opt.loss[name].factor, loss.item())
-                        tqdm.write(message)
+                if not total_steps % opt.steps_til_summary:
+                    message = "Epoch train {}|Iter:{}, Loss {:0.4f}, B_Lr {:0.8f}, D_Lr {:0.8f}\n".format(
+                        epoch, total_steps, epoch_train_loss, current_base_lr, current_detail_lr)
+                    for name, loss in losses.items():
+                        message = message + '{}(X{}): {:.4f}, \n'.format(name, opt.loss[name].factor, loss.item())
+                    tqdm.write(message)
+
+                total_steps += 1
 
 
-                    total_steps += 1
                     
                 # -----------------------
                 # Validation and epoch lr scheduler

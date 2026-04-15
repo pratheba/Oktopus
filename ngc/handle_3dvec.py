@@ -3,6 +3,7 @@ import trimesh
 import os.path as op
 import numpy as np
 from time import time
+import random
 from handle_utils import EasyGraph, MCGrid
 from scipy.spatial.transform import Rotation
 from curve_handle import CurveHandle
@@ -113,12 +114,12 @@ class Handle():
             # Localize the samples for each curve
             #curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
             if "_on" in name:
-                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=True, update_radius=True, name=name+'_'+str(cid))
-                key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_train_radius': curve.core.key_train_radius, 'key_cylinder_radius': curve.core.key_cylinder_radius, 'key_frame': curve.core.key_frame,
-                            'key_wrap_radius': curve.core.key_wrap_radius, 'key_occupancy_rho': curve.core.key_occupancy_rho, 'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, 
-                            'wrap_radius_max': curve.core.wrap_radius_max}
+                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=False, update_radius=False, name=name+'_'+str(cid))
+                #key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_train_radius': curve.core.key_train_radius, 'key_cylinder_radius': curve.core.key_cylinder_radius, 'key_frame': curve.core.key_frame,
+                #            'key_wrap_radius': curve.core.key_wrap_radius, 'key_occupancy_rho': curve.core.key_occupancy_rho, 'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, 
+                #            'wrap_radius_max': curve.core.wrap_radius_max}
                 #curve_data, inside = curve.localize_samples(samples_bbox, name=name+'orig_'+str(cid))
-                meta_data[name+'_'+str(cid)] = key_info
+                #meta_data[name+'_'+str(cid)] = key_info
             else:
                 curve_data, inside = curve.localize_samples(samples_bbox)
             sidx_inside = sidx_bbox[inside]
@@ -132,8 +133,9 @@ class Handle():
             rho.append(curve_data['rho'])
             rho_n.append(curve_data['rho_n'])
             cids.append(np.ones(num_inside, dtype=int)*cid)
-        if len(meta_data.keys()):
-            np.savez(name+'.npz', meta_data)
+            #trimesh.Trimesh(vertices=curve_data['samples'], process=False).export(name+'_'+str(cid)+'_localsamp.ply')
+        #if len(meta_data.keys()):
+        #    np.savez(name+'.npz', meta_data)
         samples_glob = np.concatenate(samples_glob, axis=0)
         samples_local = np.concatenate(samples_local, axis=0)
         coords = np.concatenate(coords)
@@ -351,14 +353,25 @@ class Handle():
         self.curve_dict = {}
         for name, cdata in data.items():
             ball = cdata['ball'] if 'ball' in cdata else None
+            #curve_arg = {
+            #    'name': name,
+            #    'idx': cid,
+            #    'ball': ball,
+            #    'z_axis': cdata['z_axis'],
+            #    'key_radius': cdata['radius'],
+            #    'key_points': cdata['points'],
+            #}
+            num_points = cdata['key_points'].shape[0]
+            r = np.sort(np.random.randint(num_points, size=12))
             curve_arg = {
                 'name': name,
                 'idx': cid,
                 'ball': ball,
-                'z_axis': cdata['z_axis'],
-                'key_radius': cdata['radius'],
-                'key_points': cdata['points'],
+                'z_axis': cdata['frame_v'][r],
+                'key_radius': cdata['radius_train'][r],
+                'key_points': cdata['keypoints'][r],
             }
+            print(curve_arg)
             curve = CurveHandle(curve_arg)
             self.curve_dict[name] = curve
             self.curves.append(curve)
@@ -367,12 +380,14 @@ class Handle():
         self.num_curve = len(self.curves)
         
     def load(self, data_path):
-        with open(data_path, 'rb') as f:
-            data = pickle.load(f)
+        #with open(data_path, 'rb') as f:
+        #    data = pickle.load(f)
+        data = np.load(data_path, allow_pickle=True)
 
         self.curves = []
         self.curve_dict = {}
-        for cid, curve_data in enumerate(data['curves']):
+        #for cid, curve_data in enumerate(data['curves']):
+        for cid, curve_data in enumerate(data['segments']):
             curve_data['idx'] = cid
             curve = CurveHandle()
             curve.load_data(curve_data)

@@ -1,0 +1,64 @@
+
+{
+
+  "split": [
+    {
+      "id": 0,
+      "at_fracs": [0.25, 0.8],
+      "new_ids": [100, 0, 101],
+      "names": ["foot", "leg", "remove"]
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 0.5,
+      "extend_burial_alpha": 0.5,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 100,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 0.5,
+      "extend_burial_alpha": 0.5,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "combine_surface_only": [
+    {
+      "keep_id": 1,
+      "absorb_ids": [2],
+      "name": "foot_fingers"
+    }
+  ],
+  "crop": [
+    {
+      "id": 1,
+      "start_frac": 0.0,
+      "end_frac": 0.5
+    }
+  ],
+  "extend": [
+    {
+      "id": 1,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 0.5,
+      "extend_burial_alpha": 0.5,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+   ],
+  "smooth": [
+    {
+      "id": 1,
+      "window": 15,
+      "iterations": 2
+    }
+  ]
+}

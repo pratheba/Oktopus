@@ -72,30 +72,145 @@ def nearest_polyline_projection(poly, pts):
 
     return best_p, best_s / max(total, 1e-12), best_idx, np.sqrt(best_d2)
 
+def radii_from_support_local_frame(
+    keypoints,
+    frame_t,
+    frame_u,
+    frame_v,
+    support_points,
+    q_train=0.95,
+    q_wrap=0.98,
+    q_cyl=1.0,
+    cyl_margin=0.05,
+    cyl_relative_margin=0.2,
+    slab_half_width=None
+):
+    keypoints = np.asarray(keypoints, dtype=np.float64)
+    frame_t = np.asarray(frame_t, dtype=np.float64)
+    frame_u = np.asarray(frame_u, dtype=np.float64)
+    frame_v = np.asarray(frame_v, dtype=np.float64)
+    support_points = np.asarray(support_points, dtype=np.float64)
 
-def radii_from_support(keypoints, support_points):
+    K = len(keypoints)
+    if len(support_points) == 0 or K == 0:
+        z = np.full(K, 0.01, dtype=np.float64)
+        return z, z.copy(), z.copy()
+
+    # default slab size from local spacing
+    if slab_half_width is None:
+        if K >= 2:
+            ds = np.linalg.norm(np.diff(keypoints, axis=0), axis=1)
+            slab_half_width = float(max(0.5 * np.median(ds), 1e-3))
+        else:
+            slab_half_width = 0.01
+
+    r_train = np.full(K, np.nan, dtype=np.float64)
+    r_wrap = np.full(K, np.nan, dtype=np.float64)
+    r_cyl = np.full(K, np.nan, dtype=np.float64)
+
+    for i in range(K):
+        p = keypoints[i]
+        t = frame_t[i]
+        u = frame_u[i]
+        v = frame_v[i]
+
+        rel = support_points - p[None, :]
+
+        # local coordinates in current keypoint frame
+        w = rel @ t
+        uu = rel @ u
+        vv = rel @ v
+
+        # take nearby points in a slab around this keypoint
+        m = np.abs(w) <= slab_half_width
+        if not np.any(m):
+            continue
+
+        rho = np.sqrt(uu[m] ** 2 + vv[m] ** 2)
+        rho = rho[np.isfinite(rho)]
+        if len(rho) == 0:
+            continue
+
+        r_train[i] = np.quantile(rho, q_train)
+        r_wrap[i] = np.quantile(rho, q_wrap)
+
+        base_cyl = np.quantile(rho, q_cyl)
+        r_cyl[i] = base_cyl * (1.0 + cyl_relative_margin) + cyl_margin
+
+    def fill_nan(r, fallback=0.01):
+        good = np.isfinite(r)
+        x = np.arange(len(r))
+        if np.any(good):
+            return np.interp(x, x[good], r[good])
+        return np.full(len(r), fallback, dtype=np.float64)
+
+    r_train = fill_nan(r_train, fallback=0.01)
+    r_wrap = fill_nan(r_wrap, fallback=0.01)
+    r_cyl = fill_nan(r_cyl, fallback=0.02)
+
+    # keep ordering sensible
+    r_wrap = np.maximum(r_wrap, r_train)
+    r_cyl = np.maximum(r_cyl, r_wrap)
+
+    return r_train, r_wrap, r_cyl
+
+def radii_from_support(
+    keypoints,
+    support_points,
+    q_train=0.95,
+    q_wrap=0.97,
+    q_cyl=1.0,
+    cyl_margin=0.1,
+    cyl_relative_margin=0.1,
+):
+    keypoints = np.asarray(keypoints, dtype=np.float64)
+    support_points = np.asarray(support_points, dtype=np.float64)
+
     if len(support_points) == 0:
         z = np.full(len(keypoints), 0.01, dtype=np.float64)
         return z, z.copy(), z.copy()
 
     _, sp, _, dist = nearest_polyline_projection(keypoints, support_points)
-    bins = np.linspace(0, 1, len(keypoints) + 1)
+
+    bins = np.linspace(0.0, 1.0, len(keypoints) + 1)
     bid = np.clip(np.digitize(sp, bins) - 1, 0, len(keypoints) - 1)
 
-    r = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_train = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_wrap = np.full(len(keypoints), np.nan, dtype=np.float64)
+    r_cyl = np.full(len(keypoints), np.nan, dtype=np.float64)
+
     for i in range(len(keypoints)):
         m = bid == i
-        if np.any(m):
-            r[i] = np.quantile(dist[m], 0.85)
+        if not np.any(m):
+            continue
 
-    good = np.isfinite(r)
-    x = np.arange(len(r))
-    if np.any(good):
-        r = np.interp(x, x[good], r[good])
-    else:
-        r = np.full(len(r), 0.01, dtype=np.float64)
+        d = dist[m]
+        d = d[np.isfinite(d)]
+        if len(d) == 0:
+            continue
 
-    return r, r.copy(), 1.1 * r
+        r_train[i] = np.quantile(d, q_train)
+        r_wrap[i] = np.quantile(d, q_wrap)
+
+        base_cyl = np.quantile(d, q_cyl)
+        r_cyl[i] = base_cyl * (1.0 + cyl_relative_margin) + cyl_margin
+
+    def fill_nan(r, fallback=0.01):
+        good = np.isfinite(r)
+        x = np.arange(len(r))
+        if np.any(good):
+            return np.interp(x, x[good], r[good])
+        return np.full(len(r), fallback, dtype=np.float64)
+
+    r_train = fill_nan(r_train, fallback=0.01)
+    r_wrap = fill_nan(r_wrap, fallback=0.01)
+    r_cyl = fill_nan(r_cyl, fallback=0.02)
+
+    # enforce monotonic safety relationship
+    r_wrap = np.maximum(r_wrap, r_train)
+    r_cyl = np.maximum(r_cyl, r_wrap)
+
+    return r_train, r_wrap, r_cyl
 
 def straighten_curve_line(poly):
     n = len(poly)
@@ -422,7 +537,8 @@ def reassign(seg):
     T, U, V, frames = compute_parallel_transport_frames(key)
 
     _, point_s, point_key_ids, _ = nearest_polyline_projection(key, pts)
-    r_train, r_wrap, r_cyl = radii_from_support(key, pts)
+    #r_train, r_wrap, r_cyl = radii_from_support(key, pts)
+    r_train, r_wrap, r_cyl = radii_from_support_local_frame(key, T, U, V, pts)
 
     seg["point_s"] = point_s
     seg["point_key_ids"] = point_key_ids
@@ -522,18 +638,19 @@ def centroid_align(poly, support_points, scale=0.6, max_shift_frac=0.35, smooth_
     return poly + smooth_poly(shifts, window=smooth_win, iters=1)
 
 
-def recenter_and_reassign(seg, center_shift_scale=0.6, center_max_shift_frac=0.35, center_smooth_win=5):
+def recenter_and_reassign(seg, center_shift_scale=0.6, center_max_shift_frac=0.35, center_smooth_win=5, center_iters=5):
     pts = np.asarray(seg.get("surface_points_all", np.zeros((0, 3))), dtype=np.float64)
     key = np.asarray(seg["keypoints"], dtype=np.float64)
 
     key, dominant_axis, flipped = canonicalize_curve_order(key)
-    key = centroid_align(
-        key,
-        pts,
-        scale=center_shift_scale,
-        max_shift_frac=center_max_shift_frac,
-        smooth_win=center_smooth_win,
-    )
+    for _ in range(max(1, int(center_iters))):
+        key = centroid_align(
+            key,
+            pts,
+            scale=center_shift_scale,
+            max_shift_frac=center_max_shift_frac,
+            smooth_win=center_smooth_win,
+        )
     key, dominant_axis, flipped2 = canonicalize_curve_order(key)
 
     seg["keypoints"] = key
@@ -544,6 +661,7 @@ def recenter_and_reassign(seg, center_shift_scale=0.6, center_max_shift_frac=0.3
     meta["canonical_order_flipped"] = bool(flipped or flipped2)
     meta["ordering_rule"] = "x:left_to_right / y:top_to_bottom / z:front_to_back"
     meta["recentered_after_edit"] = True
+    meta["center_iters"] = int(center_iters)
     seg["metadata"] = meta
     return seg
 
@@ -592,9 +710,6 @@ def main():
     print(by_id.keys())
     ops = json.load(open(args.ops_json))
 
-    if "retain_ids" in ops:
-        keep = set(map(int, ops["retain_ids"]))
-        by_id = {k: v for k, v in by_id.items() if k in keep}
 
     for sp in ops.get("split", []):
         sid = int(sp["id"])
@@ -622,7 +737,20 @@ def main():
             child["name"] = names[i]
             child["keypoints"] = p
             child["surface_points_all"] = pts[amin == i]
-            by_id[child["id"]] = reassign(child)
+
+            do_recenter = bool(sp.get("recenter", False))
+            if do_recenter:
+                child = recenter_and_reassign(
+                    child,
+                    center_shift_scale=float(sp.get("center_shift_scale", 0.6)),
+                    center_max_shift_frac=float(sp.get("center_max_shift_frac", 0.35)),
+                    center_smooth_win=int(sp.get("center_smooth_win", 5)),
+                    center_iters=int(sp.get("center_iters", 3)),
+                )
+            else:
+                child = reassign(child)
+
+            by_id[child["id"]] = child
 
     for cb in ops.get("combine", []):
         ids = list(map(int, cb["ids"]))
@@ -649,22 +777,29 @@ def main():
         base["keypoints"] = merged
         base["surface_points_all"] = pts
 
-        base = recenter_and_reassign(
-            base,
-            center_shift_scale=float(cb.get("center_shift_scale", 0.6)),
-            center_max_shift_frac=float(cb.get("center_max_shift_frac", 0.35)),
-            center_smooth_win=int(cb.get("center_smooth_win", 5)),
-        )
+        do_recenter = bool(cb.get("recenter", False))
+        if do_recenter:
+            base = recenter_and_reassign(
+                base,
+                center_shift_scale=float(cb.get("center_shift_scale", 0.6)),
+                center_max_shift_frac=float(cb.get("center_max_shift_frac", 0.35)),
+                center_smooth_win=int(cb.get("center_smooth_win", 5)),
+            )
+        else:
+            base= reassign(base)
         by_id[base["id"]] = base
 
     for cs in ops.get("combine_surface_only", []):
         keep_id = int(cs["keep_id"])
         absorb_ids = list(map(int, cs.get("absorb_ids", [])))
+        new_id = int(cs.get("new_id", keep_id))
 
         if keep_id not in by_id:
             raise KeyError(f"keep_id {keep_id} not found")
 
         keep_seg = deepcopy(by_id[keep_id])
+        keep_seg["id"] = new_id
+        
 
         point_sets = [
             np.asarray(keep_seg.get("surface_points_all", np.zeros((0, 3))), dtype=np.float64)
@@ -691,12 +826,17 @@ def main():
             alpha=float(cs.get("straighten_alpha", 0.5)),
         )
 
-        keep_seg = recenter_and_reassign(
-            keep_seg,
-            center_shift_scale=float(cs.get("center_shift_scale", 0.6)),
-            center_max_shift_frac=float(cs.get("center_max_shift_frac", 0.35)),
-            center_smooth_win=int(cs.get("center_smooth_win", 5)),
-        )
+        
+        do_recenter = bool(cs.get("recenter", False))
+        if do_recenter:
+            keep_seg = recenter_and_reassign(
+                keep_seg,
+                center_shift_scale=float(cs.get("center_shift_scale", 0.6)),
+                center_max_shift_frac=float(cs.get("center_max_shift_frac", 0.35)),
+                center_smooth_win=int(cs.get("center_smooth_win", 5)),
+            )
+        else:
+            keep_seg= reassign(keep_seg)
         by_id[keep_id] = keep_seg
 
         for aid in absorb_ids:
@@ -721,7 +861,20 @@ def main():
             cr.get("start_frac", 0.0),
             cr.get("end_frac", 1.0),
         )
-        by_id[sid] = reassign(seg)
+
+        do_recenter = bool(cr.get("recenter", False))
+        if do_recenter:
+            seg = recenter_and_reassign(
+                seg,
+                center_shift_scale=float(cr.get("center_shift_scale", 0.6)),
+                center_max_shift_frac=float(cr.get("center_max_shift_frac", 0.35)),
+                center_smooth_win=int(cr.get("center_smooth_win", 5)),
+                center_iters=int(cr.get("center_iters", 3)),
+            )
+        else:
+            seg = reassign(seg)
+
+        by_id[sid] = seg
 
     for ex in ops.get("extend", []):
         sid = int(ex["id"])
@@ -738,11 +891,72 @@ def main():
         )
         by_id[sid] = reassign(seg)
 
+    for rc in ops.get("recenter", []):
+        sid = int(rc["id"])
+        if sid not in by_id:
+            continue
+
+        seg = by_id[sid]
+        seg = recenter_and_reassign(
+            seg,
+            center_shift_scale=float(rc.get("center_shift_scale", 0.6)),
+            center_max_shift_frac=float(rc.get("center_max_shift_frac", 0.35)),
+            center_smooth_win=int(rc.get("center_smooth_win", 5)),
+            center_iters=int(rc.get("center_iters", 3)),
+        )
+        by_id[sid] = seg
+
+    if "retain_ids" in ops:
+        keep = set(map(int, ops["retain_ids"]))
+        by_id = {k: v for k, v in by_id.items() if k in keep}
+
+    # final rename/reindex pass on surviving segments only
+    if "rename_final" in ops:
+        renamed = {}
+        for item in ops["rename_final"]:
+            old_id = int(item["old_id"])
+            if old_id not in by_id:
+                continue
+
+            seg = deepcopy(by_id[old_id])
+            new_id = int(item.get("new_id", old_id))
+            new_name = item.get("new_name", seg.get("name", f"segment_{new_id}"))
+
+            seg["id"] = new_id
+            seg["name"] = new_name
+
+            renamed[new_id] = seg
+
+        # keep only untouched survivors + renamed survivors
+        untouched = {
+            k: v for k, v in by_id.items()
+            if k not in {int(x["old_id"]) for x in ops["rename_final"]}
+        }
+
+        # merge back
+        by_id = {**untouched, **renamed}
+
+    # optional automatic sequential renumbering of final survivors
+    if ops.get("renumber_final", False):
+        final_ids = sorted(by_id.keys())
+        remapped = {}
+        name_map = ops.get("rename_final_names", {})
+
+        for new_id, old_id in enumerate(final_ids):
+            seg = deepcopy(by_id[old_id])
+            seg["id"] = new_id
+            seg["name"] = name_map.get(str(old_id), seg.get("name", f"segment_{new_id}"))
+            remapped[new_id] = seg
+
+        by_id = remapped
+
+
     save_segments(
         args.out_npz,
         args.out_dir,
         sorted(by_id.values(), key=lambda s: int(s["id"])),
     )
+
 
 
 if __name__ == "__main__":

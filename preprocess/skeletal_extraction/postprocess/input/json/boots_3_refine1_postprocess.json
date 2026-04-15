@@ -1,0 +1,55 @@
+{
+  "split": [
+    {
+      "id": 0,
+      "at_frac": 0.85,
+      "new_ids": [0, 100],
+      "names": ["shaft", "remove"]
+
+    }
+  ],
+  "combine_surface_only": [
+    {
+      "keep_id": 3,
+      "absorb_ids": [100],
+      "name": "sole"
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 0.3,
+      "extend_burial_alpha": 0.3,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 3,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 0.5,
+      "extend_burial_alpha": 0.5,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "smooth": [
+    { 
+      "id": 0,
+      "window": 15,
+      "iterations": 4
+    },
+    {
+      "id": 3,
+      "window": 15,
+      "iterations": 4
+    },
+    {
+      "id": 4,
+      "window": 15,
+      "iterations": 2
+    }
+  ]
+}

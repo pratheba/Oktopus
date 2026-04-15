@@ -247,21 +247,32 @@ class CurveHandle():
         kidx = kidx[inside]
         return samples_data, kidx
     
-    def filter_grid_adapt(self, mc_grid, adapt_arg):
-        #t = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_8']
-        #print("loaded")
-        #print(t)
-        #self.core.key_points = t['key_points']
-        #self.core.key_ts = t['key_ts']
-        #self.core.key_radius = t['key_radius']
-        #self.core.key_frame = t['key_frame']
-        #self.update()
-        #self.core.update_coords()
-        #self.core.update_frame()
+    def filter_grid_adapt_old(self, mc_grid, adapt_arg):
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
         accessory_data, avatar_data, inside= self.core.localize_samples_adapt(samples, adapt_arg)
         kidx = kidx[inside]
         return accessory_data, avatar_data, kidx, inside
+
+    def filter_grid_adapt(self, mc_grid, adapt_arg):
+        samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
+
+        mode = adapt_arg.get("mode", "direct")
+
+        if mode == "direct":
+            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+
+        elif mode == "dependent":
+            accessory_data, avatar_data, inside = self.core.localize_samples_dependent(samples, adapt_arg)
+
+        elif mode == "dependent_split":
+            accessory_data, avatar_data, inside = self.core.localize_samples_split_dependent(samples, adapt_arg)
+
+        else:
+            raise ValueError(f"Unknown adapt mode: {mode}")
+
+        kidx = kidx[inside]
+        return accessory_data, avatar_data, kidx, inside
+
 
     def filter_grid_adapt_test(self, mc_grid, adapt_arg):
         self.core.update_coords()
@@ -378,6 +389,66 @@ class CurveHandle():
     
     def export_vis(self):
         return self.core.export_vis()
+
+
+    def _gen_cyl_mesh_runtime(self, intpl):
+        thetas = intpl['thetas']
+        verts = intpl['points']
+        yz_rs = intpl['radius']
+        frames = intpl['frame']
+
+        if 'level' in intpl:
+            level = intpl['level']
+        else:
+            level = 0.0
+
+        theta_coo = np.asarray([np.cos(thetas), np.sin(thetas)])
+        theta_coo = np.einsum('nj,ji->nji', yz_rs, theta_coo)
+        cyl_pts = np.einsum('njk,nji->nik', frames[:,1:], theta_coo)
+
+        dists = np.linalg.norm(cyl_pts, axis=2)
+        scales = (dists + level) / (dists + 1e-12)
+        cyl_pts *= scales[..., None]
+
+        cyl_pts += verts[:, None, :]
+
+        v0, v1 = verts[0], verts[-1]
+
+        cyl_mesh = CylindersMesh()
+        vidx = cyl_mesh.add_cylinder(cyl_pts)
+        cyl_mesh.add_cap(v0, vidx[0])
+        cyl_mesh.add_cap(v1, vidx[-1], flip_face=True)
+        return cyl_mesh
+
+
+    def build_cylmesh_from_runtime_support(self, runtime_support, n_sample_curve=n_sample_curve, n_sample_circle=n_sample_circle):
+        s0 = float(runtime_support["coords"][0])
+        s1 = float(runtime_support["coords"][-1])
+        s_dense = np.linspace(s0, s1, n_sample_curve)
+
+        intpl = self.core.interpolate_runtime_support(runtime_support, s_dense)
+        thetas = (2.0 * np.pi) * np.linspace(0.0, 1.0, n_sample_circle, endpoint=False)
+        intpl["thetas"] = thetas
+        return self._gen_cyl_mesh_runtime(intpl)
+
+
+    def filter_grid_on_runtime_support(self, mc_grid, runtime_support, norm=1.0):
+        """
+        Runtime-support version of filter_grid(...):
+        build cylinder around already-placed support,
+        collect candidate voxels,
+        localize directly against that support.
+        """
+        cyl_mesh = self.build_cylmesh_from_runtime_support(runtime_support)
+        samples, kidx = cyl_mesh.filter_grid(mc_grid)
+
+        samples_data, inside = self.core.localize_samples_on_runtime_support(
+            samples,
+            runtime_support,
+            norm=norm,
+        )
+        kidx = kidx[inside]
+        return samples_data, kidx
 
 
     

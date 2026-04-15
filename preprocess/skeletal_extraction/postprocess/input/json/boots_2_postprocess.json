@@ -1,0 +1,32 @@
+{
+  "combine": [
+    {
+      "new_id": 1,
+      "ids": [3, 4],
+      "name": "foot",
+      "straighten_mode": "line",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.25,
+      "center_max_shift_frac": 0.3,
+      "center_smooth_win": 7
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
+      "extend_min": 0.015,
+      "target_spacing": 0.003
+    }
+  ],
+  "smooth": [
+    {
+      "id": 1,
+      "window": 20,
+      "iterations": 4
+    }
+  ]
+}

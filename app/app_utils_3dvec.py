@@ -61,7 +61,9 @@ def load_yaml_file(yaml_file):
     else:
         return yaml_file
 
-def create_grid_like(mc_grid):
+def create_grid_like(mc_grid, res=None):
+    #if res is not None:
+    #    mc_grid.reso = res
     new_grid = MCGrid({
         'level': mc_grid.grid_config['level'],
         'reso': mc_grid.reso,

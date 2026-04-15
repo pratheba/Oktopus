@@ -1,0 +1,22 @@
+{
+  "combine": [
+    {
+      "new_id": 1,
+      "ids": [1, 2],
+      "name": "foot",
+      "straighten_mode": "line",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.25,
+      "center_max_shift_frac": 0.3,
+      "center_smooth_win": 7
+    }
+  ],
+  "smooth": [
+    {
+      "id": 1,
+      "window": 20,
+      "iterations": 4
+    }
+  ],
+  "retain_ids": [0,1]
+}

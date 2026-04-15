@@ -1,0 +1,38 @@
+{
+  "split": [
+    {
+      "id": 0,
+      "at_frac": 0.3,
+      "new_ids": [0, 2],
+      "names": ["top", "shaft"]
+
+    }
+  ],
+  "smooth": [
+    {
+      "id": 2,
+      "window": 20,
+      "iterations": 4
+    }
+  ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 0.4,
+      "extend_burial_alpha": 0.4,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 2,
+      "extend_start": true,
+      "extend_end":true,
+      "extend_radius_alpha": 0.4,
+      "extend_burial_alpha": 0.4,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ]
+}
