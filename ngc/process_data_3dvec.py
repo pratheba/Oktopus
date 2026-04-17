@@ -25,7 +25,6 @@ def meshlab_shape_sampling(shape_path, num_samples, noise_scale):
 
     verts_around = []
     off_surface_samples = int((0.25 * num_samples)/len(noise_scale))
-    
 
     for ns in noise_scale:
         ms = ml.MeshSet()
@@ -118,7 +117,7 @@ def split_train_test(num_surface, num_space, num_on_surface):
 
 def get_samples(mesh_base_file, handle_mesh_file, n_surface_samples, n_space_samples):
     on_surface_samples, surface_samples = meshlab_shape_sampling(
-        mesh_base_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
+        mesh_base_file, n_surface_samples, [0.002, 0.005, 0.01]
     )
 
     space_samples = meshlab_volumetric_sampling(
@@ -144,7 +143,7 @@ def get_samples(mesh_base_file, handle_mesh_file, n_surface_samples, n_space_sam
 
 def get_residual_samples(mesh_file, mesh_base_file, n_surface_samples):
     on_surface_samples, surface_samples = meshlab_shape_sampling(
-        mesh_base_file, n_surface_samples, [0.002, 0.005, 0.01, 0.02, 0.05]
+        mesh_base_file, n_surface_samples, [0.002, 0.005, 0.01]
     )
 
     space_samples = meshlab_volumetric_sampling(
@@ -192,7 +191,7 @@ def get_full_base_residual_samples(
     handle_mesh_file,
     n_surface_samples,
     n_space_samples,
-    noise_scales=[0.002, 0.005, 0.01, 0.02, 0.05],
+    noise_scales=[0.002, 0.005, 0.01],
     name_prefix=""
 ):
     """
@@ -343,7 +342,7 @@ def ngc_dataset(arg):
             on_surface_data, pert_surface_data, space_data = get_full_base_residual_samples(handle=handle, \
                                                         mesh_file = shape_file, mesh_base_file = shape_base_file, \
                                                         handle_mesh_file = handle_mesh_file, n_surface_samples= n_surface_samples, n_space_samples= n_space_samples, \
-                                                        noise_scales=[0.002, 0.005, 0.01, 0.02, 0.05], name_prefix=name)
+                                                        noise_scales=[0.002, 0.005, 0.01], name_prefix=name)
 
 
             all_data = {
@@ -375,7 +374,7 @@ if __name__ == "__main__":
     arg = {
         'root_path': root_path,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 3200000,
-        'n_space_samples' : 400000,
+        'n_surface_samples' : 320000,
+        'n_space_samples' : 40000,
     }
     ngc_dataset(arg)

@@ -37,7 +37,7 @@ def start_test(opt):
     # Marching Cubes config
     config_path = './exp/train/manipulation'
     grid_config = {
-        'reso': 1024,
+        'reso': 512,
         'level': 0.,
         'size': 1.2,
     }
@@ -65,7 +65,7 @@ def start_test(opt):
         'mc_grid': mc_grid,
         'output_folder': op.join(output_path, f'{shape_name}'),
         'shape': shape_name,
-        'adapt_file': op.join(config_path, f'adapt_{shape_name}.yaml'),
+        'adapt_file': op.join(config_path, f'adapt_{shape_name}_2.yaml'),
     }
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)

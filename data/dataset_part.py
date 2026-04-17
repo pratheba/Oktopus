@@ -48,7 +48,8 @@ class NGCDataset(Dataset):
         handles = []
         for name in self.data_names:
             item_path = op.join(self.root_path, name)
-            handle_path = op.join(item_path, 'handle', 'std_handle.pkl')
+            #handle_path = op.join(item_path, 'handle', 'std_handle.pkl')
+            handle_path = op.join(item_path, 'handle', 'std_handle.npz')
             handle = Handle()
             handle.load(handle_path)
             handles.append(handle)
@@ -99,15 +100,15 @@ class NGCDataset(Dataset):
         #input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
         #input2, gt2, sidx2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
         #input3, gt3, sidx3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
-        input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)
+        input1, gt1, sidx1 = self.get_curve_data(data['pert_surface'], input_curve_idx, self.n_sample)
         input2, gt2, sidx2 = self.get_curve_data(data['space'], input_curve_idx, self.n_sample)
         input3, gt3, sidx3 = self.get_curve_data(data['on_surface'], input_curve_idx, self.n_surface_sample)
-        gt_base1 = torch.from_numpy(data['base_surface_sdf'][sidx1]).float()
-        gt_base2 = torch.from_numpy(data['base_space_sdf'][sidx2]).float()
-        gt_base3 = torch.from_numpy(data['base_on_surface_sdf'][sidx3]).float()
-        gt_residual1 = torch.from_numpy(data['residual_surface_sdf'][sidx1]).float()
-        gt_residual2 = torch.from_numpy(data['residual_space_sdf'][sidx2]).float()
-        gt_residual3 = torch.from_numpy(data['residual_on_surface_sdf'][sidx3]).float()
+        #gt_base1 = torch.from_numpy(data['base_pert_surface_sdf'][sidx1]).float()
+        #gt_base2 = torch.from_numpy(data['base_space_sdf'][sidx2]).float()
+        #gt_base3 = torch.from_numpy(data['base_on_surface_sdf'][sidx3]).float()
+        #gt_residual1 = torch.from_numpy(data['residual_pert_surface_sdf'][sidx1]).float()
+        #gt_residual2 = torch.from_numpy(data['residual_space_sdf'][sidx2]).float()
+        #gt_residual3 = torch.from_numpy(data['residual_on_surface_sdf'][sidx3]).float()
         #input_base1, gt_base1 = self.get_curve_data(data['base_surface'], input_curve_idx, self.n_sample)
         #input_base2, gt_base2 = self.get_curve_data(data['base_space'], input_curve_idx, self.n_sample)
         #input_base3, gt_base3 = self.get_curve_data(data['base_on_surface'], input_curve_idx, self.n_surface_sample)
@@ -125,8 +126,8 @@ class NGCDataset(Dataset):
         }
         data_gt = {
             'sdf': torch.cat([gt1['sdf'], gt2['sdf'], gt3['sdf']]),
-            'sdf_base': torch.cat([gt_base1, gt_base2, gt_base3]),
-            'sdf_residual': torch.cat([gt_residual1, gt_residual2, gt_residual3]),
+            'sdf_base': torch.cat([gt1['sdf_base'], gt2['sdf_base'], gt3['sdf_base']]),
+            'sdf_res': torch.cat([gt1['sdf_res'], gt2['sdf_res'], gt3['sdf_res']]),
         }
         #exit()
 
@@ -152,6 +153,8 @@ class NGCDataset(Dataset):
         #exit()
         
         samples_sdf = curve_data['sdf']
+        samples_base_sdf = curve_data['sdf_base']
+        samples_res_sdf = curve_data['sdf_res']
         #print(samples_sdf.shape)
         cids = curve_data['curve_idx'].astype(np.int32)
         #print("cids", cids, flush=True)
@@ -171,6 +174,8 @@ class NGCDataset(Dataset):
                 raise ValueError(f'num of samples{num_samples} smaller than the threshold {n_s}')
         
         gt_sdf = samples_sdf[sidx]
+        gt_base_sdf = samples_base_sdf[sidx]
+        gt_res_sdf = samples_res_sdf[sidx]
         samples_local = samples_local[sidx]
         samples_coords = samples_coords[sidx]
         samples_angle = samples_angle[sidx]
@@ -195,6 +200,8 @@ class NGCDataset(Dataset):
         }
         gt = {
             'sdf': torch.from_numpy(gt_sdf).float(),
+            'sdf_base': torch.from_numpy(gt_base_sdf).float(),
+            'sdf_res': torch.from_numpy(gt_res_sdf).float(),
         }
         return model_input, gt, sidx
     

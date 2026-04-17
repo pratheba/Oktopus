@@ -30,7 +30,7 @@ def start_inference(opt):
         #config_path = 'train'
         #agent.load_model(device,  model_path, config_path, checkpoint=checkpoint)
         mc_grid = MCGrid({
-            'reso': 512,
+            'reso': 256,
             'level': 0.,
             'size': 1.2,
         })

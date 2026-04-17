@@ -53,9 +53,12 @@ class PWLACurve():
         curve_length, _ = self.calc_curve_length()
         print("c length = ", curve_length, flush=True)
         ### Have length of 2 to have 36b key pints
+        #n_sample_points = int(36 * curve_length)
         n_sample_points = int(36 * curve_length)
+        #n_sample_points = int(36 * curve_length)
         r = np.linspace(0,total_points-1, n_sample_points, dtype=int) #np.random.randint(total_points-1, size=n_sample_points-2)
         #self.key_points = arg['keypoints']
+        #r = np.arange(total_points)
         self.key_points = self.key_points[r] 
         self.key_train_radius = np.array(arg['radius_train'])
         self.key_cylinder_radius = (np.array(arg.get('radius_cylinder', self.key_train_radius.copy())))
@@ -63,14 +66,17 @@ class PWLACurve():
         #max_cylinder_radius = np.max(self.key_cylinder_radius)
         #self.key_train_radius = np.full(self.key_train_radius.shape, max_train_radius)
         #self.key_cylinder_radius = np.full(self.key_cylinder_radius.shape, max_cylinder_radius)
-        self.key_train_radius = self.key_train_radius[r]
-        self.key_cylinder_radius = self.key_cylinder_radius[r]
+        #self.key_train_radius = self.key_train_radius[r]
+        self.key_cylinder_radius = self.key_cylinder_radius[r]+0.1
+        #self.key_train_radius = self.key_train_radius[r]
+        self.key_train_radius = self.key_cylinder_radius
         self.key_train_radius = np.tile(np.array(self.key_train_radius),2).reshape(-1, self.key_train_radius.shape[0]).T 
         self.key_cylinder_radius = np.tile(np.array(self.key_cylinder_radius),2).reshape(-1, self.key_cylinder_radius.shape[0]).T
         #self.key_train_radius = arg.get('key_train_radius', arg.get('key_radius'))
         #self.key_cylinder_radius = arg.get('key_cylinder_radius', self.key_train_radius.copy())
         self.key_radius = self.key_train_radius
-        x_axis = arg['frame_t'][r] #self.estimate_tangent(self.key_points)
+        #x_axis = arg['frame_t'][r] #self.estimate_tangent(self.key_points)
+        x_axis = self.estimate_tangent(self.key_points)
         z_axis = arg['frame_v'][r]#arg['z_axis']
         #print(self.key_radius.shape)
         #print(self.key_radius.shape)
@@ -376,6 +382,15 @@ class PWLACurve():
         self.curve_length = np.sum(edge_lengths)
         self.key_ts = np.cumsum(np.r_[0., edge_lengths]) / (self.curve_length + 1e-12)
 
+    def smooth_radius(self, radius_y, radius_z, gaussian_smooth=2.0, radius_type='train'):
+        if gaussian_smooth > 0:
+            radius_y = gaussian_filter1d(radius_y, sigma=gaussian_smooth)
+            radius_z = gaussian_filter1d(radius_z, sigma=gaussian_smooth)
+
+        radius_yz = np.stack([radius_y, radius_z], axis=1)
+        #print("radius_yz",radius_yz)
+        self.update_radius(bin_center, radius_yz, radius_type)
+
     def update_radius(self, bins, radius_yz, radius_type='train'):
         #print(self.key_radius)
         ry = np.interp(self.key_ts, bins, radius_yz[:, 0])
@@ -606,6 +621,9 @@ class PWLACurve():
                     (skeletal_verts[vid], non_uniform_linear_points[vid]), 
                     (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
+                if outside:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+
                 # consider halfball+ cylinder
                 # left side of cylinder remain valid
                 #if self.start_ball_x is not None or outside:
@@ -619,6 +637,9 @@ class PWLACurve():
                     (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
                     (skeletal_verts[vid], non_uniform_linear_points[vid]), 
                 )
+                if outside:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+
                 #if self.end_ball_x is not None or outside:
                 #    samples3D_to_skeleton[sample_index] = 1.
 
@@ -767,8 +788,8 @@ class PWLACurve():
         #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
 
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, name=''):
-        sample_keypoint_map = self.curve_projection(pointcloudsamples)
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='train'):
+        sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
@@ -780,7 +801,7 @@ class PWLACurve():
         sample_index = sample_index[sample_keypoint_map_range]
 
         # interpolate with the new additional non linear skeletal keypoints
-        intpl = self.interpolate(sample_keypoint_map, radius_type='train')
+        intpl = self.interpolate(sample_keypoint_map, radius_type=radius_type)
 
         ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
@@ -849,47 +870,20 @@ class PWLACurve():
                 out_path=str(name)+"_shape_and_curves.ply"
             )
 
-            #self.update_coords()
-            #self.update_frame()
-            #new_frame = self.get_new_frame(C_key_smooth) #key_frame 
-            #new_frame = self.get_new_frame(self.key_points) #key_frame 
-            #self.key_frame = new_frame
-#            new_T = new_frame[:, 0, :]
-#            auto_N = new_frame[:, 1, :]
-#            xfer_N = self.key_frame[:, 1, :]
-#
-#            dots = np.sum(auto_N * xfer_N, axis=1)
-#            print("normal alignment min/max:", dots.min(), dots.max())
-#            print("normal alignment mean:", dots.mean())
-#
-#            self.key_frame = transfer_frame_orientation(
-#                old_frame=old_frame,
-#                old_tangent=old_T,
-#                new_tangent=new_T,
-#                enforce_continuity=True,
-#                orthonormalize=True,
-#            )
-            #self.z_axis = self.key_frame[:, 2, :].copy()
-            #self.y_axis = self.key_frame[:, 1, :].copy()
-            #self.update_frame()
-            #C_key_smooth = resample_curve_to_key_ts(s_dense, C_old, s_target)
-            #self.update_frame()
-
-
             return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=True, name=name)
 
         if update_radius:
             #print(self.key_wrap_radius)
             #print(u)
-            update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=24, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
+            #update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=24, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
             #print(self.key_wrap_radius)
             #exit()
-            update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=24, quantile=0.7, min_count=50)
+            #update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=24, quantile=0.7, min_count=50)
 
             ################# Uncomment later for curve center and cylinder #################################
-#            self.update_radius_from_coords(sample_keypoint_map, w, u, v)
+            self.update_radius_from_coords(sample_keypoint_map, w, u, v)
 #            #self.update_wrap_profile_from_coords(sample_keypoint_map, w, u, v, radius_type='wrap')
-            #self.update_cylinder_radius_from_coords(self, sample_keypoint_map, w, u, v, min_count=50, isotropic=True) 
+            self.update_cylinder_radius_from_coords(self, sample_keypoint_map, w, u, v, min_count=50, isotropic=True) 
            # self.update_cylinder_radius_from_wrap(eps=0.03, isotropic=False)
             radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False, radius_type='train')['radius']
             #print(yz_radius.shape)
@@ -1814,7 +1808,7 @@ class PWLACurve():
 
 
     def localize_samples_adapt(self, vs, adapt_arg):
-        avatar_data, inside = self.localize_samples(vs, norm=10.0)
+        avatar_data, inside = self.localize_samples(vs, norm=1.0, outside=True)# radius_type='cylinder')
 
         accessory_curve_handle = adapt_arg['accessory_curve_handle']
         accessory_curve_handle.core.update_coords()
@@ -1835,6 +1829,11 @@ class PWLACurve():
 
         inside_final = inside.copy()
         inside_final = inside_final[valid_map]
+
+        print("input vs:", len(vs))
+        print("after avatar localize inside:", len(inside))
+        print("after src interval crop:", len(inside_final))
+        #exit()
 
         avatar_coords = avatar_data["coords"]
         avatar_samples_local = avatar_data["samples_local"].copy()
@@ -1954,11 +1953,15 @@ class PWLACurve():
             scale = (adapt_arg['scale'] * r_tgt) / (r_src + 1e-12)
             rho_acc = rho_avatar * scale
 
+        elif adapt_arg['rigid_radius']:
+            scale = adapt_arg['scale']
+            scale_rho = np.full_like(rho_avatar, scale)
+            rho_acc = rho_avatar * scale_rho
+            theta_tgt = theta_avatar + delta_theta
         else:
             scale = adapt_arg['scale']
             scale_rho = scale * 0.5 * (scale_y + scale_z)
-            scale_rho = np.full_like(rho_avatar, scale)
-            rho_acc = 10 *rho_avatar * scale_rho
+            rho_acc = rho_avatar * scale_rho
             theta_tgt = theta_avatar + delta_theta
 
         u_acc = rho_acc * np.cos(theta_tgt)
@@ -2010,7 +2013,15 @@ class PWLACurve():
         accessory_data["runtime_frame"] = runtime_frames# avatar_world_frames
         accessory_data["x_radius"] = tangent_acc
 
-        return accessory_data, avatar_data, inside_final
+        runtime_support = {
+            "coords": acc_coords.copy(),
+            "points": avatar_world_points.copy(),
+            "frame": runtime_frames.copy(),
+            "radius": acc_intpl["radius"].copy(),
+            "x_radius": tangent_acc.copy(),
+        }
+
+        return accessory_data, avatar_data, inside_final, runtime_support
 
 
     def localize_occ_samples(self, samples):

@@ -51,11 +51,9 @@ class LossHandler():
         return tau * torch.tanh(x / tau)
 
     def sdf_base_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
-        out_sdf = output['sdf']
-        #out_detail_sdf = output['sdf_detail']
-        B, n = out_sdf.shape
-        gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
-        return metric_fn(out_sdf, gt_sdf)
+        out_base_sdf = output['sdf']
+        gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
+        return metric_fn(out_base_sdf, gt_base_sdf)
 
 
     def sdf_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):

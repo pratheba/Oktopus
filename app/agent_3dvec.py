@@ -718,6 +718,7 @@ class Agent():
         template["local_points"][0] = np.zeros(3, dtype=np.float64)
         return template
 
+
     @torch.no_grad()
     def action_part_adapt(self, arg):
         output_folder = arg['output_folder']
@@ -732,7 +733,8 @@ class Agent():
         os.makedirs(output_folder, exist_ok=True)
 
         batch_size = 64**3
-        mc_grid.clear_grid(val=10.0)
+        #mc_grid.clear_grid(val=10.0)
+        mc_grid.clear_grid()
 
         adapted_support_cache = {}
         cc = 0
@@ -752,7 +754,8 @@ class Agent():
                 print(key)
 
                 curve_grid = utils.create_grid_like(mc_grid)
-                curve_grid.clear_grid(val=10.0)
+                #curve_grid.clear_grid(val=10.0)
+                curve_grid.clear_grid()
 
                 adapt_arg = {
                     'mode': mode,
@@ -854,7 +857,8 @@ class Agent():
                         child_s1=child_s1
                     )
                     curve_grid = utils.create_grid_like(mc_grid, res=256)
-                    curve_grid.clear_grid(val=10.0)
+                    #curve_grid.clear_grid(val=10.0)
+                    curve_grid.clear_grid()
 
                     accessory_data, runtime_child_support, kidx = self.filter_grid_dependent_runtime(curve_grid, adapt_arg)
 
@@ -874,10 +878,12 @@ class Agent():
                     accessory_data, accessory_key, batch_size=batch_size
                 )
 
-                delta = 0.01
+                #delta = 0.01
                 acc_grid = utils.create_grid_like(mc_grid)
-                acc_grid.clear_grid(val=10.0)
-                acc_grid.update_grid(acc_vals - delta, kidx, mark=True, mode="overwrite")
+                #acc_grid.clear_grid(val=10.0)
+                acc_grid.clear_grid()
+                #acc_grid.update_grid(acc_vals - delta, kidx, mark=True, mode="overwrite")
+                acc_grid.update_grid(acc_vals, kidx, mark=True, mode="overwrite")
 
                 #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
                 #print("num total voxels:", acc_grid.empty_marks.shape[0])
@@ -890,7 +896,8 @@ class Agent():
                     mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
 
                 cc += 1
-                mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
+                #mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
+                mc_grid.update_grid(acc_vals, kidx, mode='minimum')
 
         mesh = mc_grid.extract_mesh1()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
@@ -914,8 +921,10 @@ class Agent():
         batch_size = 64**3
         count = 0
         acc_grid = utils.create_grid_like(mc_grid)
-        acc_grid.clear_grid(val=10.0)
-        mc_grid.clear_grid(val=10.0)
+        #acc_grid.clear_grid(val=10.0)
+        #mc_grid.clear_grid(val=10.0)
+        acc_grid.clear_grid()
+        mc_grid.clear_grid()
         
         cc = 0 
         adapted_support_cache = {}
@@ -930,7 +939,8 @@ class Agent():
                     continue
                 count += 1
                 curve_grid = utils.create_grid_like(mc_grid)
-                curve_grid.clear_grid(val=10.0)
+                #curve_grid.clear_grid(val=10.0)
+                curve_grid.clear_grid()
 
                 adapt_arg = {
                     #'accessory_curve_handle': accessory_curve_handle,
@@ -977,7 +987,8 @@ class Agent():
                 #gap   = 0.01  # required clearance above leg
 
                 acc_grid = utils.create_grid_like(mc_grid)
-                acc_grid.clear_grid(val=10.0)
+                #acc_grid.clear_grid(val=10.0)
+                acc_grid.clear_grid()
                 vals = acc_vals - delta
                 acc_grid.update_grid(vals, kidx, mark=True, mode="overwrite")
                 mesh_acc = acc_grid.extract_mesh()

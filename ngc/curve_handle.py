@@ -255,11 +255,20 @@ class CurveHandle():
 
     def filter_grid_adapt(self, mc_grid, adapt_arg):
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
+        #samples, kidx = mc_grid.generate_samples()
 
         mode = adapt_arg.get("mode", "direct")
 
         if mode == "direct":
-            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+            accessory_data, avatar_data, inside, runtime_support = self.core.localize_samples_adapt(samples, adapt_arg)
+            #accessory_curve_handle = adapt_arg["accessory_curve_handle"]
+            #accessory_data, kidx = accessory_curve_handle.filter_grid_on_runtime_support(
+            #    mc_grid,
+            #    runtime_support,
+            #    norm=adapt_arg.get("infer_scale", 1.35),
+            #)
+
+            #inside = np.arange(kidx.shape[0])
 
         elif mode == "dependent":
             accessory_data, avatar_data, inside = self.core.localize_samples_dependent(samples, adapt_arg)

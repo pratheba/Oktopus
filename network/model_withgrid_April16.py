@@ -11,179 +11,6 @@ from triplane import CurveThetaMultiResGrid, CurveRhoMultiResGrid
 from mask import *
 
 
-
-class NGCNetGridBase(nn.Module):
-    """docstring for NGCNetGrid ."""
-    def __init__(self, arg, dim_out_angle=256, dim_cond=256):
-        super().__init__()
-        self.device = arg['device']
-        self.dim_code = arg['dim_code']
-        self.dim_type_base = arg['dim_type_base']
-
-        ########## BASE1 FEATURES###################      
-        self.base1_reduce_channel = arg['base1_reduce_channel']
-        self.base1_grid_levels = arg['base_grid_levels']
-        self.base1_grid_dim = arg['base_grid_dim']
-        self.base1_grid_hw = arg['base_grid_hw']
-        self.base1_grid_curvetheta = CurveThetaMultiResGrid(base_hw = self.base1_grid_hw, levels=self.base1_grid_levels, dim=self.base1_grid_dim, reduce=self.base1_reduce_channel)
-
-        self.rho_grid = arg['rho_grid']
-        if self.rho_grid:
-            self.base1_grid_curverho = CurveRhoMultiResGrid(base_hw = self.base1_grid_hw, levels=self.base1_grid_levels, dim=self.base1_grid_dim, reduce=self.base1_reduce_channel)
-            if self.base1_reduce_channel:
-                dim = 0
-                for i in range(self.base1_grid_levels):
-                    dim +=  int(self.base1_grid_dim /(2**i))
-                self.base1_grid_outdim = 2*dim
-            else:
-                self.base1_grid_outdim = 2*self.base1_grid_levels * self.base1_grid_dim
-        else:
-            if self.base1_reduce_channel:
-                dim = self.base1_grid_dim
-                for i in range(self.base1_grid_levels):
-                    dim +=  int(dim /(2**i))
-                self.base1_grid_outdim = dim
-            else:
-                self.base1_grid_outdim = self.base1_grid_levels * self.base1_grid_dim
-
-
-        ########## BASE2 FEATURES###################      
-        self.base2_reduce_channel = arg['base2_reduce_channel']
-        self.base2_grid_curvetheta = CurveThetaMultiResGrid(base_hw = self.base2_grid_hw, levels=self.base2_grid_levels, dim=self.base2_grid_dim, reduce=self.base1_reduce_channel)
-        if self.base2_reduce_channel:
-            dim = 0 #self.detail_grid_dim
-            for i in range(self.base2_grid_levels):
-                dim +=  int(self.base2_grid_dim /(2**i))
-            self.base2_grid_outdim = dim #self.detail_grid_levels * self.detail_grid_dim
-        else:
-            self.base2_grid_outdim = self.base2_grid_levels * self.base2_grid_dim
-
-        ################# BASE MODEL #########################
-        dim_in_base1 = 1 + self.base1_grid_outdim
-        dim_in_base2 =  1 + dim_out_angle + self.base2_grid_outdim + 1 # rho, detail_features, periodenc_angle, sdf_base.detach
-
-        dim_out_base1 = arg['dim_base1_feat']
-        self.num_base1_hidden_layers = arg['num_base1_hidden_layers']
-        self.filmenc_base1 = [FiLMEncoder(dim_in_base1, dim_out_base1, dim_cond)]
-        self.filmenc_base1 = [FilmEncoder(dim_out_base1, dim_out_base1, dim_cond) for _ in range(num_base1_hidden_layers)]
-        self.decoder_base1 = MLP(**arg['decoder_base1'])
-
-        dim_out_base2 = arg['dim_base2_feat']
-        self.num_base2_hidden_layers = arg['num_base2_hidden_layers']
-        self.filmenc_base2 = FiLMEncoder(dim_in_base2, dim_out_base2, dim_cond) # arg['dim_sample_feat'], arg[''])
-        self.filmenc_base2 = [FilmEncoder(dim_out_base2, dim_out_base2, dim_cond) for _ in range(num_base2_hidden_layers)]
-        self.decoder_base2 = MLP(**arg['decoder_base2'])
-
-    def base1_parameters(self):
-        modules = [
-            self.curve_embd,
-            self.type_embd,
-            self.curveencoder,
-            self.base1_grid_curvetheta,
-            ]
-
-        if self.rho_grid:
-            modules += [self.base1_grid_curverho]
-        for i in range(self.num_base1_hidden_layers+1):
-            modules += [self.filmenc_base1[i]]
-        modules += [self.decoder_base1]
-
-        for m in modules:
-            for p in m.parameters():
-                yield p
-
-    def base2_parameters(self):
-        modules = [
-            self.curve_embd,
-            self.type_embd,
-            self.curveencoder,
-            self.base2_grid_curvetheta,
-            ]
-
-        for i in range(self.num_base2_hidden_layers+1):
-            modules += [self.filmenc_base2[i]]
-        modules += [self.decoder_base2]
-
-        for m in modules:
-            for p in m.parameters():
-                yield p
-
-    def forward(self, model_input, type_curve, type_sample, curve_feats, curr_epoch=0, istrain=True):
-        mi = model_input
-        if istrain:
-            ############ BASE FEATURES ###################
-            samples_base1_ctfeatures = self.base1_grid_curvetheta(mi['coords'], mi['angles'])
-            if self.rho_grid:
-                samples_base1_crfeatures = self.base1_grid_curverho(mi['coords'], mi['rho_n'])
-                samples_base1_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base1_ctfeatures, samples_base1_crfeatures], dim=-1)
-            else:
-                samples_base1_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base1_ctfeatures], dim=-1)
-
-            ############ BASE2 FEATURES ###################
-            samples_base2_ctfeatures = self.base2_grid_curvetheta(mi['coords'], mi['angles'])
-            samples_base2_features = torch.cat([mi['rho_n'].unsqueeze(-1), samples_base2_ctfeatures], dim=-1)
-            sample_angle_periodenc = self.period_angle_enc(mi['angles'].unsqueeze(-1))
-        else:
-            samples_base1_ctfeatures = self.base1_grid_curvetheta.inference(mi['coords'], mi['angles'])
-            if self.rho_grid:
-                samples_base1_crfeatures = self.base1_grid_curverho.inference(mi['coords'], mi['rho_n'])
-                samples_base1_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base1_ctfeatures, samples_base1_crfeatures], dim=-1)
-            else:
-                samples_base1_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base1_ctfeatures], dim=-1)
-
-            samples_base2_ctfeatures = self.base2_grid_curvetheta.inference(mi['coords'], mi['angles'])
-            samples_base2_features = torch.cat([mi['rho_n'].unsqueeze(-1), samples_base2_ctfeatures], dim=-1)
-            sample_angle_periodenc = self.period_angle_enc.inference(mi['angles'].unsqueeze(-1))
-
-        x = self.filmenc_base1[0](samples_base1_features, curve_feats) + type_sample
-        for block in self.filmenc_base1[1:]: 
-            res = x
-            x = block(x, curve_feats)
-            x = x + res
-        sdf_base1 = self.decoder_base1.forward_simple(x).squeeze(-1)
-        ############ FILM DETAILS ################
-        sdf_base2 = 0.0
-        if ((istrain and (curr_epoch > self.base1_epoch)) or (not istrain)):
-            y = torch.cat([samples_base2_features, sample_angle_periodenc, sdf_base2.detach().unsqueeze(-1)], dim=-1)
-            x = self.filmenc_base2[0](y, curve_feats) + type_sample
-            for block2 in self.filmenc_base2[1:]:
-                res = x
-                x = block2(x, curve_feats)
-                x = x + res
-            sdf_base2 = self.decoder_base2.forward_simple(x).squeeze(-1)
-        ############ Final ###########
-        alpha_warmup = self.alpha_warmup+self.base1_epoch
-        gate_warmup = self.gate_warmup+self.base1_epoch
-        detail_res = 0.0 
-        #alpha = 0.0
-        #gate=0.0
-        denom = max(1, alpha_warmup - self.base1_epoch)
-        alpha = min(1.0, (curr_epoch - self.base1_epoch) / denom)
-        gate = torch.exp(-(sdf_base1.detach() ** 2) / (2 * (self.sigma ** 2)))
-
-        if istrain:
-            if curr_epoch <= self.base1_epoch:
-                sdf = sdf_base1
-            elif curr_epoch < self.base2_epoch:
-                base2_res = alpha * gate * sdf_base2
-                sdf = sdf_base1.detach() + base2_res 
-            else:
-                sdf = sdf_base1 + gate * sdf_base2
-        else:
-            sdf = sdf_base1 +  gate * sdf_base2
-
-        #print(self.base_grid_curvetheta.grids, flush=True)
-        return {
-            'sdf': sdf, 
-            'sdf_base1': sdf_base1,
-            'sdf_base2': sdf_base2,
-            'base1_grid_ct': self.base1_grid_curvetheta.grids,
-            'base1_grid_cr': self.base1_grid_curverho.grids,
-            'base2_grid_ct': self.base2_grid_curvetheta.grids,
-            'base2_grid_cr': self.base2_grid_curverho.grids,
-        }
-
-
 class NGCNetGrid(nn.Module):
     """docstring for NGCNetGrid ."""
     def __init__(self, arg, arg_train):
@@ -195,17 +22,39 @@ class NGCNetGrid(nn.Module):
 
         self.details_level = arg['details_level']
         self.sigma = float(arg['sigma'])
-        self.period_angle_enc = PeriodicEncoding(arg['num_period_encoding'], include_input=False)
-        dim_out_angle = 2*arg['num_period_encoding']
-        dim_cond = arg['dim_curve_feat']
-
-        self.base_model = NCGNetGridBase(arg['base'], dim_out_angle, dim_cond)
-
+        self.base_reduce_channel = arg['base_reduce_channel']
         self.detail_reduce_channel = arg['detail_reduce_channel']
-        self.base_epoch = arg_train['base_only_end']
-        self.detail_epoch = arg_train['detail_only_end']
+
+        self.start_epoch = arg_train['base_only_end']
+        self.linear_epoch = arg_train['detail_only_end']
         self.alpha_warmup = arg_train['alpha_warmup']
         self.gate_warmup = arg_train['gate_warmup']
+
+        ########## BASE ###################      
+        self.base_grid_levels = arg['base_grid_levels']
+        self.base_grid_dim = arg['base_grid_dim']
+        self.base_grid_hw = arg['base_grid_hw']
+        self.base_grid_curvetheta = CurveThetaMultiResGrid(base_hw = self.base_grid_hw, levels=self.base_grid_levels, dim=self.base_grid_dim, reduce=self.base_reduce_channel)
+       
+        self.rho_grid = arg['rho_grid']
+        if self.rho_grid:
+            self.base_grid_curverho = CurveRhoMultiResGrid(base_hw = self.base_grid_hw, levels=self.base_grid_levels, dim=self.base_grid_dim, reduce=self.base_reduce_channel)
+            if self.base_reduce_channel:
+                dim = 0
+                for i in range(self.base_grid_levels):
+                    dim +=  int(self.base_grid_dim /(2**i))
+                self.base_grid_outdim = 2*dim
+            else:
+                self.base_grid_outdim = 2*self.base_grid_levels * self.base_grid_dim
+        else:
+            #self.base_grid_outdim = self.base_grid_levels * self.base_grid_dim
+            if self.base_reduce_channel:
+                dim = self.base_grid_dim
+                for i in range(self.base_grid_levels):
+                    dim +=  int(dim /(2**i))
+                self.base_grid_outdim = dim
+            else:
+                self.base_grid_outdim = self.base_grid_levels * self.base_grid_dim
 
         ########## DETAIL ###################      
         self.gate = arg['gate']
@@ -221,6 +70,8 @@ class NGCNetGrid(nn.Module):
         else:
             self.detail_grid_outdim = self.detail_grid_levels * self.detail_grid_dim
 
+        self.period_angle_enc = PeriodicEncoding(arg['num_period_encoding'], include_input=False)
+        dim_out_angle = 2*arg['num_period_encoding']
 
 
         ########## CURVE / SKELETON ###################      
@@ -236,8 +87,24 @@ class NGCNetGrid(nn.Module):
         self.curveencoder = FeatCurveEncoder(arg)
 
         ######## DIMENSIONS for FILM ###########################
+        dim_in_base = 1 + self.base_grid_outdim
         dim_in_detail =  1 + dim_out_angle + self.detail_grid_outdim + 1 # rho, detail_features, periodenc_angle, sdf_base.detach
+
+        dim_out_base = arg['dim_base_feat']
+        dim_cond_base = arg['dim_curve_feat']
+
+        ######## FILM BASE ###########################
+        #num_base_encdoer = arg['num_base']
+        self.filmenc_base1 = FiLMEncoder(dim_in_base, dim_out_base, dim_cond_base) 
+        #self.filmenc_base = [FilmEncoder(dim_out_base, dim_out_base, dim_cond_base) for _ in range(arg['num_base'])]
+        self.filmenc_base2 = FiLMEncoder(dim_out_base, dim_out_base, dim_cond_base)
+        self.filmenc_base3 = FiLMEncoder(dim_out_base, dim_out_base, dim_cond_base)
+        self.filmenc_base4 = FiLMEncoder(dim_out_base, dim_out_base, dim_cond_base)
+        self.filmenc_base5 = FiLMEncoder(dim_out_base, dim_out_base, dim_cond_base)
+        self.decoder_base = MLP(**arg['decoder_base'])
+
         ############# FILM DETAIL ################
+
         dim_out_detail = arg['dim_detail_feat']
         dim_cond_detail = arg['dim_curve_feat_detail']
         self.filmenc_detail1 = FiLMEncoder(dim_in_detail, dim_out_detail, dim_cond_detail) # arg['dim_sample_feat'], arg[''])
@@ -333,6 +200,62 @@ class NGCNetGrid(nn.Module):
                 continue
             param.requires_grad = False
 
+    def basemodel(self, samples_base_features, samples_detail_features, sample_angle_periodic, type_sample, curve_feats):
+
+        x = self.filmenc_base1(samples_base_features, curve_feats) + type_sample
+        for block in [self.filmenc_base2, self.filmenc_base3, self.filmenc_base4, self.filmenc_base5]:
+            res = x
+            x = block(x, curve_feats)
+            x = x + res
+        sdf_base = self.decoder_base.forward_simple(x).squeeze(-1)
+        ############ FILM DETAILS ################
+        sdf_detail = 0.0
+        if ((istrain and (curr_epoch > self.start_epoch)) or (not istrain)):
+            y = torch.cat([samples_detail_features, sample_angle_periodenc, sdf_base.detach().unsqueeze(-1)], dim=-1)
+            x = self.filmenc_detail1(y, curve_feats) + type_sample
+            for detail_block in [self.filmenc_detail2, self.filmenc_detail3]:
+                res = x
+                x = detail_block(x, curve_feats)
+                x = x + res
+            sdf_detail = self.decoder_detail.forward_simple(x).squeeze(-1)
+
+
+        x = self.filmenc_base1(samples_base_features, curve_feats) + type_sample
+        res = x
+        x = self.filmenc_base2(x, curve_feats)
+        x = x + res
+        x = self.filmenc_base3(x, curve_feats)
+        x = x + res
+        sdf_base = self.decoder_base1.forward_simple(x).squeeze(-1)
+        ############ FILM DETAILS ################
+        y = torch.cat([samples_detail_features, sample_angle_periodenc, sdf_base.detach().unsqueeze(-1)], dim=-1)
+        x = self.filmenc_base_detail1(y, curve_feats) + type_sample
+        res = x
+        x = self.filmenc_base_detail2(x, curve_feats)
+        x = x + res
+        res = x
+        x = self.filmenc_base_detail3(x, curve_feats)
+        x = x + res
+        sdf_detail = self.decoder_base2.forward_simple(x).squeeze(-1)
+        self.alpha_warmup += self.start_epoch
+        self.gate_warmup += self.start_epoch
+        if istrain:
+            if curr_epoch < self.start_epoch:
+                sdf = sdf_base
+            elif curr_epoch < self.linear_epoch:
+                print(f'{curr_epoch} in linear epoch')
+                alpha = min(1.0, (curr_epoch - self.start_epoch) / (self.alpha_warmup - self.start_epoch))
+                gate = torch.exp(-(sdf_base.detach()**2)/(2*(self.sigma**2)))
+                sdf = sdf_base.detach() + alpha * gate * sdf_detail
+            else:
+                print(f'{curr_epoch} after linear epoch')
+                gate = torch.exp(-(sdf_base.detach()**2)/(2*(self.sigma**2)))
+                sdf = sdf_base + gate * sdf_detail
+        else:
+            gate = torch.exp(-(sdf_base.detach()**2)/(2*(self.sigma**2)))
+            sdf = sdf_base +  gate * sdf_detail
+        return sdf
+
     def detailmodel(self, samples_detail_features, sample_angle_periodenc, type_sample, sdf_base):
         y = torch.cat([samples_detail_features, sample_angle_periodenc, sdf_base.detach().unsqueeze(-1)], dim=-1)
         x = self.filmenc_detail1(y, curve_feats) + type_sample
@@ -365,6 +288,14 @@ class NGCNetGrid(nn.Module):
         #type_detail_sample = self.type_embd(torch.tensor(2)*torch.ones(B, dtype=torch.long, device=self.device)).unsqueeze(1)
 
         if istrain:
+            ############ BASE FEATURES ###################
+            samples_base_ctfeatures = self.base_grid_curvetheta(mi['coords'], mi['angles'])
+            if self.rho_grid:
+                samples_base_crfeatures = self.base_grid_curverho(mi['coords'], mi['rho_n'])
+                samples_base_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base_ctfeatures, samples_base_crfeatures], dim=-1)
+            else:
+                samples_base_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base_ctfeatures], dim=-1)
+
             ############ DETAIL FEATURES ###################
             samples_detail_ctfeatures = self.detail_grid_curvetheta(mi['coords'], mi['angles'])
             samples_detail_features = torch.cat([mi['rho_n'].unsqueeze(-1), samples_detail_ctfeatures], dim=-1)
@@ -374,6 +305,13 @@ class NGCNetGrid(nn.Module):
             radii_y_posenc = self.pos_enc_y(torch.log(mi['radius'][:,:,0]+1e-12).unsqueeze(-1))
             radii_z_posenc = self.pos_enc_z(torch.log(mi['radius'][:,:,1]+1e-12).unsqueeze(-1))
         else:
+            samples_base_ctfeatures = self.base_grid_curvetheta.inference(mi['coords'], mi['angles'])
+            if self.rho_grid:
+                samples_base_crfeatures = self.base_grid_curverho.inference(mi['coords'], mi['rho_n'])
+                samples_base_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base_ctfeatures, samples_base_crfeatures], dim=-1)
+            else:
+                samples_base_features = torch.cat([mi['rho'].unsqueeze(-1), samples_base_ctfeatures], dim=-1)
+
             samples_detail_ctfeatures = self.detail_grid_curvetheta.inference(mi['coords'], mi['angles'])
             samples_detail_features = torch.cat([mi['rho_n'].unsqueeze(-1), samples_detail_ctfeatures], dim=-1)
             sample_angle_periodenc = self.period_angle_enc.inference(mi['angles'].unsqueeze(-1))
@@ -388,7 +326,16 @@ class NGCNetGrid(nn.Module):
 
         ############ FILM BASE ################
         curve_feats = curve_feats + type_curve
-        sdf_base = self.base_model(mi, type_curve=type_curve, type_sample=type_sample, curve_feats=curve_feats, curr_epoch=curr_epoch, isTrain=isTrain)
+#        sdf_base = self.basemodel(samples_base_features, type_base_sample, curve_feats)
+#        if istrain:
+#            if curr_epoch < self.start_epoch:
+#                sdf_base = self.base_model(samples_base_features, samples_angle_periodic, type_sample, curve_feats)
+        x = self.filmenc_base1(samples_base_features, curve_feats) + type_sample
+        for block in [self.filmenc_base2, self.filmenc_base3, self.filmenc_base4, self.filmenc_base5]:
+            res = x
+            x = block(x, curve_feats)
+            x = x + res
+        sdf_base = self.decoder_base.forward_simple(x).squeeze(-1)
         ############ FILM DETAILS ################
         sdf_detail = 0.0
         if ((istrain and (curr_epoch > self.start_epoch)) or (not istrain)):
@@ -402,19 +349,24 @@ class NGCNetGrid(nn.Module):
             #print(" in detail")
             ############ Final ###########
 
-        alpha_warmup = self.alpha_warmup+self.base_epoch
-        gate_warmup = self.gate_warmup+self.base_epoch
+        alpha_warmup = self.alpha_warmup+self.start_epoch
+        gate_warmup = self.gate_warmup+self.start_epoch
         detail_res = 0.0 
         #alpha = 0.0
         #gate=0.0
-        denom = max(1, alpha_warmup - self.base_epoch)
-        alpha = min(1.0, (curr_epoch - self.base_epoch) / denom)
+        denom = max(1, alpha_warmup - self.start_epoch)
+        alpha = min(1.0, (curr_epoch - self.start_epoch) / denom)
         gate = torch.exp(-(sdf_base.detach() ** 2) / (2 * (self.sigma ** 2)))
 
         if istrain:
-            if curr_epoch <= self.base_epoch:
+            if curr_epoch <= self.start_epoch:
                 sdf = sdf_base
-            elif curr_epoch < self.detail_epoch:
+            elif curr_epoch < self.linear_epoch:
+                #denom = max(1, alpha_warmup - self.start_epoch)
+                #alpha = min(1.0, (curr_epoch - self.start_epoch) / denom)
+                #gate = torch.exp(-(sdf_base.detach() ** 2) / (2 * (self.sigma ** 2)))
+                #gate = 1.0 if curr_epoch < gate_warmup else torch.exp(-(sdf_base.detach()**2)/(2*(self.sigma**2)))
+                
                 detail_res = alpha * gate * sdf_detail
                 sdf = sdf_base.detach() + detail_res 
             else:
@@ -431,8 +383,8 @@ class NGCNetGrid(nn.Module):
             'detail_res': detail_res,
             'alpha': alpha,
             'gate': gate,
-            'base_grid_ct': self.base_model.base1_grid_curvetheta.grids,
-            'base_grid_cr': self.base_model.base1_grid_curverho.grids,
+            'base_grid_ct': self.base_grid_curvetheta.grids,
+            'base_grid_cr': self.base_grid_curverho.grids,
             'code': curve_code,
         }
 

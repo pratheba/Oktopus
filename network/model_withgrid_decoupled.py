@@ -11,6 +11,76 @@ from triplane import CurveThetaMultiResGrid, CurveRhoMultiResGrid
 from mask import *
 
 
+class NGCNetGridBase(nn.Module):
+    def __init__(self, arg, arg_train):
+        super().__init__()
+        self.details_level = arg['details_level']
+        self.reduce_channel = arg['reduce_channel']
+        self.base2_reduce_channel = arg['base2_reduce_channel']
+        self.base_grid_levels = arg['base_grid_levels']
+        self.base_grid_dim = arg['base_grid_dim']
+        self.base_grid_hw = arg['base_grid_hw']
+        self.base_grid_curvetheta = CurveThetaMultiResGrid(base_hw = self.base_grid_hw, levels=self.base_grid_levels, dim=self.base_grid_dim, reduce=self.reduce_channel)
+       
+        self.rho_grid = arg['rho_grid']
+        if self.rho_grid:
+            self.base_grid_curverho = CurveRhoMultiResGrid(base_hw = self.base_grid_hw, levels=self.base_grid_levels, dim=self.base_grid_dim, reduce=self.reduce_channel)
+            if self.reduce_channel:
+                dim = 0
+                for i in range(self.base_grid_levels):
+                    dim +=  int(self.base_grid_dim /(2**i))
+                self.base_grid_outdim = 2*dim
+            else:
+                self.base_grid_outdim = 2*self.base_grid_levels * self.base_grid_dim
+        else:
+            #self.base_grid_outdim = self.base_grid_levels * self.base_grid_dim
+            if self.reduce_channel:
+                dim = self.base_grid_dim
+                for i in range(self.base_grid_levels):
+                    dim +=  int(dim /(2**i))
+                self.base_grid_outdim = dim
+            else:
+                self.base_grid_outdim = self.base_grid_levels * self.base_grid_dim
+
+
+        self.base2_grid_levels = arg['base2_grid_levels']
+        self.base2_grid_dim = arg['base2_grid_dim']
+        self.base2_grid_hw = arg['base2_grid_hw']
+        self.base2_grid_curvetheta = CurveThetaMultiResGrid(base_hw = self.base2_grid_hw, levels=self.base2_grid_levels, dim=self.base2_grid_dim, reduce=self.base2_reduce_channel)
+        if self.base2_reduce_channel:
+            dim = 0 #self.detail_grid_dim
+            for i in range(self.base2_grid_levels):
+                dim +=  int(self.base2_grid_dim /(2**i))
+            self.base2_grid_outdim = dim #self.detail_grid_levels * self.detail_grid_dim
+        else:
+            self.base2_grid_outdim = self.base2_grid_levels * self.base2_grid_dim
+
+        ######## DIMENSIONS for FILM ###########################
+        dim_in_base = 1 + self.base_grid_outdim
+        dim_in_base2 =  1 + dim_out_angle + self.base2_grid_outdim + 1 # rho, detail_features, periodenc_angle, sdf_base.detach
+
+        dim_out_base = arg['dim_base_feat']
+        dim_cond_base = arg['dim_curve_feat']
+        dim_out_base2 = arg['dim_base2_feat']
+        dim_cond_base2 = arg['dim_curve_feat_base2']
+
+        ######## FILM BASE ###########################
+        num_base_encoder = arg['num_base']
+        self.filmenc_base1 = [FiLMEncoder(dim_in_base, dim_out_base, dim_cond_base)]
+        for _ in range(num_base_encoder):
+            self.filmenc_base1.append(FiLMEncoder(dim_out_base, dim_out_base, dim_cond_base))
+        self.decoder_base1 = MLP(**arg['decoder_base1'])
+
+        ############# FILM BASE2 ################
+
+        num_base2_encoder = arg['num_base2']
+        self.filmenc_base2 = FiLMEncoder(dim_in_base2, dim_out_base2, dim_cond_base2) # arg['dim_sample_feat'], arg[''])
+        for _ in range(num_base2_encoder):
+            self.filmenc_base2.append(FiLMEncoder(dim_out_base2, dim_out_base2, dim_cond_base2))
+        self.decoder_base2 = MLP(**arg['decoder_base2'])
+
+
+
 class NGCNetGrid(nn.Module):
     """docstring for NGCNetGrid ."""
     def __init__(self, arg, arg_train):
