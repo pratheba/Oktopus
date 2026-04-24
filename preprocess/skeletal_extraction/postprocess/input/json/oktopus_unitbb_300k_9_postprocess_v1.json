@@ -32,13 +32,13 @@
     },
     {
       "id": 12,
-      "at_frac": 0.8,
+      "at_fracs": [0.67],
       "new_ids": [12, 105],
       "names": ["t6", "body"]
     }
   ],
   "combine_surface_only": [
-    {
+    {   
       "keep_id": 1,
       "absorb_ids": [0,1,2,3,9,100,101,102,103,104,105],
       "name": "body"
@@ -105,8 +105,8 @@
       "id": 1,
       "extend_start": false,
       "extend_end": true,
-      "extend_radius_alpha": 1.2,
-      "extend_burial_alpha": 1.2,
+      "extend_radius_alpha": 1.0,
+      "extend_burial_alpha": 1.0,
       "extend_min": 0.015,
       "target_spacing": 0.006
     },
@@ -166,8 +166,8 @@
       "id": 12,
       "extend_start": true,
       "extend_end": true,
-      "extend_radius_alpha": 0.6,
-      "extend_burial_alpha": 0.6,
+      "extend_radius_alpha": 0.8,
+      "extend_burial_alpha": 0.8,
       "extend_min": 0.015,
       "target_spacing": 0.006
     }
@@ -175,10 +175,10 @@
   "recenter": [
     {
       "id": 1,
-      "center_shift_scale": 0.0,
-      "center_max_shift_frac": 0.0,
-      "center_smooth_win": 10,
-      "center_iters": 10
+      "center_shift_scale": 0.7,
+      "center_max_shift_frac": 0.7,
+      "center_smooth_win": 100,
+      "center_iters": 2
     },
     {
       "id": 4,
@@ -232,7 +232,7 @@
   ],
   "retain_ids" : [1,4,5,6,7,8,10,11,12],
   "rename_final": [
-    {
+    { 
       "old_id": 1,
       "new_id": 0,
       "new_name": "body"
@@ -276,6 +276,6 @@
       "old_id": 12,
       "new_id": 8,
       "new_name": "t8"
-    }
+    } 
   ]
 }

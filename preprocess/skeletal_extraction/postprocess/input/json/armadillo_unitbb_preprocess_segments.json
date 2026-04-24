@@ -1,0 +1,191 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 72,
+      "n_surface_all": 487
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 59,
+      "n_surface_all": 89
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 58,
+      "n_surface_all": 493
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 60,
+      "n_surface_all": 349
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 150,
+      "n_surface_all": 7670
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 61,
+      "n_surface_all": 18
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 103,
+      "n_surface_all": 2169
+    },
+    {
+      "id": 7,
+      "name": "segment_7",
+      "n_keypoints": 122,
+      "n_surface_all": 3552
+    },
+    {
+      "id": 8,
+      "name": "segment_8",
+      "n_keypoints": 150,
+      "n_surface_all": 8157
+    },
+    {
+      "id": 9,
+      "name": "segment_9",
+      "n_keypoints": 78,
+      "n_surface_all": 82
+    },
+    {
+      "id": 10,
+      "name": "segment_10",
+      "n_keypoints": 60,
+      "n_surface_all": 495
+    },
+    {
+      "id": 11,
+      "name": "segment_11",
+      "n_keypoints": 143,
+      "n_surface_all": 7745
+    },
+    {
+      "id": 12,
+      "name": "segment_12",
+      "n_keypoints": 93,
+      "n_surface_all": 354
+    },
+    {
+      "id": 13,
+      "name": "segment_13",
+      "n_keypoints": 146,
+      "n_surface_all": 2226
+    },
+    {
+      "id": 14,
+      "name": "segment_14",
+      "n_keypoints": 76,
+      "n_surface_all": 148
+    },
+    {
+      "id": 15,
+      "name": "segment_15",
+      "n_keypoints": 62,
+      "n_surface_all": 321
+    },
+    {
+      "id": 16,
+      "name": "segment_16",
+      "n_keypoints": 64,
+      "n_surface_all": 543
+    },
+    {
+      "id": 17,
+      "name": "segment_17",
+      "n_keypoints": 63,
+      "n_surface_all": 366
+    },
+    {
+      "id": 18,
+      "name": "segment_18",
+      "n_keypoints": 66,
+      "n_surface_all": 289
+    },
+    {
+      "id": 19,
+      "name": "segment_19",
+      "n_keypoints": 60,
+      "n_surface_all": 426
+    },
+    {
+      "id": 20,
+      "name": "segment_20",
+      "n_keypoints": 66,
+      "n_surface_all": 351
+    },
+    {
+      "id": 21,
+      "name": "segment_21",
+      "n_keypoints": 66,
+      "n_surface_all": 459
+    },
+    {
+      "id": 22,
+      "name": "segment_22",
+      "n_keypoints": 76,
+      "n_surface_all": 134
+    },
+    {
+      "id": 23,
+      "name": "segment_23",
+      "n_keypoints": 143,
+      "n_surface_all": 8023
+    },
+    {
+      "id": 24,
+      "name": "segment_24",
+      "n_keypoints": 89,
+      "n_surface_all": 2043
+    },
+    {
+      "id": 25,
+      "name": "segment_25",
+      "n_keypoints": 73,
+      "n_surface_all": 2073
+    },
+    {
+      "id": 26,
+      "name": "segment_26",
+      "n_keypoints": 112,
+      "n_surface_all": 3094
+    },
+    {
+      "id": 27,
+      "name": "segment_27",
+      "n_keypoints": 74,
+      "n_surface_all": 115
+    },
+    {
+      "id": 28,
+      "name": "segment_28",
+      "n_keypoints": 69,
+      "n_surface_all": 358
+    },
+    {
+      "id": 29,
+      "name": "segment_29",
+      "n_keypoints": 63,
+      "n_surface_all": 492
+    },
+    {
+      "id": 30,
+      "name": "segment_30",
+      "n_keypoints": 72,
+      "n_surface_all": 635
+    }
+  ],
+  "out_npz": "postprocess/input/npz/armadillo_unitbb_preprocess_segments.npz"
+}

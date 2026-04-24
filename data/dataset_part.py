@@ -19,9 +19,10 @@ class NGCDataset(Dataset):
         self.mode = arg['mode']
         self.n_sample = arg['n_sample'] # default 1024
         self.n_surface_sample = self.n_sample * 2 #arg['n_surface_sample'] # default 2048
+        self.data_path = arg['data_path']
 
         self.data_names = np.loadtxt(
-            op.join(self.root_path, 'data.txt'), dtype=str).tolist()
+            op.join(self.root_path, self.data_path), dtype=str).tolist()
         
         if 'shape_name' in arg:
             self.data_names = [str(arg['shape_name'])]

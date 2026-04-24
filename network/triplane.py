@@ -37,7 +37,7 @@ class CurveThetaMultiResGrid(nn.Module):
         super().__init__()
         self.levels = levels
         self.dim = dim 
-        H0, W0 = map(int, ast.literal_eval(base_hw))
+        H0, W0 = base_hw # map(int, ast.literal_eval(base_hw))
         self.grids = nn.ParameterList()
 
         for l in range(self.levels):
@@ -83,7 +83,7 @@ class CurveRhoMultiResGrid(nn.Module):
         super().__init__()
         self.levels = levels
         self.dim = dim 
-        H0, W0 = map(int, ast.literal_eval(base_hw))
+        H0, W0 = base_hw #map(int, ast.literal_eval(base_hw))
         self.grids = nn.ParameterList()
 
         for l in range(self.levels):

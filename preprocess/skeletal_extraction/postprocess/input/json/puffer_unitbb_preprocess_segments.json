@@ -1,0 +1,47 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 110,
+      "n_surface_all": 19
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 196,
+      "n_surface_all": 1065
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 74,
+      "n_surface_all": 26
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 109,
+      "n_surface_all": 13
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 162,
+      "n_surface_all": 419
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 204,
+      "n_surface_all": 625
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 163,
+      "n_surface_all": 1049
+    }
+  ],
+  "out_npz": "postprocess/input/npz/puffer_unitbb_preprocess_segments.npz"
+}

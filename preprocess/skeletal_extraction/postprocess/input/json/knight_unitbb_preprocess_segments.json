@@ -1,0 +1,257 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 125,
+      "n_surface_all": 5607
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 127,
+      "n_surface_all": 5490
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 72,
+      "n_surface_all": 884
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 100,
+      "n_surface_all": 4400
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 90,
+      "n_surface_all": 1370
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 82,
+      "n_surface_all": 298
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 86,
+      "n_surface_all": 314
+    },
+    {
+      "id": 7,
+      "name": "segment_7",
+      "n_keypoints": 74,
+      "n_surface_all": 346
+    },
+    {
+      "id": 8,
+      "name": "segment_8",
+      "n_keypoints": 163,
+      "n_surface_all": 1445
+    },
+    {
+      "id": 9,
+      "name": "segment_9",
+      "n_keypoints": 94,
+      "n_surface_all": 474
+    },
+    {
+      "id": 10,
+      "name": "segment_10",
+      "n_keypoints": 86,
+      "n_surface_all": 608
+    },
+    {
+      "id": 11,
+      "name": "segment_11",
+      "n_keypoints": 89,
+      "n_surface_all": 580
+    },
+    {
+      "id": 12,
+      "name": "segment_12",
+      "n_keypoints": 87,
+      "n_surface_all": 828
+    },
+    {
+      "id": 13,
+      "name": "segment_13",
+      "n_keypoints": 78,
+      "n_surface_all": 411
+    },
+    {
+      "id": 14,
+      "name": "segment_14",
+      "n_keypoints": 57,
+      "n_surface_all": 115
+    },
+    {
+      "id": 15,
+      "name": "segment_15",
+      "n_keypoints": 94,
+      "n_surface_all": 620
+    },
+    {
+      "id": 16,
+      "name": "segment_16",
+      "n_keypoints": 67,
+      "n_surface_all": 621
+    },
+    {
+      "id": 17,
+      "name": "segment_17",
+      "n_keypoints": 42,
+      "n_surface_all": 0
+    },
+    {
+      "id": 18,
+      "name": "segment_18",
+      "n_keypoints": 98,
+      "n_surface_all": 4985
+    },
+    {
+      "id": 19,
+      "name": "segment_19",
+      "n_keypoints": 77,
+      "n_surface_all": 2697
+    },
+    {
+      "id": 20,
+      "name": "segment_20",
+      "n_keypoints": 51,
+      "n_surface_all": 188
+    },
+    {
+      "id": 21,
+      "name": "segment_21",
+      "n_keypoints": 42,
+      "n_surface_all": 613
+    },
+    {
+      "id": 22,
+      "name": "segment_22",
+      "n_keypoints": 42,
+      "n_surface_all": 0
+    },
+    {
+      "id": 23,
+      "name": "segment_23",
+      "n_keypoints": 42,
+      "n_surface_all": 561
+    },
+    {
+      "id": 24,
+      "name": "segment_24",
+      "n_keypoints": 47,
+      "n_surface_all": 4
+    },
+    {
+      "id": 25,
+      "name": "segment_25",
+      "n_keypoints": 51,
+      "n_surface_all": 1178
+    },
+    {
+      "id": 26,
+      "name": "segment_26",
+      "n_keypoints": 55,
+      "n_surface_all": 168
+    },
+    {
+      "id": 27,
+      "name": "segment_27",
+      "n_keypoints": 48,
+      "n_surface_all": 144
+    },
+    {
+      "id": 28,
+      "name": "segment_28",
+      "n_keypoints": 49,
+      "n_surface_all": 376
+    },
+    {
+      "id": 29,
+      "name": "segment_29",
+      "n_keypoints": 49,
+      "n_surface_all": 210
+    },
+    {
+      "id": 30,
+      "name": "segment_30",
+      "n_keypoints": 51,
+      "n_surface_all": 315
+    },
+    {
+      "id": 31,
+      "name": "segment_31",
+      "n_keypoints": 55,
+      "n_surface_all": 444
+    },
+    {
+      "id": 32,
+      "name": "segment_32",
+      "n_keypoints": 57,
+      "n_surface_all": 508
+    },
+    {
+      "id": 33,
+      "name": "segment_33",
+      "n_keypoints": 62,
+      "n_surface_all": 781
+    },
+    {
+      "id": 34,
+      "name": "segment_34",
+      "n_keypoints": 58,
+      "n_surface_all": 270
+    },
+    {
+      "id": 35,
+      "name": "segment_35",
+      "n_keypoints": 53,
+      "n_surface_all": 221
+    },
+    {
+      "id": 36,
+      "name": "segment_36",
+      "n_keypoints": 54,
+      "n_surface_all": 423
+    },
+    {
+      "id": 37,
+      "name": "segment_37",
+      "n_keypoints": 52,
+      "n_surface_all": 257
+    },
+    {
+      "id": 38,
+      "name": "segment_38",
+      "n_keypoints": 49,
+      "n_surface_all": 326
+    },
+    {
+      "id": 39,
+      "name": "segment_39",
+      "n_keypoints": 51,
+      "n_surface_all": 298
+    },
+    {
+      "id": 40,
+      "name": "segment_40",
+      "n_keypoints": 64,
+      "n_surface_all": 604
+    },
+    {
+      "id": 41,
+      "name": "segment_41",
+      "n_keypoints": 58,
+      "n_surface_all": 407
+    }
+  ],
+  "out_npz": "postprocess/input/npz/knight_unitbb_preprocess_segments.npz"
+}

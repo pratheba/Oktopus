@@ -1,0 +1,47 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 222,
+      "n_surface_all": 30238
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 163,
+      "n_surface_all": 16868
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 68,
+      "n_surface_all": 891
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 186,
+      "n_surface_all": 19523
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 213,
+      "n_surface_all": 37255
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 72,
+      "n_surface_all": 838
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 194,
+      "n_surface_all": 25343
+    }
+  ],
+  "out_npz": "postprocess/input/npz/berret_unitbb_preprocess_segments.npz"
+}

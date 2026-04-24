@@ -226,15 +226,17 @@ def straighten_curve_blend(poly, alpha=0.5):
     line = straighten_curve_line(poly)
     return (1.0 - float(alpha)) * poly + float(alpha) * line
 
-
 def maybe_straighten_curve(poly, mode=None, alpha=0.5):
     if mode is None:
         return poly
     mode = str(mode).lower()
-    if mode == "line":
+
+    if mode in ("line", "straight_line"):
         return straighten_curve_line(poly)
-    if mode == "blend":
+
+    if mode in ("blend", "straight"):
         return straighten_curve_blend(poly, alpha=alpha)
+
     return poly
 
 def smooth_poly(poly, window=5, iters=1):
@@ -537,8 +539,8 @@ def reassign(seg):
     T, U, V, frames = compute_parallel_transport_frames(key)
 
     _, point_s, point_key_ids, _ = nearest_polyline_projection(key, pts)
-    #r_train, r_wrap, r_cyl = radii_from_support(key, pts)
-    r_train, r_wrap, r_cyl = radii_from_support_local_frame(key, T, U, V, pts)
+    r_train, r_wrap, r_cyl = radii_from_support(key, pts)
+    #r_train, r_wrap, r_cyl = radii_from_support_local_frame(key, T, U, V, pts)
 
     seg["point_s"] = point_s
     seg["point_key_ids"] = point_key_ids

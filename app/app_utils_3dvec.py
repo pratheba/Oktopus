@@ -25,6 +25,8 @@ def load_model(device, config_path, model_directory, mode='train', checkpoint='b
         ckpt_name = f'best_model_train.pth'
     elif checkpoint == 'eval':
         ckpt_name = f'best_model_eval.pth'
+    elif checkpoint == 'base1':
+        ckpt_name = f'best_base1_only.pth'
     else:
         ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
 

@@ -1,0 +1,42 @@
+{
+  "combine_surface_only": [
+    {
+      "keep_id": 0,
+      "absorb_ids": [1,2,3,4,5,6],
+      "name": "berret",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.8,
+      "center_max_shift_frac": 0.8,
+      "center_smooth_win": 7,
+      "center_iter": 4
+    }
+  ],
+  "crop": [
+    {
+      "id": 0,
+      "start_frac": 0.0,
+      "end_frac": 0.2
+    }
+   ],
+  "extend": [
+    {
+      "id": 0,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.6,
+      "extend_burial_alpha": 1.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "recenter": [
+    {
+      "id": 0,
+      "center_shift_scale": 0.7,
+      "center_max_shift_frac": 0.7,
+      "center_smooth_win": 100,
+      "center_iters": 2
+    }
+  ]
+}

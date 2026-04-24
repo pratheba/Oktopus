@@ -1,0 +1,41 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 132,
+      "n_surface_all": 746
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 121,
+      "n_surface_all": 837
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 123,
+      "n_surface_all": 881
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 75,
+      "n_surface_all": 29
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 135,
+      "n_surface_all": 609
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 132,
+      "n_surface_all": 732
+    }
+  ],
+  "out_npz": "postprocess/input/npz/jumpsuit_unitbb_preprocess_segments.npz"
+}

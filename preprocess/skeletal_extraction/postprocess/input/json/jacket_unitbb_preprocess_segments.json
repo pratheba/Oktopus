@@ -1,0 +1,41 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 336,
+      "n_surface_all": 722
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 331,
+      "n_surface_all": 1260
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 324,
+      "n_surface_all": 283
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 202,
+      "n_surface_all": 550
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 398,
+      "n_surface_all": 1167
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 324,
+      "n_surface_all": 229
+    }
+  ],
+  "out_npz": "postprocess/input/npz/jacket_unitbb_preprocess_segments.npz"
+}

@@ -39,6 +39,7 @@ def start_inference(opt):
             'data_root': 'Pack10Dataset',
             'output_folder': output_path,
             'checkpoint': checkpoint,
+            'data_path': opt.data_path,
         }
         agent('ngcnet_inference', arg)
 
@@ -49,6 +50,7 @@ if __name__ == '__main__':
     p.add_argument('-ckpt', '--checkpoints', required=False, type=str, nargs="+", default=['eval'], help='checkpoints to evaluate.')
     p.add_argument('-c', '--config_path', required=True)
     p.add_argument('-o', '--out_path', required=True)
+    p.add_argument('-d', '--data_path', required=True)
 
     args = p.parse_args()
     opt = {
@@ -56,7 +58,8 @@ if __name__ == '__main__':
             'root_path': op.dirname(op.abspath(__file__)),
             'checkpoints': args.checkpoints,
             'config_path': args.config_path,
-            'out_path': args.out_path
+            'out_path': args.out_path,
+            'data_path': args.data_path
     }
 
     opt = process_options(opt, mode='inference')

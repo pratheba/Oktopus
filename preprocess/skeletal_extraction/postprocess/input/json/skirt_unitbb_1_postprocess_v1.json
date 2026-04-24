@@ -1,0 +1,18 @@
+{
+  "crop": [
+    {
+      "id": 0,
+      "start_frac": 0.15,
+      "end_frac": 0.85
+    }
+   ],
+  "recenter": [
+    {
+      "id": 0,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 100,
+      "center_iters": 7
+    }
+  ]
+}

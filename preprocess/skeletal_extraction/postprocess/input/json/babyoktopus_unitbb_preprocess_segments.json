@@ -1,0 +1,161 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 133,
+      "n_surface_all": 6369
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 101,
+      "n_surface_all": 6031
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 98,
+      "n_surface_all": 18
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 96,
+      "n_surface_all": 11
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 127,
+      "n_surface_all": 5451
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 127,
+      "n_surface_all": 7305
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 188,
+      "n_surface_all": 2069
+    },
+    {
+      "id": 7,
+      "name": "segment_7",
+      "n_keypoints": 61,
+      "n_surface_all": 21
+    },
+    {
+      "id": 8,
+      "name": "segment_8",
+      "n_keypoints": 62,
+      "n_surface_all": 405
+    },
+    {
+      "id": 9,
+      "name": "segment_9",
+      "n_keypoints": 60,
+      "n_surface_all": 1983
+    },
+    {
+      "id": 10,
+      "name": "segment_10",
+      "n_keypoints": 106,
+      "n_surface_all": 4285
+    },
+    {
+      "id": 11,
+      "name": "segment_11",
+      "n_keypoints": 62,
+      "n_surface_all": 606
+    },
+    {
+      "id": 12,
+      "name": "segment_12",
+      "n_keypoints": 59,
+      "n_surface_all": 1926
+    },
+    {
+      "id": 13,
+      "name": "segment_13",
+      "n_keypoints": 114,
+      "n_surface_all": 3380
+    },
+    {
+      "id": 14,
+      "name": "segment_14",
+      "n_keypoints": 63,
+      "n_surface_all": 554
+    },
+    {
+      "id": 15,
+      "name": "segment_15",
+      "n_keypoints": 65,
+      "n_surface_all": 474
+    },
+    {
+      "id": 16,
+      "name": "segment_16",
+      "n_keypoints": 57,
+      "n_surface_all": 2616
+    },
+    {
+      "id": 17,
+      "name": "segment_17",
+      "n_keypoints": 58,
+      "n_surface_all": 529
+    },
+    {
+      "id": 18,
+      "name": "segment_18",
+      "n_keypoints": 62,
+      "n_surface_all": 738
+    },
+    {
+      "id": 19,
+      "name": "segment_19",
+      "n_keypoints": 58,
+      "n_surface_all": 1228
+    },
+    {
+      "id": 20,
+      "name": "segment_20",
+      "n_keypoints": 67,
+      "n_surface_all": 1099
+    },
+    {
+      "id": 21,
+      "name": "segment_21",
+      "n_keypoints": 62,
+      "n_surface_all": 912
+    },
+    {
+      "id": 22,
+      "name": "segment_22",
+      "n_keypoints": 71,
+      "n_surface_all": 733
+    },
+    {
+      "id": 23,
+      "name": "segment_23",
+      "n_keypoints": 115,
+      "n_surface_all": 4248
+    },
+    {
+      "id": 24,
+      "name": "segment_24",
+      "n_keypoints": 123,
+      "n_surface_all": 6466
+    },
+    {
+      "id": 25,
+      "name": "segment_25",
+      "n_keypoints": 59,
+      "n_surface_all": 12
+    }
+  ],
+  "out_npz": "postprocess/input/npz/babyoktopus_unitbb_preprocess_segments.npz"
+}

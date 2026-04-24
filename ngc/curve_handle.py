@@ -307,8 +307,63 @@ class CurveHandle():
         
         return accessory_data, avatar_data, kidx
 
-
     def filter_grid_stretch(self, mc_grid, stretch_arg):
+        print("stretch arg ", stretch_arg)
+
+        use_runtime_support = bool(stretch_arg.get("use_runtime_support", False))
+
+        if use_runtime_support:
+            # Build explicit support for inference only
+            runtime_support = self.core.build_stretch_runtime_support(stretch_arg, n_samples=n_sample_curve)
+
+            # Build cylinder mesh from runtime support
+            intpl = {
+                "points": runtime_support["points"],
+                "frame": runtime_support["frame"],
+                "radius": runtime_support["radius"],
+                "thetas": (2 * np.pi) * np.linspace(0, 1, n_sample_circle, endpoint=False),
+            }
+            cyl_mesh = self.__gen_cyl_mesh(intpl)
+
+            samples, kidx = cyl_mesh.filter_grid(mc_grid)
+
+            # Localize directly on runtime support
+            samples_data, inside = self.core.localize_samples_on_runtime_support(
+                samples, runtime_support, norm=1.0
+            )
+
+            # For now keep detail identical to base
+            samples_data["samples_detail"] = samples_data["samples_local"].copy()
+            samples_data["coords_detail"] = samples_data["coords"].copy()
+            samples_data["w_seam"] = np.ones_like(samples_data["coords"], dtype=np.float64)
+
+            kidx = kidx[inside]
+            return samples_data, kidx
+
+        else:
+            # Old curve-mutate path
+            self.core.update_coords()
+            self.core.update_frame()
+            self.core.localize_stretch(stretch_arg)
+
+            ts = np.linspace(0., 1., n_sample_curve)
+            intpl, _ = self.core.interpolate_stretch(ts, stretch_arg)
+            thetas = (2*np.pi) * np.linspace(0, 1, n_sample_circle, endpoint=False)
+            intpl['thetas'] = thetas
+
+            cyl_mesh = self.__gen_cyl_mesh(intpl)
+            samples, kidx = cyl_mesh.filter_grid(mc_grid)
+
+            samples_data, inside = self.core.localize_samples_stretch(samples, stretch_arg)
+            kidx = kidx[inside]
+
+            # important: restore original curve after temporary stretch
+            self.core.restore_stretch()
+
+            return samples_data, kidx
+
+
+    def filter_grid_stretch1(self, mc_grid, stretch_arg):
         # gen mixed cyl mesh 
         #points, ts_new = self.core.localize_stretch(stretch_arg)
         print("stretch arg ", stretch_arg)

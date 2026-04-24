@@ -1,7 +1,7 @@
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+
 
 def calc_gradient(y, x, grad_outputs=None):
     if grad_outputs is None:
@@ -19,21 +19,17 @@ class LossHandler():
         if metric not in self.metric_types:
             raise NameError('Not supported metric')
 
-        loss = None
         if metric == 'BCE':
-            loss = nn.BCELoss()
+            return nn.BCELoss()
         elif metric == 'L1':
-            loss = nn.L1Loss()
+            return nn.L1Loss()
         elif metric == 'L2':
-            loss = nn.MSELoss()
+            return nn.MSELoss()
         elif metric == 'cos_sim':
-            loss = nn.CosineSimilarity(eps=1e-6)
+            return nn.CosineSimilarity(eps=1e-6)
         elif metric == 'None':
-            loss = None
-        else:
-            raise NotImplementedError('Not implemented metric')
-
-        return loss
+            return None
+        raise NotImplementedError('Not implemented metric')
 
     def parse_config(self, loss_schedule):
         self.loss_fn = {}
@@ -41,95 +37,185 @@ class LossHandler():
             if loss_config['enable']:
                 metric_fn = self.get_metric_fn(loss_config)
                 self.loss_fn[name] = {
-                    'metric_fn': metric_fn, 
+                    'metric_fn': metric_fn,
                     'factor': loss_config['factor']
                 }
                 if 'clamp' in loss_config:
                     self.loss_fn[name]['clamp'] = loss_config['clamp']
 
-    def soft_trunc(self,x, tau): 
-        return tau * torch.tanh(x / tau)
+    def _safe_masked_metric(self, pred, target, mask, metric_fn):
+        if mask is None:
+            return metric_fn(pred, target)
+        if mask.sum().item() == 0:
+            return pred.new_tensor(0.0)
+        return metric_fn(pred[mask], target[mask])
 
-    def sdf_base_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
-        out_base_sdf = output['sdf']
-        gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
-        return metric_fn(out_base_sdf, gt_base_sdf)
+    def sdf_base_loss(
+        self, output, gt, metric_fn, clamp=0.1, epoch=0,
+        E0=1000, E1=1500, E2=2000, E3=2500,
+        lambda_b1=0.05, lambda_b2=0.05, mode='base_train'
+    ):
+        out_base  = output['sdf_base']
+        out_base1 = output['sdf_base1']
+        gt_base   = gt['sdf_base'].view_as(out_base)
 
+        pred_base2_res = out_base - out_base1.detach()
+        gt_base2_res   = gt_base - out_base1.detach()
+        base_mask = torch.abs(out_base1.detach()) < clamp
 
-    def sdf_loss(self, output, gt, metric_fn, clamp=0.1, epoch=0, E0=2000, E1=4500):
-        out_sdf = output['sdf']
-        out_base_sdf = output['sdf_base']
-        out_detail_sdf = output['sdf_res']
-        out_detail_res = output['detail_res']
+        if mode == 'detail_train_from_base_ckpt':
+            return metric_fn(out_base, gt_base)
 
-        gt_sdf = gt['sdf'].view_as(out_sdf)
-        gt_base_sdf = gt['sdf_base'].view_as(out_base_sdf)
+        if mode == 'joint_finetune':
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
 
-        if epoch <= E0:
-            return metric_fn(out_base_sdf, gt_base_sdf)
+        # base_train
+        if epoch < E0:
+            return metric_fn(out_base1, gt_base)
         elif epoch < E1:
-            gt_residual_sdf = gt['sdf_res'].view_as(out_detail_sdf)
-            mask = torch.abs(out_base_sdf.detach()) < 0.1
-            return metric_fn(out_sdf, gt_sdf) + 0.05 * metric_fn(out_detail_res[mask], gt_residual_sdf[mask])
+            return self._safe_masked_metric(pred_base2_res, gt_base2_res, base_mask, metric_fn)
         else:
-            gt_residual_sdf = gt['sdf_res'].view_as(out_detail_sdf)
-            mask = torch.abs(out_base_sdf.detach()) < 0.1
-            return metric_fn(out_sdf, gt_sdf) + 0.05*metric_fn(out_base_sdf, gt_base_sdf) + 0.05*metric_fn(out_detail_res[mask], gt_residual_sdf[mask])
- 
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
+
+    def sdf_loss(
+        self, output, gt, metric_fn, clamp=0.1, epoch=0,
+        E0=1000, E1=1500, E2=2000, E3=2500,
+        lambda_b1=0.05, lambda_b2=0.05, lambda_d=0.05,
+        mode='base_train'
+    ):
+        out_sdf       = output['sdf']
+        out_base      = output['sdf_base']
+        out_base1     = output['sdf_base1']
+        out_base2     = output['sdf_base2']
+        out_detail    = output['sdf_detail']
+        gate_base2    = output['gate_base2']
+        gate_detail   = output['gate_detail']
+
+        gt_sdf  = gt['sdf'].view_as(out_sdf)
+        gt_base = gt['sdf_base'].view_as(out_base)
+        gt_res  = gt['sdf_res'].view_as(out_sdf)
+
+        pred_base2_res = out_base - out_base1.detach()
+        gt_base2_res   = gt_base - out_base1.detach()
+        pred_detail_res = gate_detail * out_detail
+
+        base_mask   = torch.abs(out_base1.detach()) < clamp
+        detail_mask = torch.abs(out_base.detach()) < clamp
+
+        if mode == 'detail_train_from_base_ckpt':
+            #print(metric_fn(out_sdf, gt_sdf))
+            #print(self._safe_masked_metric(
+            #        pred_detail_res, gt_res, detail_mask, metric_fn), flush=True)
+            full_term = metric_fn(out_sdf, gt_sdf)
+            #res_term = self._safe_masked_metric(pred_detail_res, gt_res, detail_mask, metric_fn)
+            #print("full_term:", full_term.item())
+            #print("res_term :", res_term.item())
+            #print("total    :", (0.5*full_term + 0.2 * res_term).item())
+            #print("mask_frac:", detail_mask.float().mean().item())
+            #print("gate_mean:", gate_detail.mean().item())
+            #print("pred_detail_res_abs_mean:", pred_detail_res.abs().mean().item(), flush=True)
+            #lambda_d = 0.2
+            #return (
+            #    full_term
+            #    + lambda_d * res_term)
+            return full_term
+
+        if mode == 'joint_finetune':
+    
+            return (metric_fn(out_sdf, gt_sdf)
+                + lambda_b1 * metric_fn(out_base, gt_base))
+            #pred_base2_res_joint = out_base - out_base1
+            #gt_base2_res_joint   = gt_base - out_base1
+            #pred_detail_res_joint = out_sdf - out_base
+#            return (
+#                metric_fn(out_sdf, gt_sdf)
+#                + lambda_b1 * metric_fn(out_base, gt_base)
+#                + lambda_b2 * self._safe_masked_metric(
+#                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+#                )
+#                + lambda_d * self._safe_masked_metric(
+#                    pred_detail_res_joint, gt_res, detail_mask, metric_fn
+#                )
+#            )
+
+        # base_train
+        if epoch < E0:
+            return metric_fn(out_base1, gt_base)
+        elif epoch < E1:
+            return self._safe_masked_metric(pred_base2_res, gt_base2_res, base_mask, metric_fn)
+        elif epoch < E2:
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
+        else:
+            return (
+                metric_fn(out_sdf, gt_sdf)
+                + lambda_d * self._safe_masked_metric(
+                    pred_detail_res, gt_res, detail_mask, metric_fn
+                )
+            )
+
     def sdf_query_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']
         gt_sdf = gt['sdf'].view_as(out_sdf)
         return metric_fn(out_sdf, gt_sdf)
 
-    def sdf_context_loss(self, output, gt, metric_fn):
-        out_sdf = output['sdf']
-        gt_sdf = gt['sdf'].view_as(out_sdf)
-        return metric_fn(out_sdf, gt_sdf)
-
-    def code_loss(self, output, gt, metric_fn, epoch=0, E0=2000, E1=4500):
-        #code = output['curve_code']
-        code = output['code'] 
+    def code_loss(self, output, gt, metric_fn, epoch=0, E0=1000, E1=1500):
+        code = output['code']
         reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
         return torch.mean(reg_loss)
 
-    def feature_loss(self, output, gt, metric_fn):
-        enc_features = output['enc_features']
-        dec_features = output['dec_features']
-        return metric_fn(enc_features, dec_features)
-        #reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
-        #return torch.mean(reg_loss)
     def eikonal_loss(self, output, gt, metric_fn):
         out_sdf = output['sdf']
         in_sample = gt['samples']
-        B, n = out_sdf.shape
-        B, n, d = in_sample.shape
-        #gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
         grad = torch.autograd.grad(
-            outputs = out_sdf,
-            inputs = in_sample,
-            grad_outputs = torch.ones_like(out_sdf),
+            outputs=out_sdf,
+            inputs=in_sample,
+            grad_outputs=torch.ones_like(out_sdf),
             create_graph=True,
             retain_graph=True,
-            only_inputs=True,)[0]
-
+            only_inputs=True,
+        )[0]
         grad_norm = torch.sqrt(torch.sum(grad * grad, dim=-1) + 1e-12)
         loss = (grad_norm - 1.0) ** 2
-        return loss.mean() 
-    
+        return loss.mean()
+
     def tv_loss_chw(self, G, isrho=False):
-        tv_s    = (G[:, 1:, :] - G[:, :-1, :]).abs().mean()
-        tv_t    = (G[:, :, 1:] - G[:, :, :-1]).abs().mean()
+        tv_s = (G[:, 1:, :] - G[:, :-1, :]).abs().mean()
+        tv_t = (G[:, :, 1:] - G[:, :, :-1]).abs().mean()
         if isrho:
             return (tv_s + tv_t)
-        tv_wrap = (G[:, :, 0]  - G[:, :, -1]).abs().mean()
+        tv_wrap = (G[:, :, 0] - G[:, :, -1]).abs().mean()
         return (tv_s + tv_t + tv_wrap)
 
     def tv_loss_bchw(self, G, isrho=False):
-        tv_s    = (G[:, :, 1:, :] - G[:, :, :-1, :]).abs().mean()
-        tv_t    = (G[:, :, :, 1:] - G[:, :, :, :-1]).abs().mean()
+        tv_s = (G[:, :, 1:, :] - G[:, :, :-1, :]).abs().mean()
+        tv_t = (G[:, :, :, 1:] - G[:, :, :, :-1]).abs().mean()
         if isrho:
             return (tv_s + tv_t)
-        tv_wrap = (G[:, :, :, 0]  - G[:, :, :, -1]).abs().mean()
+        tv_wrap = (G[:, :, :, 0] - G[:, :, :, -1]).abs().mean()
         return (tv_s + tv_t + tv_wrap)
 
     def tv_l2_grid_loss(self, grids, factor, isrho=False):
@@ -143,13 +229,11 @@ class LossHandler():
     def tv_grid_loss(self, grids, factor, isrho=False):
         loss = 0.0
         alpha = 0.5
-        for g in grids:   # coarsest -> finest
-            if g.dim() == 3:   # (C,H,W)
+        for g in grids:
+            if g.dim() == 3:
                 loss = loss + factor * self.tv_loss_chw(g, isrho)
-                #loss = loss + self.tv_loss_chw(g, isrho)
-            elif g.dim() == 4: # (1,C,H,W) or (B,C,H,W)
+            elif g.dim() == 4:
                 loss = loss + factor * self.tv_loss_bchw(g, isrho)
-                #loss = loss + self.tv_loss_bchw(g, isrho)
             else:
                 raise ValueError(f"Unexpected grid dim: {g.shape}")
             factor *= alpha
@@ -158,7 +242,7 @@ class LossHandler():
     def tv_grid_ctloss(self, output, factor=1e-4):
         grids = output['base_grid_ct']
         return self.tv_grid_loss(grids, factor)
- 
+
     def tv_grid_crloss(self, output, factor=1e-4):
         grids = output['base_grid_cr']
         return self.tv_grid_loss(grids, factor, True)
@@ -166,96 +250,35 @@ class LossHandler():
     def tv_l2_grid_ctloss(self, output, factor=1e-4):
         grids = output['base_grid_ct']
         return self.tv_l2_grid_loss(grids, factor)
- 
+
     def tv_l2_grid_crloss(self, output, factor=1e-4):
         grids = output['base_grid_cr']
         return self.tv_l2_grid_loss(grids, factor, True)
 
-    def lipschitz_loss(self, output, factor):
-        out_sdf = output['sdf']
-        B, n = out_sdf.shape
-        gt_sdf = gt['sdf'][:,:n].view_as(out_sdf)
-        out_sdf = out_sdf.reshape(B*n)
-        
-        return metric_fn(out_sdf, gt_sdf)
-    
-    
-    def nodes_loss(self, output, gt, metric_fn):
-        nodes = output['nodes']
-        nodes_gt = gt['nodes']
-
-        return metric_fn(nodes, nodes_gt)
-    
-    def mat_loss(self, output, gt, metric_fn):
-        mat = output['mat']
-        mat_gt = gt['mat']
-
-        return metric_fn(mat, mat_gt)
-    
-    def kl_loss(self, output, gt, metric_fn):
-        # already calculated in model
-        kl_reg = output['kl']
-        return torch.mean(kl_reg)
-    
-    def edm_loss(self, output, gt, metric_fn):
-        loss = output['loss']
-        return loss.mean()
-    
-    def occ_sum_loss(self, output, gt, metric_fn):
-        # pred(Nc, Ns), gt(Ns)
-        occ_pred = output['occ']
-        occ_gt = gt['occ']
-
-        occ_sum = torch.sum(occ_pred, dim=0)
-        return metric_fn(occ_sum, occ_gt)
-    
-    def occ_max_loss(self, output, gt, metric_fn):
-        # pred(Nc, Ns), gt(Ns)
-        occ_pred = output['occ']
-        occ_gt = gt['occ']
-
-        occ_max,_ = torch.max(occ_pred, dim=0)
-        return metric_fn(occ_max, occ_gt)
-    
-
-    def __call__(self, output, gt, epoch, E0, E1):
+    def __call__(self, output, gt, epoch, E0, E1, E2, E3, mode='base_train'):
         res = {}
         for name, loss in self.loss_fn.items():
             if hasattr(self, name):
                 func = getattr(self, name)
             else:
-                raise NameError(f'Not defined {loss} {name}')
+                raise NameError(f'Not defined {name}')
+
             if 'tv' in name:
                 loss_term = func(output, loss['factor'])
                 res[name] = loss_term
             elif 'sdf' in name:
-                loss_term = func(output, gt, loss['metric_fn'], loss['clamp'], epoch, E0, E1)
-                res[name] = loss['factor']*loss_term
+                loss_term = func(
+                    output, gt, loss['metric_fn'], loss.get('clamp', 0.1),
+                    epoch, E0, E1, E2, E3, mode=mode
+                )
+                res[name] = loss['factor'] * loss_term
             else:
                 loss_term = func(output, gt, loss['metric_fn'], epoch, E0, E1)
-                res[name] = loss['factor']*loss_term
-
+                res[name] = loss['factor'] * loss_term
         return res
+
 
 def config_loss(loss_schedule):
     loss_handler = LossHandler()
     loss_handler.parse_config(loss_schedule)
     return loss_handler
-
-
-def eval_loss(output, gt, loss_schedule):
-    res = {}
-    for name, config in loss_schedule.items():
-        if config.enable:
-            loss_term = getattr(loss, name)(output, gt, config)
-            # print('name: {}, loss: {}'.format(name, loss_term))
-            if isinstance(loss_term, dict):
-                res.update(loss_term)
-            else:
-                res[name] = loss_term
-
-    return res
-
-
-def eval_val_loss(output, gt, output_type, metric='L1'):
-    return getattr(loss, 'val_loss')(output, gt, output_type, metric)

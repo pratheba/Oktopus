@@ -1,0 +1,47 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 126,
+      "n_surface_all": 14062
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 141,
+      "n_surface_all": 9864
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 142,
+      "n_surface_all": 1840
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 113,
+      "n_surface_all": 447
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 88,
+      "n_surface_all": 3442
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 194,
+      "n_surface_all": 24219
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 158,
+      "n_surface_all": 5138
+    }
+  ],
+  "out_npz": "postprocess/input/npz/dress_unitbb_preprocess_segments.npz"
+}

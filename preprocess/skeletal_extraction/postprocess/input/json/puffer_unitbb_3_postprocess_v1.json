@@ -1,0 +1,114 @@
+{
+  "split": [
+    { 
+      "id": 1,
+      "at_fracs": [0.6],
+      "new_ids": [1, 100],
+      "names": ["r_arm", "body"]
+    },
+    {
+      "id": 6,
+      "at_fracs": [0.4],
+      "new_ids": [101, 6],
+      "names": ["body", "l_arm"]
+    }
+   ],
+  "combine_surface_only": [
+    {
+      "keep_id": 5,
+      "absorb_ids": [0, 2, 3, 4, 100, 101],
+      "name": "body",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.8,
+      "center_max_shift_frac": 0.8,
+      "center_smooth_win": 7
+    } 
+  ],
+  "crop": [
+   {
+      "id": 5,
+      "start_frac": 0.4,
+      "end_frac": 0.7
+    },
+   {
+      "id": 1,
+      "start_frac": 0.0,
+      "end_frac": 0.7
+    },
+   {
+      "id": 6,
+      "start_frac": 0.3,
+      "end_frac": 1.0
+    }
+  ],
+  "extend": [
+    {
+      "id": 5,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 1.3,
+      "extend_burial_alpha": 1.3,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 1,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.6,
+      "extend_burial_alpha": 1.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 6,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 1.6,
+      "extend_burial_alpha": 1.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "recenter": [
+    { 
+      "id": 5,
+      "center_shift_scale": 0.2,
+      "center_max_shift_frac": 0.2,
+      "center_smooth_win": 100,
+      "center_iters": 10
+    },
+    {
+      "id": 1,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 100,
+      "center_iters": 10
+    },
+    {
+      "id": 6,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 100,
+      "center_iters": 10
+    }  
+ ],
+  "rename_final": [
+    { 
+      "old_id": 1,
+      "new_id": 0,
+      "new_name": "r_arm"
+    },
+    {
+      "old_id": 5,
+      "new_id": 1,
+      "new_name": "body"
+    },
+    {
+      "old_id": 6,
+      "new_id": 2,
+      "new_name": "l_arm"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 105,
+      "n_surface_all": 1167
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 98,
+      "n_surface_all": 422
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 87,
+      "n_surface_all": 1598
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 155,
+      "n_surface_all": 2116
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 77,
+      "n_surface_all": 1383
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 74,
+      "n_surface_all": 640
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 67,
+      "n_surface_all": 256
+    }
+  ],
+  "out_npz": "postprocess/input/npz/armour_unitbb_preprocess_segments.npz"
+}

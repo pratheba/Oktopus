@@ -55,6 +55,7 @@ class PWLACurve():
         ### Have length of 2 to have 36b key pints
         #n_sample_points = int(36 * curve_length)
         n_sample_points = int(36 * curve_length)
+        self.n_sample_points = int(36 * curve_length)
         #n_sample_points = int(36 * curve_length)
         r = np.linspace(0,total_points-1, n_sample_points, dtype=int) #np.random.randint(total_points-1, size=n_sample_points-2)
         #self.key_points = arg['keypoints']
@@ -67,7 +68,7 @@ class PWLACurve():
         #self.key_train_radius = np.full(self.key_train_radius.shape, max_train_radius)
         #self.key_cylinder_radius = np.full(self.key_cylinder_radius.shape, max_cylinder_radius)
         #self.key_train_radius = self.key_train_radius[r]
-        self.key_cylinder_radius = self.key_cylinder_radius[r]+0.1
+        self.key_cylinder_radius = self.key_cylinder_radius[r]+0.2
         #self.key_train_radius = self.key_train_radius[r]
         self.key_train_radius = self.key_cylinder_radius
         self.key_train_radius = np.tile(np.array(self.key_train_radius),2).reshape(-1, self.key_train_radius.shape[0]).T 
@@ -81,7 +82,11 @@ class PWLACurve():
         #print(self.key_radius.shape)
         #print(self.key_radius.shape)
 
-        self.key_wrap_radius = arg.get('radius_wrap', None)
+        self.key_wrap_radius = np.array(arg.get('radius_wrap', None))[r]
+        self.key_wrap_radius = np.tile(np.array(self.key_wrap_radius),2).reshape(-1, self.key_wrap_radius.shape[0]).T
+        #print(self.key_wrap_radius)
+        #print(self.key_train_radius)
+        #exit()
         self.key_occupancy_rho = arg.get('key_occupancy_rho', None)
         self.wrap_s_bins = arg.get('wrap_s_bins', None)
         self.wrap_theta_bins = arg.get('wrap_theta_bins', None)
@@ -840,8 +845,11 @@ class PWLACurve():
             )
             print("supported s interval:", s_min, s_max)
 
+            #C_key_pruned = prune_curve_points_by_s_interval(
+            #    C_key_dense, s_min, s_max, n_out=n_sample_curve
+            #)
             C_key_pruned = prune_curve_points_by_s_interval(
-                C_key_dense, s_min, s_max, n_out=n_sample_curve
+                C_key_dense, s_min, s_max, n_out=self.n_sample_points
             )
 
             # 6) final safety: remove duplicate consecutive points
@@ -870,37 +878,37 @@ class PWLACurve():
                 out_path=str(name)+"_shape_and_curves.ply"
             )
 
-            return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=True, name=name)
+            return self.localize_samples(pointcloudsamples0, return_sdf=return_sdf, norm=norm, update_curve=False, update_radius=update_radius, name=name)
 
         if update_radius:
             #print(self.key_wrap_radius)
             #print(u)
-            #update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=24, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
+            update_wrap_profile_from_coords(self, sample_keypoint_map, w, u, v, n_curve_bins=self.n_sample_points, n_theta_bins=24, quantile=0.98, gaussian_smooth_curve=2.0, gaussian_smooth_theta=2.0, min_count=25, radius_type='wrap')
             #print(self.key_wrap_radius)
             #exit()
             #update_wrap_occupancy_from_coords(self, sample_keypoint_map, u, v, n_curve_bins=24, quantile=0.7, min_count=50)
 
             ################# Uncomment later for curve center and cylinder #################################
-            self.update_radius_from_coords(sample_keypoint_map, w, u, v)
-#            #self.update_wrap_profile_from_coords(sample_keypoint_map, w, u, v, radius_type='wrap')
-            self.update_cylinder_radius_from_coords(self, sample_keypoint_map, w, u, v, min_count=50, isotropic=True) 
+            #self.update_radius_from_coords(sample_keypoint_map, w, u, v)
+            #self.update_wrap_profile_from_coords(sample_keypoint_map, w, u, v, radius_type='wrap')
+            #self.update_cylinder_radius_from_coords(self, sample_keypoint_map, w, u, v, min_count=50, isotropic=True) 
            # self.update_cylinder_radius_from_wrap(eps=0.03, isotropic=False)
-            radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False, radius_type='train')['radius']
+            #radius_yz = self.interpolate(sample_keypoint_map, points=False, frame=False, radius_type='train')['radius']
             #print(yz_radius.shape)
-            yz_radius = radius_yz.copy()
+            #yz_radius = radius_yz.copy()
             #self.update_coords()
             # 3D trimesh overlay
-            visualize_keyframes_with_profiles_trimesh(
-                self,
-                pointcloudsamples,
-                sample_keypoint_map,
-                name=name,
-                show_train=False,
-                show_cylinder=True,
-                show_wrap=False,
-                export_glb=False,
-                export_ply=True
-            )
+            #visualize_keyframes_with_profiles_trimesh(
+            #    self,
+            #    pointcloudsamples,
+            #    sample_keypoint_map,
+            #   name=name,
+            #    show_train=False,
+            #    show_cylinder=True,
+            #    show_wrap=False,
+            #    export_glb=False,
+            #    export_ply=True
+            #)
             #exit()
 
         # If the end ball is None then x_radius  = 1.0 
@@ -1023,6 +1031,136 @@ class PWLACurve():
         curve_length = cumulative_length[-1] #np.sum(edge_lengths)
         return curve_length, cumulative_length
 
+    def stretch_end_extension(self, stretch_arg):
+        """
+        Extend the tail [t0, 1.0] outward.
+        Prefix ts < t0 stays unchanged.
+        """
+        points = self.key_points.copy()
+        ts = self.key_ts.copy()
+
+        stretch_scale = float(stretch_arg.get('stretch_scale', stretch_arg.get('length', 1.0)))
+        t0 = float(stretch_arg['t0'])
+
+        mask = ts >= t0
+        if not np.any(mask):
+            return points
+
+        p0 = self.interpolate(np.array([t0]), radius=False, frame=False)['points'][0]
+        p1 = self.interpolate(np.array([1.0]), radius=False, frame=False)['points'][0]
+
+        tail_vec = p1 - p0
+        tail_len = np.linalg.norm(tail_vec) + 1e-12
+        t_dir = tail_vec / tail_len
+
+        d = points[mask] - p0[None, :]
+        w = d @ t_dir
+        yz = d - np.outer(w, t_dir)
+
+        w_new = stretch_scale * w
+        points[mask] = p0[None, :] + np.outer(w_new, t_dir) + yz
+        return points
+
+
+    def stretch_start_extension(self, stretch_arg):
+        """
+        Extend the head [0.0, t1] outward.
+        Suffix ts > t1 stays unchanged.
+        """
+        points = self.key_points.copy()
+        ts = self.key_ts.copy()
+
+        stretch_scale = float(stretch_arg.get('stretch_scale', stretch_arg.get('length', 1.0)))
+        t1 = float(stretch_arg['t1'])
+
+        mask = ts <= t1
+        if not np.any(mask):
+            return points
+
+        p0 = self.interpolate(np.array([0.0]), radius=False, frame=False)['points'][0]
+        p1 = self.interpolate(np.array([t1]), radius=False, frame=False)['points'][0]
+
+        head_vec = p1 - p0
+        head_len = np.linalg.norm(head_vec) + 1e-12
+        t_dir = head_vec / head_len
+
+        # anchor at t1 so the interior side stays attached
+        d = points[mask] - p1[None, :]
+        w = d @ t_dir
+        yz = d - np.outer(w, t_dir)
+
+        w_new = stretch_scale * w
+        points[mask] = p1[None, :] + np.outer(w_new, t_dir) + yz
+        return points
+
+
+
+    def stretch_interval_smooth_nonuniform(self, stretch_arg):
+        points = self.key_points.copy()
+        ts = self.key_ts.copy()
+
+        direction = stretch_arg.get("direction", "forward")
+        stretch_scale = float(stretch_arg.get('stretch_scale', stretch_arg.get('length', 1.0)))
+        t0 = float(stretch_arg['t0'])
+        t1 = float(stretch_arg['t1'])
+        anchor = stretch_arg.get('anchor', 'start')
+
+        if t1 <= t0:
+            return points
+
+        # choose anchor coord inside interval
+        if anchor == 'start':
+            s_anchor = t0
+        elif anchor == 'end':
+            s_anchor = t1
+        elif anchor == 'coord':
+            s_anchor = float(stretch_arg.get('anchor_coord', t0))
+            s_anchor = np.clip(s_anchor, t0, t1)
+        else:
+            s_anchor = t0
+
+        # interval endpoints and anchor in world space
+        p0 = self.interpolate(np.array([t0]), radius=False, frame=False)['points'][0]
+        p1 = self.interpolate(np.array([t1]), radius=False, frame=False)['points'][0]
+        pa = self.interpolate(np.array([s_anchor]), radius=False, frame=False)['points'][0]
+
+        interval_vec = p1 - p0
+        interval_len = np.linalg.norm(interval_vec) + 1e-12
+        t_dir = interval_vec / interval_len
+
+        mid_mask = np.logical_and(ts >= t0, ts <= t1)
+        if not np.any(mid_mask):
+            return points
+
+        # keep your existing interval stretch block
+        d_mid = points[mid_mask] - pa[None, :]
+        w_mid = d_mid @ t_dir
+        yz_mid = d_mid - np.outer(w_mid, t_dir)
+
+        w_mid_new = stretch_scale * w_mid
+        points[mid_mask] = pa[None, :] + np.outer(w_mid_new, t_dir) + yz_mid
+
+        # ONLY change propagation: move propagated side along local tangent per point
+        delta_len = (stretch_scale - 1.0) * interval_len
+
+        if direction == "forward":
+            propagate_mask = ts > t1
+            signed_delta = delta_len
+        elif direction == "backward":
+            propagate_mask = ts < t0
+            signed_delta = -delta_len
+        else:
+            raise ValueError(f"Unknown direction: {direction}")
+
+        if np.any(propagate_mask):
+            intpl_prop = self.interpolate(ts[propagate_mask], radius=False, frame=True)
+            frame_prop = intpl_prop["frame"]   # rows [T,N,B]
+            T_prop = frame_prop[:, 0, :]       # tangent at each propagated point
+            points[propagate_mask] = points[propagate_mask] + signed_delta * T_prop
+
+        return points
+
+
     def stretch_from_end_smooth_nonuniform(self, stretch_arg):
         points = self.key_points.copy()
         anchor = stretch_arg['anchor']
@@ -1106,7 +1244,17 @@ class PWLACurve():
         #self.rot_slerp0 = self.rot_slerp.copy()
 
         #points = self.stretch_uniform(stretch_arg)
-        points = self.stretch_from_end_smooth_nonuniform(stretch_arg)
+        #points = self.stretch_from_end_smooth_nonuniform(stretch_arg)
+        #points = self.stretch_from_end_smooth_nonuniform
+        mode = stretch_arg.get("mode", None)
+        if mode == "end_extension":
+            points = self.stretch_end_extension(stretch_arg)
+        elif mode == "start_extension":
+            points = self.stretch_start_extension(stretch_arg)
+        elif ('t0' in stretch_arg) and ('t1' in stretch_arg):
+            points = self.stretch_interval_smooth_nonuniform(stretch_arg)
+        else:
+            points = self.stretch_from_end_smooth_nonuniform(stretch_arg)
         self.key_points = points
         self.update_coords()
         self.update_frame()
@@ -1119,6 +1267,17 @@ class PWLACurve():
         self.key_frame = self.key_frame0.copy()
         #self.rotation = self.rotation0.copy()
         #self.rot_slerp = self.rot_slerp0.copy()
+    def localize_samples_stretch_runtime(self, vs, stretch_arg):
+        runtime_support = self.build_stretch_runtime_support(stretch_arg, n_samples=200)
+        curve_data, inside = self.localize_samples_on_runtime_support(vs, runtime_support, norm=1.0)
+
+        # For stability first: detail coords = base coords
+        curve_data["samples_detail"] = curve_data["samples_local"].copy()
+        curve_data["coords_detail"] = curve_data["coords"].copy()
+        curve_data["w_seam"] = np.ones_like(curve_data["coords"], dtype=np.float64)
+
+        return curve_data, inside
+
 
     def localize_samples_stretch(self, vs, stretch_arg, return_sdf=False):
         # for stretch or offset 
@@ -1174,39 +1333,73 @@ class PWLACurve():
         #vx_base = 2.0*ts - 1.0
         samples_local[:, 0] += vx_base
 
-#        return {
-#            #'samples': vs[inside_cyl],
-#            'samples_local': samples_local[inside_cyl],
-#            #'samples_detail': samples_detail[inside_cyl],
-#            #'coords': ts_new[inside_cyl],
-#            'coords': ts[inside_cyl],
-#            #'coords_detail': ts_used[inside_cyl], 
-#            #'w_seam': w_seam,
-#            'rho': rho[inside_cyl],
-#            'rho_n': rho_n[inside_cyl],
-#            'angles': angle[inside_cyl],
-#            'radius': yz_radius[inside_cyl],
-#        }, inside
+        stretch_scale = float(stretch_arg.get('stretch_scale', stretch_arg.get('length', 1.0)))
+        detail_tiles_cfg = stretch_arg.get('detail_tiles', 1.0)
+        mode = stretch_arg.get("mode", None)
 
+        if detail_tiles_cfg == 'auto':
+            detail_tiles = stretch_scale
+        else:
+            detail_tiles = float(detail_tiles_cfg)
 
-        stretch_length = stretch_arg['length']
-        t0 = stretch_arg['t0']
-        t1 = stretch_arg['t1']
         eps_region = stretch_arg.get('eps_region', 0.03)
         eps_seam = stretch_arg.get('eps_seam', 0.05)
-      
-        w_region = make_detail_mask(ts_new, t0, t1, eps_region)
-        eps = 1e-12
-        tau = np.clip((ts_new - t0)/((t1 - t0)+eps), 0.0, 1.0)
-        ts_tile_phase = np.mod((stretch_length * tau), 1.0)
 
-        # seam fade: 0 near phase seam, 1 away from seam
-        w_seam = seam_fade(ts_tile_phase, eps_seam)
-        w_wrap = w_region * w_seam
+        # Default: no detail remap
+        ts_used = ts_new.copy()
+        w_seam = np.ones_like(ts_new, dtype=np.float64)
 
-        ts_wrapped = t0 + (t1-t0)*ts_tile_phase
-        ts_used = (1.0 - w_wrap) * ts_new + w_wrap * ts_wrapped
+        # Only do interval-style wrapping if both t0 and t1 are present
+        # and the mode is an interval mode.
+        interval_modes = {None, "interval_forward", "interval_backward", "interval"}
+
+        if ('t0' in stretch_arg) and ('t1' in stretch_arg) and (mode in interval_modes):
+            t0 = float(stretch_arg['t0'])
+            t1 = float(stretch_arg['t1'])
+
+            w_region = make_detail_mask(ts_new, t0, t1, eps_region)
+            eps = 1e-12
+            tau = np.clip((ts_new - t0) / ((t1 - t0) + eps), 0.0, 1.0)
+            ts_tile_phase = np.mod((detail_tiles * tau), 1.0)
+
+            w_seam = seam_fade(ts_tile_phase, eps_seam)
+
+            ts_wrapped = t0 + (t1 - t0) * ts_tile_phase
+            use_wrap = w_region > 0.5
+            ts_used[use_wrap] = ts_wrapped[use_wrap]
+
+        elif ('t0' in stretch_arg) and (mode == "end_extension"):
+            t0 = float(stretch_arg['t0'])
+
+            w_region = (ts_new >= t0).astype(np.float64)
+            eps = 1e-12
+            tau = np.clip((ts_new - t0) / ((1.0 - t0) + eps), 0.0, 1.0)
+            ts_tile_phase = np.mod((detail_tiles * tau), 1.0)
+
+            w_seam = seam_fade(ts_tile_phase, eps_seam)
+
+            ts_wrapped = t0 + (1.0 - t0) * ts_tile_phase
+            use_wrap = w_region > 0.5
+            ts_used[use_wrap] = ts_wrapped[use_wrap]
+
+        elif ('t1' in stretch_arg) and (mode == "start_extension"):
+            t1 = float(stretch_arg['t1'])
+
+            w_region = (ts_new <= t1).astype(np.float64)
+            eps = 1e-12
+            tau = np.clip(ts_new / (t1 + eps), 0.0, 1.0)
+            ts_tile_phase = np.mod((detail_tiles * tau), 1.0)
+
+            w_seam = seam_fade(ts_tile_phase, eps_seam)
+
+            ts_wrapped = t1 * ts_tile_phase
+            use_wrap = w_region > 0.5
+            ts_used[use_wrap] = ts_wrapped[use_wrap]
+
         vx_used = 2.0 * ts_used - 1.0
+
+
+
 
         #ts_detail = np.mod(stretch_arg['length'] * ts_new, 1.0)
         # NOTE: vs -> (vx, *, *). (vert -> (vx, 0, 0))
@@ -1225,7 +1418,7 @@ class PWLACurve():
             'coords': ts_new[inside_cyl],
             #'coords': ts[inside_cyl],
             'coords_detail': ts_used[inside_cyl], 
-            'w_seam': w_seam,
+            'w_seam': w_seam[inside_cyl],
             'rho': rho[inside_cyl],
             'rho_n': rho_n[inside_cyl],
             'angles': angle[inside_cyl],
@@ -1310,6 +1503,132 @@ class PWLACurve():
             "x_radius": x_radius,
             "coords": q,
         }
+
+    def build_runtime_support_from_current_curve(self, n_samples=200):
+        coords = np.linspace(0.0, 1.0, n_samples)
+        intpl = self.interpolate(coords)
+
+        support = {
+            "coords": coords.copy(),
+            "points": intpl["points"].copy(),
+            "frame": intpl["frame"].copy(),
+            "radius": intpl["radius"].copy(),
+            "x_radius": self.calc_x_radius(coords).copy(),
+        }
+        return support
+
+    def build_stretch_runtime_support(self, stretch_arg, n_samples=200):
+        """
+        Build explicit support for inference only.
+        Untouched regions keep their original points/frames/radii.
+        """
+        coords = np.linspace(0.0, 1.0, n_samples)
+        base = self.interpolate(coords)
+
+        points = base["points"].copy()
+        frames = base["frame"].copy()
+        radius = base["radius"].copy()
+        x_radius = self.calc_x_radius(coords).copy()
+
+        mode = stretch_arg.get("mode", "interval_forward")
+        stretch_scale = float(stretch_arg.get("stretch_scale", stretch_arg.get("length", 1.0)))
+        eps = 1e-12
+
+        if mode == "end_extension":
+            t0 = float(stretch_arg["t0"])
+            mask = coords >= t0
+
+            p0 = self.interpolate(np.array([t0]), radius=False, frame=False)["points"][0]
+            p1 = self.interpolate(np.array([1.0]), radius=False, frame=False)["points"][0]
+
+            vec = p1 - p0
+            L = np.linalg.norm(vec) + eps
+            t_dir = vec / L
+
+            d = points[mask] - p0[None, :]
+            w = d @ t_dir
+            yz = d - np.outer(w, t_dir)
+            w_new = stretch_scale * w
+            points[mask] = p0[None, :] + np.outer(w_new, t_dir) + yz
+
+        elif mode == "start_extension":
+            t1 = float(stretch_arg["t1"])
+            mask = coords <= t1
+
+            p0 = self.interpolate(np.array([0.0]), radius=False, frame=False)["points"][0]
+            p1 = self.interpolate(np.array([t1]), radius=False, frame=False)["points"][0]
+
+            vec = p1 - p0
+            L = np.linalg.norm(vec) + eps
+            t_dir = vec / L
+
+            d = points[mask] - p1[None, :]
+            w = d @ t_dir
+            yz = d - np.outer(w, t_dir)
+            w_new = stretch_scale * w
+            points[mask] = p1[None, :] + np.outer(w_new, t_dir) + yz
+
+        else:
+            t0 = float(stretch_arg["t0"])
+            t1 = float(stretch_arg["t1"])
+            direction = stretch_arg.get("direction", "forward")
+            anchor = stretch_arg.get("anchor", "start")
+
+            if anchor == "start":
+                s_anchor = t0
+            elif anchor == "end":
+                s_anchor = t1
+            elif anchor == "coord":
+                s_anchor = float(stretch_arg.get("anchor_coord", t0))
+                s_anchor = np.clip(s_anchor, t0, t1)
+            else:
+                s_anchor = t0
+
+            p0 = self.interpolate(np.array([t0]), radius=False, frame=False)["points"][0]
+            p1 = self.interpolate(np.array([t1]), radius=False, frame=False)["points"][0]
+            pa = self.interpolate(np.array([s_anchor]), radius=False, frame=False)["points"][0]
+
+            vec = p1 - p0
+            L = np.linalg.norm(vec) + eps
+            t_dir = vec / L
+
+            mid = (coords >= t0) & (coords <= t1)
+            d_mid = points[mid] - pa[None, :]
+            w_mid = d_mid @ t_dir
+            yz_mid = d_mid - np.outer(w_mid, t_dir)
+            w_mid_new = stretch_scale * w_mid
+            points[mid] = pa[None, :] + np.outer(w_mid_new, t_dir) + yz_mid
+
+            delta_len = (stretch_scale - 1.0) * L
+
+            if direction == "forward":
+                prop = coords > t1
+                signed_delta = delta_len
+            elif direction == "backward":
+                prop = coords < t0
+                signed_delta = -delta_len
+            else:
+                raise ValueError(f"Unknown direction: {direction}")
+
+            if np.any(prop):
+                T_prop = frames[prop, 0, :]
+                points[prop] = points[prop] + signed_delta * T_prop
+
+        # recompute frames only on this runtime support
+        frames_new = self.get_new_frame(points)
+
+        support = {
+            "coords": coords.copy(),
+            "points": points,
+            "frame": frames_new,
+            "radius": radius,
+            "x_radius": x_radius,
+        }
+        return support
+
+
+
+
 
 
     def runtime_support_projection(self, runtime_support, samples, N_discrete=n_sample_curve):
@@ -1923,46 +2242,129 @@ class PWLACurve():
         acc_radius_z = acc_intpl["radius"][:,1]
         delta_theta = np.deg2rad(mock_deg)
 
+#        scale_w = tangent_acc / (tangent_avatar + 1e-12)
+#        scale_y = acc_radius_y / (avatar_radius_y + 1e-12)
+#        scale_z = acc_radius_z / (avatar_radius_z + 1e-12)
+        
+#        test_scale_y = acc_radius_y * 0.1
+#        test_scale_z = acc_radius_z * 0.1
+#
+#        if adapt_arg['wrap_radius']:
+#            source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_9']
+#            target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_0']
+#
+#            theta_src = theta_avatar
+#            theta_tgt = theta_avatar + delta_theta
+#
+#            r_src = interpolate_wrap_radius1(
+#                self, avatar_coords, theta_src,
+#                source_npz['key_wrap_radius'],
+#                source_npz['wrap_theta_bins'],
+#                source_npz['wrap_s_bins']
+#            )
+#            r_tgt = interpolate_wrap_radius1(
+#                accessory_curve_handle.core, acc_coords, theta_tgt,
+#                target_npz['key_wrap_radius'],
+#                target_npz['wrap_theta_bins'],
+#                target_npz['wrap_s_bins']
+#            )
+#
+#            scale = (adapt_arg['scale'] * r_tgt) / (r_src + 1e-12)
+#            rho_acc = rho_avatar * scale
+#
+#        elif adapt_arg['rigid_radius']:
+#            scale = adapt_arg['scale']
+#            scale_rho = np.full_like(rho_avatar, scale)
+#            rho_acc = rho_avatar * scale_rho
+#            theta_tgt = theta_avatar + delta_theta
+#        else:
+#            scale = adapt_arg['scale']
+#            scale_rho = scale * 0.5 * (scale_y + scale_z)
+#            rho_acc = rho_avatar * scale_rho
+#            theta_tgt = theta_avatar + delta_theta
+
         scale_w = tangent_acc / (tangent_avatar + 1e-12)
         scale_y = acc_radius_y / (avatar_radius_y + 1e-12)
         scale_z = acc_radius_z / (avatar_radius_z + 1e-12)
-        
-        test_scale_y = acc_radius_y * 0.1
-        test_scale_z = acc_radius_z * 0.1
 
-        if adapt_arg['wrap_radius']:
-            source_npz = np.load('ngc/armadillo_on.npz', allow_pickle=True)['arr_0'].item()['armadillo_on_9']
-            target_npz = np.load('ngc/boots_on.npz', allow_pickle=True)['arr_0'].item()['boots_on_0']
+        theta_tgt = theta_avatar + delta_theta
 
+        if adapt_arg.get('wrap_radius', False):
             theta_src = theta_avatar
             theta_tgt = theta_avatar + delta_theta
 
+            #if self.key_wrap_radius is None or self.wrap_theta_bins is None or self.wrap_s_bins is None:
+            #    raise ValueError("Source curve does not have wrap profile data")
+
+            #if (accessory_curve_handle.core.key_wrap_radius is None or
+            #    accessory_curve_handle.core.wrap_theta_bins is None or
+            #    accessory_curve_handle.core.wrap_s_bins is None):
+            #    raise ValueError("Target/accessory curve does not have wrap profile data")
+
+            wrap_src = self.key_wrap_radius
+            wrap_tgt = accessory_curve_handle.core.key_wrap_radius
+
+            s_bins_src = self.wrap_s_bins
+            if s_bins_src is None:
+                if wrap_src.shape[0] == len(self.key_ts):
+                    s_bins_src = self.key_ts
+                else:
+                    s_bins_src = np.linspace(0.0, 1.0, wrap_src.shape[0])
+
+            theta_bins_src = self.wrap_theta_bins
+            if theta_bins_src is None:
+                theta_bins_src = np.linspace(-np.pi, np.pi, wrap_src.shape[1], endpoint=False)
+
+            s_bins_tgt = accessory_curve_handle.core.wrap_s_bins
+            if s_bins_tgt is None:
+                if wrap_tgt.shape[0] == len(accessory_curve_handle.core.key_ts):
+                    s_bins_tgt = accessory_curve_handle.core.key_ts
+                else:
+                    s_bins_tgt = np.linspace(0.0, 1.0, wrap_tgt.shape[0])
+
+            theta_bins_tgt = accessory_curve_handle.core.wrap_theta_bins
+            if theta_bins_tgt is None:
+                theta_bins_tgt = np.linspace(-np.pi, np.pi, wrap_tgt.shape[1], endpoint=False)
+
             r_src = interpolate_wrap_radius1(
-                self, avatar_coords, theta_src,
-                source_npz['key_wrap_radius'],
-                source_npz['wrap_theta_bins'],
-                source_npz['wrap_s_bins']
+                self, avatar_coords, theta_avatar,
+                wrap_src, theta_bins_src, s_bins_src
             )
+
             r_tgt = interpolate_wrap_radius1(
                 accessory_curve_handle.core, acc_coords, theta_tgt,
-                target_npz['key_wrap_radius'],
-                target_npz['wrap_theta_bins'],
-                target_npz['wrap_s_bins']
+                wrap_tgt, theta_bins_tgt, s_bins_tgt
             )
 
-            scale = (adapt_arg['scale'] * r_tgt) / (r_src + 1e-12)
-            rho_acc = rho_avatar * scale
 
-        elif adapt_arg['rigid_radius']:
-            scale = adapt_arg['scale']
-            scale_rho = np.full_like(rho_avatar, scale)
+#            r_src = interpolate_wrap_radius1(
+#                self,
+#                avatar_coords,
+#                theta_src,
+#                self.key_wrap_radius,
+#                self.wrap_theta_bins,
+#                self.wrap_s_bins
+#            )
+#
+#            r_tgt = interpolate_wrap_radius1(
+#                accessory_curve_handle.core,
+#                acc_coords,
+#                theta_tgt,
+#                accessory_curve_handle.core.key_wrap_radius,
+#                accessory_curve_handle.core.wrap_theta_bins,
+#                accessory_curve_handle.core.wrap_s_bins
+#            )
+#
+            scale_rho = (adapt_arg['scale'] * r_tgt) / (r_src + 1e-12)
             rho_acc = rho_avatar * scale_rho
-            theta_tgt = theta_avatar + delta_theta
+
+        elif adapt_arg.get('rigid_radius', False):
+            scale_rho = np.full_like(rho_avatar, adapt_arg['scale'])
+            rho_acc = rho_avatar * scale_rho
+
         else:
-            scale = adapt_arg['scale']
-            scale_rho = scale * 0.5 * (scale_y + scale_z)
+            scale_rho = adapt_arg['scale'] * 0.5 * (scale_y + scale_z)
             rho_acc = rho_avatar * scale_rho
-            theta_tgt = theta_avatar + delta_theta
 
         u_acc = rho_acc * np.cos(theta_tgt)
         v_acc = rho_acc * np.sin(theta_tgt)
@@ -2263,6 +2665,45 @@ class PWLACurve():
         x_copy[x_copy < ts_periodic[0]] += 1.0
 
         return np.interp(x_copy, ts_periodic, radius_periodic)
+
+
+    def interpolate_stretch1(self, ts, stretch_arg):
+        t0 = float(stretch_arg['t0'])
+        t1 = float(stretch_arg['t1'])
+        stretch_scale = float(stretch_arg.get('stretch_scale', stretch_arg.get('length', 1.0)))
+        direction = stretch_arg.get('direction', 'forward')
+        eps = 1e-12
+
+        old_len = t1 - t0
+        new_len = old_len * stretch_scale
+        delta = new_len - old_len
+
+        ts_new = ts.copy()
+
+        mid = (ts >= t0) & (ts <= t1)
+
+        if direction == 'forward':
+            post = ts > t1
+            ts_new[mid] = t0 + ((ts[mid] - t0) / (old_len + eps)) * new_len
+            ts_new[post] = ts[post] + delta
+
+        elif direction == 'backward':
+            pre = ts < t0
+            ts_new[mid] = t1 - ((t1 - ts[mid]) / (old_len + eps)) * new_len
+            ts_new[pre] = ts[pre] - delta
+
+        ts_new = np.clip(ts_new, 0.0, 1.0)
+
+        radius = np.stack([
+            np.interp(ts_new, self.key_ts, self.key_radius[:, 0]),
+            np.interp(ts_new, self.key_ts, self.key_radius[:, 1])
+        ]).T
+
+        intpl = self.interpolate(ts_new, radius=False)
+        intpl['radius'] = radius
+        return intpl, ts_new
+
+
 
     def interpolate_stretch(self, ts, stretch_arg):
         #func = stretch_arg['mix_func']

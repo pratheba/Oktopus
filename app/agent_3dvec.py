@@ -44,8 +44,8 @@ class Agent():
         self.opt = opt
         self.device = device
     
-    def load_data(self, data_root):
-        shapes = np.loadtxt(op.join(data_root, 'data.txt'), dtype=str).tolist()
+    def load_data(self, data_root, data_path):
+        shapes = np.loadtxt(op.join(data_root, data_path), dtype=str).tolist()
         handles = {}
         feat_dict = {}
         fid = 0
@@ -54,7 +54,8 @@ class Agent():
             item_path = op.join(data_root, f'{shape_name}')
             #handle_path = op.join(item_path, 'handle/std_handle.pkl')
             handle_path = op.join(item_path, 'handle/std_handle.npz')
-            handle = utils.load_handle(handle_path)
+            #handle = utils.load_handle(handle_path)
+            handle = self.load_shape_with_npz(data_root, shape_name)
             handles[shape_name] = handle
             shape_curve_ids = []
             self.shape_global_curveids[idx] = fid
@@ -63,29 +64,29 @@ class Agent():
                 key = self.encode_key(shape_name, curve.name)
                 feat_dict[key] = fid
                 fid += 1
-            #print(f'{shape_name}')
-            #print(feat_dict)
-
-#        self.model_input = {}
-#        for idx, shape_name in enumerate(shapes):
-#            item_path = op.join(data_root, f'{shape_name}')
-#            data_path = op.join(item_path, 'train_data', 'sdf_samples.pkl')
-#            with open(data_path, 'rb') as f:
-#                data = pickle.load(f)
-#            self.model_input[shape_name] = self.get_curve_data(data['on_surface'], self.shape_global_curveids[idx], shape_name) 
-
-        #print(self.model_input['armadillo'])
-        #exit()
 
         self.handles = handles
         self.feat_dict = feat_dict
 
-    def load_shape_handle(self, data_root, shape_name):
+    def load_shape_with_npz(self, data_root, shape_name):
         item_path = op.join(data_root, f'{shape_name}')
-        #handle_path = op.join(item_path, 'handle/std_handle.pkl')
         handle_path = op.join(item_path, 'handle/std_handle.npz')
         handle = utils.load_handle(handle_path)
+
+        npz_path = op.join(item_path, f'all_data/inference.npz')
+        if op.exists(npz_path):
+            self.apply_curve_state_npz(handle, npz_path, shape_name)
+
         return handle
+
+    def load_shape_handle(self, data_root, shape_name):
+        return self.load_shape_with_npz(data_root, shape_name)
+        #item_path = op.join(data_root, f'{shape_name}')
+        #handle_path = op.join(item_path, 'handle/std_handle.pkl')
+        #handle_path = op.join(item_path, 'handle/std_handle.npz')
+        #handle = utils.load_handle(handle_path)
+        #handle = self.load_shape_with_npz(data_root, shape_name)
+        #return handle
 
     def load_handle(self, handle_path):
         handle = Handle()
@@ -135,6 +136,57 @@ class Agent():
         # tilting, or twisting the shape, by changing the key frame(axis)
         if 'tilt' in arg:
             handle.apply_tilt(arg['tilt'])
+
+    def apply_curve_state_npz(self, handle, npz_path, shape_name):
+        d = np.load(npz_path, allow_pickle=True)["arr_0"].item()
+
+        for cid, curve in enumerate(handle.curves):
+            core = curve.core
+
+            candidates = [
+                f"{shape_name}_on_{cid}",
+                f"{shape_name}_on_{curve.name}",
+                f"{shape_name}_{curve.name}",
+                curve.name,
+            ]
+
+            found = None
+            for k in candidates:
+                if k in d:
+                    found = k
+                    break
+
+            if found is None:
+                print(f"[npz] no state for curve {curve.name} in {npz_path}")
+                continue
+
+            s = d[found]
+
+            #if "key_ts" in s:
+            #    core.key_ts = np.asarray(s["key_ts"], dtype=np.float64)
+            #if "key_points" in s:
+            #    core.key_points = np.asarray(s["key_points"], dtype=np.float64)
+            #if "key_frame" in s:
+            #    core.key_frame = np.asarray(s["key_frame"], dtype=np.float64)
+            #if "key_train_radius" in s:
+            #    core.key_train_radius = np.asarray(s["key_train_radius"], dtype=np.float64)
+            #    core.key_radius = core.key_train_radius
+            #if "key_cylinder_radius" in s:
+            #    core.key_cylinder_radius = np.asarray(s["key_cylinder_radius"], dtype=np.float64)
+            if "key_wrap_radius" in s:
+                core.key_wrap_radius = np.asarray(s["key_wrap_radius"], dtype=np.float64)
+            if "wrap_s_bins" in s:
+                core.wrap_s_bins = np.asarray(s["wrap_s_bins"], dtype=np.float64)
+            if "wrap_theta_bins" in s:
+                core.wrap_theta_bins = np.asarray(s["wrap_theta_bins"], dtype=np.float64)
+            if "wrap_radius_max" in s and s["wrap_radius_max"] is not None:
+                core.wrap_radius_max = np.asarray(s["wrap_radius_max"], dtype=np.float64)
+            if "key_occupancy_rho" in s and s["key_occupancy_rho"] is not None:
+                core.key_occupancy_rho = np.asarray(s["key_occupancy_rho"], dtype=np.float64)
+
+            print(f"[npz] applied {found} -> {shape_name}|{curve.name}")
+
+
 
 
     def __inference_vals(self, curve_data, key, batch_size=None, transform=None):
@@ -247,7 +299,8 @@ class Agent():
     @torch.no_grad()
     def action_ngcnet_inference(self, arg):
         data_root = arg['data_root']
-        self.load_data(data_root)
+        data_path = arg['data_path']
+        self.load_data(data_root, data_path)
         mc_grid = arg['mc_grid']
         output_folder = arg['output_folder']
         checkpoint = arg['checkpoint']
@@ -401,35 +454,51 @@ class Agent():
                     continue
                 
                 #func = utils.define_stretch_func(stretch_config)
-
                 stretch_arg = {
                     'curve_handle': self.curve_from_key(new_key),
-                    #'stretch_func': func,
                     'device': self.device,
-                    'length': stretch_config['length'],
-                    'anchor': stretch_config['anchor'],
+                    #'length': stretch_config.get('length', 1.0),   # backward compatible
+                    #'stretch_scale': stretch_config.get('stretch_scale', 1.0),
+                    #'detail_tiles': stretch_config.get('detail_tiles', stretch_config.get('length', 1.0)),
+                    #'anchor': stretch_config.get('anchor', 'coord'),
+                    #'anchor_coord': stretch_config.get('anchor_coord', stretch_config['t0']),
                     'curve_idx': self.feat_dict[key],
                     'new_idx': self.feat_dict[new_key],
-                    't0': stretch_config['t0'],
-                    't1': stretch_config['t1'],
-                    'eps_region': stretch_config['eps_region'],
-                    'eps_seam': stretch_config['eps_seam'],
+                    #'t0': stretch_config['t0'],
+                    #'t1': stretch_config['t1'],
+                    #'eps_region': stretch_config.get('eps_region', 0.03),
+                    #'eps_seam': stretch_config.get('eps_seam', 0.05),
                 }
+                stretch_arg.update(stretch_config)
+
+#                stretch_arg = {
+#                    'curve_handle': self.curve_from_key(new_key),
+#                    #'stretch_func': func,
+#                    'device': self.device,
+#                    'length': stretch_config['length'],
+#                    'anchor': stretch_config['anchor'],
+#                    'curve_idx': self.feat_dict[key],
+#                    'new_idx': self.feat_dict[new_key],
+#                    't0': stretch_config['t0'],
+#                    't1': stretch_config['t1'],
+#                    'eps_region': stretch_config['eps_region'],
+#                    'eps_seam': stretch_config['eps_seam'],
+#                }
 
                 curve_data, kidx = curve.filter_grid_stretch(mc_grid, stretch_arg)
-                vals = self.__inference_vals(curve_data, key, batch_size, transform='stretch')
+                vals, vals_base = self.__inference_vals(curve_data, key, batch_size, transform='stretch')
                 #vals = self.__mix_inference(curve_data, stretch_arg, batch_size)
                 #curve_data, kidx = curve.filter_grid_mix(mc_grid, stretch_arg)
                 #vals = self.__mix_inference(curve_data, stretch_arg, batch_size)
             else:
                 print("normal without stretch")
                 curve_data, kidx = curve.filter_grid(mc_grid)
-                vals = self.__inference_vals(curve_data, key, batch_size)
+                vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
 
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
         print(mc_grid.grid_config)
-        mesh = mc_grid.extract_mesh()
+        mesh = mc_grid.extract_mesh1()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
@@ -880,10 +949,13 @@ class Agent():
 
                 #delta = 0.01
                 acc_grid = utils.create_grid_like(mc_grid)
+                acc_grid_base = utils.create_grid_like(mc_grid)
                 #acc_grid.clear_grid(val=10.0)
                 acc_grid.clear_grid()
+                acc_grid_base.clear_grid()
                 #acc_grid.update_grid(acc_vals - delta, kidx, mark=True, mode="overwrite")
                 acc_grid.update_grid(acc_vals, kidx, mark=True, mode="overwrite")
+                acc_grid_base.update_grid(acc_vals_base, kidx, mark=True, mode="overwrite")
 
                 #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
                 #print("num total voxels:", acc_grid.empty_marks.shape[0])
@@ -894,6 +966,12 @@ class Agent():
                     if len(parts) > 0:
                         mesh_acc = max(parts, key=lambda m: len(m.faces))
                     mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
+                mesh_acc_base = acc_grid_base.extract_mesh()
+                if len(mesh_acc_base.faces) > 0:
+                    parts = mesh_acc_base.split(only_watertight=False)
+                    if len(parts) > 0:
+                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
+                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
                 cc += 1
                 #mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')

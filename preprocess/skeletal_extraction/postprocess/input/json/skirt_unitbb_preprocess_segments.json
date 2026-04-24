@@ -1,0 +1,11 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 357,
+      "n_surface_all": 2682
+    }
+  ],
+  "out_npz": "postprocess/input/npz/skirt_unitbb_preprocess_segments.npz"
+}

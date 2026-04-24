@@ -1,0 +1,41 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 86,
+      "n_surface_all": 65
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 217,
+      "n_surface_all": 52
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 42,
+      "n_surface_all": 0
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 217,
+      "n_surface_all": 52
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 148,
+      "n_surface_all": 43
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 216,
+      "n_surface_all": 51
+    }
+  ],
+  "out_npz": "postprocess/input/npz/cone_unitbb_preprocess_segments.npz"
+}

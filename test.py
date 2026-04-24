@@ -23,7 +23,8 @@ def start_test(opt):
 
     exp_name = 'train'
     #log_path = op.join(root_path, 'results', exp_name)
-    data_root = op.join(opt.root_path, 'Pack10Dataset')
+    data_root = op.join(opt.root_path, opt.data_root)
+    data_path = op.join(data_root, opt.data_path)
 
     #output_path = op.join(root_path, 'inference', exp_name)
     os.makedirs(output_path, exist_ok=True)
@@ -31,7 +32,7 @@ def start_test(opt):
     #agent.load_model(device, log_path, checkpoint='final')
     t0 = time()
     agent.load_model(device, config_path, model_path, mode='train', checkpoint=checkpoint)
-    agent.load_data(data_root)
+    agent.load_data(data_root, data_path)
     print('Model and handle data loaded, time cost: ', time()-t0)
 
     # Marching Cubes config
@@ -56,19 +57,19 @@ def start_test(opt):
 #    }
 #    agent('part_adapt', arg)
 #    print('time cost: ', time()-t0)
-
+#############################################################################
     shape_name = 'oktopus_9_v1'
-
     arg = {
         'exp_name': 'adapt',
         'data_root': data_root, 
         'mc_grid': mc_grid,
         'output_folder': op.join(output_path, f'{shape_name}'),
         'shape': shape_name,
-        'adapt_file': op.join(config_path, f'adapt_{shape_name}_2.yaml'),
+        'adapt_file': op.join(config_path, f'adapt_{shape_name}_knight.yaml'),
     }
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
+################################################################################
 #    shape_name = 'armadillo'
 #    arg = {
 #        'exp_name': 'mix',
@@ -94,8 +95,8 @@ def start_test(opt):
 
 #    t0 = time()
 #    mc_grid = MCGrid(grid_config)
-#    shape_name = 'boots'
-#
+#    shape_name = 'boots_2_v1'
+
 #    arg = {
 #        'exp_name': 'stretch',
 #        'data_root': data_root, 
@@ -113,6 +114,8 @@ if __name__ == '__main__':
     p.add_argument('-ckpt', '--checkpoints', required=False, type=str, nargs="+", default=['eval'], help='checkpoints to evaluate.')
     p.add_argument('-c', '--config_path', required=True)
     p.add_argument('-o', '--out_path', required=True)
+    p.add_argument('-r', '--data_root', required=True)
+    p.add_argument('-d', '--data_path', required=True)
 
     args = p.parse_args()
     opt = {
@@ -120,7 +123,9 @@ if __name__ == '__main__':
             'root_path': op.dirname(op.abspath(__file__)),
             'checkpoints': args.checkpoints,
             'config_path': args.config_path,
-            'out_path': args.out_path
+            'out_path': args.out_path,
+            'data_path': args.data_path,
+            'data_root': args.data_root
     }
 
     opt = process_options(opt, mode='inference')

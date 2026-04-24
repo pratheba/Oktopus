@@ -1,0 +1,71 @@
+{
+  "segments": [
+    {
+      "id": 0,
+      "name": "segment_0",
+      "n_keypoints": 130,
+      "n_surface_all": 929
+    },
+    {
+      "id": 1,
+      "name": "segment_1",
+      "n_keypoints": 81,
+      "n_surface_all": 450
+    },
+    {
+      "id": 2,
+      "name": "segment_2",
+      "n_keypoints": 101,
+      "n_surface_all": 996
+    },
+    {
+      "id": 3,
+      "name": "segment_3",
+      "n_keypoints": 93,
+      "n_surface_all": 246
+    },
+    {
+      "id": 4,
+      "name": "segment_4",
+      "n_keypoints": 134,
+      "n_surface_all": 1131
+    },
+    {
+      "id": 5,
+      "name": "segment_5",
+      "n_keypoints": 134,
+      "n_surface_all": 3163
+    },
+    {
+      "id": 6,
+      "name": "segment_6",
+      "n_keypoints": 62,
+      "n_surface_all": 779
+    },
+    {
+      "id": 7,
+      "name": "segment_7",
+      "n_keypoints": 83,
+      "n_surface_all": 1531
+    },
+    {
+      "id": 8,
+      "name": "segment_8",
+      "n_keypoints": 94,
+      "n_surface_all": 477
+    },
+    {
+      "id": 9,
+      "name": "segment_9",
+      "n_keypoints": 60,
+      "n_surface_all": 782
+    },
+    {
+      "id": 10,
+      "name": "segment_10",
+      "n_keypoints": 99,
+      "n_surface_all": 201
+    }
+  ],
+  "out_npz": "postprocess/input/npz/trex_unitbb_preprocess_segments.npz"
+}

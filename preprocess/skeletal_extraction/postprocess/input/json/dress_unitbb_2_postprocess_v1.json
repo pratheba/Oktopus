@@ -1,0 +1,91 @@
+{
+  "split": [
+     {
+       "id": 5,
+       "at_fracs": [0.28],
+       "new_ids": [100, 5],
+       "names": ["top", "bottom"]
+     } 
+   ],
+  "combine_surface_only": [
+    { 
+      "keep_id": 0,
+      "absorb_ids": [1, 100],
+      "name": "top",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.7,
+      "center_shift_scale": 0.7,
+      "center_max_shift_frac": 0.25,
+      "center_smooth_win": 7,
+      "center_iters": 4
+    }, 
+    {
+      "keep_id": 5,
+      "absorb_ids": [2,3,4,6],
+      "name": "bottom",
+      "straighten_mode": "straight",
+      "straighten_alpha": 0.2,
+      "center_shift_scale": 0.2,
+      "center_max_shift_frac": 0.25,
+      "center_smooth_win": 100,
+      "center_iters": 4
+    }  
+  ],
+  "crop": [
+   {
+      "id": 0,
+      "start_frac": 0.5,
+      "end_frac": 0.7
+    },
+   {
+      "id": 5,  
+      "start_frac": 0.2,
+      "end_frac": 0.3
+    }
+  ],
+  "extend": [
+    {
+      "id": 5,
+      "extend_start": true,
+      "extend_end": false,
+      "extend_radius_alpha": 1.2,
+      "extend_burial_alpha": 1.2,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 5,
+      "extend_start": false,
+      "extend_end": true,
+      "extend_radius_alpha": 1.6,
+      "extend_burial_alpha": 1.6,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    },
+    {
+      "id": 0,
+      "extend_start": true,
+      "extend_end": true,
+      "extend_radius_alpha": 1.5,
+      "extend_burial_alpha": 1.5,
+      "extend_min": 0.015,
+      "target_spacing": 0.006
+    }
+  ],
+  "recenter": [
+    { 
+      "id": 0,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 100,
+      "center_iters": 10
+    },
+    { 
+      "id": 5,
+      "center_shift_scale": 0.0,
+      "center_max_shift_frac": 0.0,
+      "center_smooth_win": 100,
+      "center_iters": 4
+    }
+ ]
+}

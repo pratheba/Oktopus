@@ -3,122 +3,92 @@
     {
       "id": 0,
       "name": "segment_0",
-      "n_keypoints": 102,
-      "n_surface_all": 757
+      "n_keypoints": 101,
+      "n_surface_all": 594
     },
     {
       "id": 1,
       "name": "segment_1",
-      "n_keypoints": 90,
-      "n_surface_all": 513
+      "n_keypoints": 84,
+      "n_surface_all": 38
     },
     {
       "id": 2,
       "name": "segment_2",
-      "n_keypoints": 74,
-      "n_surface_all": 62
+      "n_keypoints": 95,
+      "n_surface_all": 520
     },
     {
       "id": 3,
       "name": "segment_3",
-      "n_keypoints": 97,
-      "n_surface_all": 814
+      "n_keypoints": 159,
+      "n_surface_all": 74
     },
     {
       "id": 4,
       "name": "segment_4",
-      "n_keypoints": 77,
-      "n_surface_all": 64
+      "n_keypoints": 96,
+      "n_surface_all": 17
     },
     {
       "id": 5,
       "name": "segment_5",
-      "n_keypoints": 94,
-      "n_surface_all": 618
+      "n_keypoints": 152,
+      "n_surface_all": 519
     },
     {
       "id": 6,
       "name": "segment_6",
-      "n_keypoints": 67,
-      "n_surface_all": 193
+      "n_keypoints": 125,
+      "n_surface_all": 620
     },
     {
       "id": 7,
       "name": "segment_7",
-      "n_keypoints": 52,
-      "n_surface_all": 32
+      "n_keypoints": 100,
+      "n_surface_all": 337
     },
     {
       "id": 8,
       "name": "segment_8",
-      "n_keypoints": 57,
-      "n_surface_all": 19
+      "n_keypoints": 107,
+      "n_surface_all": 13
     },
     {
       "id": 9,
       "name": "segment_9",
-      "n_keypoints": 113,
-      "n_surface_all": 94
+      "n_keypoints": 86,
+      "n_surface_all": 31
     },
     {
       "id": 10,
       "name": "segment_10",
-      "n_keypoints": 103,
-      "n_surface_all": 681
+      "n_keypoints": 57,
+      "n_surface_all": 39
     },
     {
       "id": 11,
       "name": "segment_11",
-      "n_keypoints": 111,
-      "n_surface_all": 862
+      "n_keypoints": 101,
+      "n_surface_all": 422
     },
     {
       "id": 12,
       "name": "segment_12",
-      "n_keypoints": 101,
-      "n_surface_all": 560
+      "n_keypoints": 54,
+      "n_surface_all": 69
     },
     {
       "id": 13,
       "name": "segment_13",
-      "n_keypoints": 146,
-      "n_surface_all": 819
+      "n_keypoints": 129,
+      "n_surface_all": 442
     },
     {
       "id": 14,
       "name": "segment_14",
-      "n_keypoints": 63,
-      "n_surface_all": 297
-    },
-    {
-      "id": 15,
-      "name": "segment_15",
-      "n_keypoints": 76,
-      "n_surface_all": 262
-    },
-    {
-      "id": 16,
-      "name": "segment_16",
-      "n_keypoints": 88,
-      "n_surface_all": 291
-    },
-    {
-      "id": 17,
-      "name": "segment_17",
-      "n_keypoints": 68,
-      "n_surface_all": 253
-    },
-    {
-      "id": 18,
-      "name": "segment_18",
-      "n_keypoints": 68,
-      "n_surface_all": 195
-    },
-    {
-      "id": 19,
-      "name": "segment_19",
-      "n_keypoints": 67,
-      "n_surface_all": 188
+      "n_keypoints": 157,
+      "n_surface_all": 604
     }
   ],
   "out_npz": "postprocess/input/npz/oktopus_unitbb_preprocess_segments.npz"
