@@ -4,15 +4,41 @@ import glob
 import numpy as np
 from copy import deepcopy
 import postprocess
+import argparse
+import json
 
 # reuse from your postprocess.py
 from postprocess import (
-     load_segments, save_segments, reassign,
+     load_segments, reassign,
      compute_parallel_transport_frames,
      nearest_polyline_projection,
      radii_from_support_local_frame,
  )
 from plyfile import PlyData
+
+
+
+def save_segments(path, out_dir, segs):
+    print(path)
+    print(out_dir)
+    np.savez_compressed(path, segments=np.array(segs, dtype=object))
+    os.makedirs(out_dir, exist_ok=True)
+
+    summary = []
+    for s in segs:
+        fp = os.path.join(out_dir, f"segment_{int(s['id'])}.npz")
+        np.savez_compressed(fp, segment=np.array(s, dtype=object))
+        summary.append(
+            {
+                "id": int(s["id"]),
+                "name": s.get("name", ""),
+                "n_keypoints": int(len(s["keypoints"])),
+                "n_surface_all": int(len(s.get("surface_points_all", []))),
+                "file": fp,
+            }
+        )
+
+    json.dump({"segments": summary}, open(path.replace(".npz", "_summary.json"), "w"), indent=2)
 
 def load_ply_xyz(path):
     ply = PlyData.read(path)
@@ -100,6 +126,7 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
         by_id[sid] = seg
         print(f"[updated] segment {sid}: {list(files.keys())}")
 
+    print(out_dir)
     save_segments(
         out_npz,
         out_dir,
@@ -108,10 +135,25 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
 
 
 if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--in_npz", required=True)
+    ap.add_argument("--ply_dir", required=True)
+    ap.add_argument("--out_npz", required=True)
+    ap.add_argument("--out_dir", required=True)
+    args = ap.parse_args()
+
     patch_segments_from_ply_folder(
-        in_npz="/fast/pselvaraju/Oktopus_now/preprocess/skeletal_extraction/postprocess/output/npz/puffer_unitbb_3_postprocess_segments_v1.npz",
-        ply_dir="/fast/pselvaraju/Oktopus_now/preprocess/skeletal_extraction/postprocess/output/puffer_unitbb/puffer_unitbb_3_v1",
-        out_npz="patched_segments.npz",
-        out_dir=".",
-        update_keypoints=False,   # set False if you only changed surfaces
+        in_npz=args.in_npz,
+        ply_dir=args.ply_dir,
+        out_npz=args.out_npz,
+        out_dir=args.out_dir,
+        update_keypoints=True,   # set False if you only changed surfaces
     )
+
+#    patch_segments_from_ply_folder(
+#        in_npz="/fast/pselvaraju/Oktopus_now/preprocess/skeletal_extraction/postprocess/output/npz/oktopus_unitbb_300k_9_postprocess_segments_v1.npz",
+#        ply_dir="/fast/pselvaraju/Oktopus_now/preprocess/skeletal_extraction/postprocess/output/oktopus_unitbb_300k/segments/oktopus_unitbb_300k_9_v1",
+#        out_npz="patched_oktopus_unitbb_300k_9.npz",
+#        out_dir="/fast/pselvaraju/Oktopus_now/preprocess/skeletal_extraction/postprocess/output/oktopus_unitbb_300k/segments/",
+#        update_keypoints=True,   # set False if you only changed surfaces
+#    )

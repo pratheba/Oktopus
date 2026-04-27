@@ -18,7 +18,7 @@ class CurveHandle():
         if arg is None:
             return
         
-        self.set_curve(arg)
+        self.set_curve(arg) 
 
     def update(self):
         self.core.update()

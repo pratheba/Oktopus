@@ -20,13 +20,17 @@ def load_model(device, config_path, model_directory, mode='train', checkpoint='b
     opt = yaml.safe_load(open(config_path))
 
     if checkpoint == 'final':
-        ckpt_name = f'model_{checkpoint}.pth'
+        ckpt_name = f'best_final_joint.pth'
     elif checkpoint == 'train':
         ckpt_name = f'best_model_train.pth'
     elif checkpoint == 'eval':
         ckpt_name = f'best_model_eval.pth'
     elif checkpoint == 'base1':
         ckpt_name = f'best_base1_only.pth'
+    elif checkpoint == 'base_joint':
+        ckpt_name = f'best_base_joint.pth'
+    elif checkpoint == 'detail':
+        ckpt_name = f'best_detail_only.pth'
     else:
         ckpt_name = 'model_epoch_%04d.pth' % int(checkpoint)
 
@@ -51,9 +55,9 @@ def load_model_state_dict(log_path, checkpoint='final'):
     model = network.define_model(opt['model'])
     return model, opt, state_dict
 
-def load_handle(handle_path):
+def load_handle(handle_path, shape_type):
     handle = Handle()
-    handle.load(handle_path)
+    handle.load(handle_path, shape_type)
     return handle
 
 def load_yaml_file(yaml_file):

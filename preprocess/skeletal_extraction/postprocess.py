@@ -36,6 +36,116 @@ def tangent_at(poly, at_start=True):
     v = poly[1] - poly[0] if at_start else poly[-1] - poly[-2]
     return v / max(np.linalg.norm(v), 1e-12)
 
+def robust_local_frame_recenter(
+    poly,
+    support_points,
+    scale=0.35,
+    max_shift_frac=0.20,
+    smooth_win=7,
+    slab_half_width=None,
+    trim_quantile=0.90,
+    min_points=20,
+):
+    """
+    Recenter each keypoint using an actual local cross-section.
+
+    For each keypoint:
+      1. Build local frame T,U,V from current curve.
+      2. Select support points in a slab along tangent:
+             abs(w) <= slab_half_width
+      3. Compute robust center in the U,V plane.
+      4. Move only in the normal/binormal plane, never along tangent.
+      5. Clamp and smooth shifts.
+
+    This is much safer than centroid_align(), which bins points by projected s_norm.
+    """
+    poly = np.asarray(poly, dtype=np.float64)
+    support_points = np.asarray(support_points, dtype=np.float64)
+
+    if len(poly) < 2 or len(support_points) == 0:
+        return poly.copy()
+
+    K = len(poly)
+
+    T, U, V, _ = compute_parallel_transport_frames(poly)
+
+    if slab_half_width is None:
+        if K >= 2:
+            ds = np.linalg.norm(np.diff(poly, axis=0), axis=1)
+            slab_half_width = float(max(0.75 * np.median(ds), 1e-4))
+        else:
+            slab_half_width = 0.01
+
+    shifts = np.zeros_like(poly)
+
+    for i in range(K):
+        p = poly[i]
+        t = T[i]
+        u_axis = U[i]
+        v_axis = V[i]
+
+        rel = support_points - p[None, :]
+
+        # local coordinates
+        w = rel @ t
+        uu = rel @ u_axis
+        vv = rel @ v_axis
+        rho = np.sqrt(uu * uu + vv * vv)
+
+        # true cross-section slab
+        m = np.abs(w) <= slab_half_width
+
+        if np.count_nonzero(m) < min_points:
+            continue
+
+        uu_m = uu[m]
+        vv_m = vv[m]
+        rho_m = rho[m]
+
+        finite = np.isfinite(uu_m) & np.isfinite(vv_m) & np.isfinite(rho_m)
+        uu_m = uu_m[finite]
+        vv_m = vv_m[finite]
+        rho_m = rho_m[finite]
+
+        if len(rho_m) < min_points:
+            continue
+
+        # Remove far outliers in the cross-section.
+        # This prevents arm/head/other nearby geometry from dominating the torso center.
+        rho_cut = np.quantile(rho_m, trim_quantile)
+        near = rho_m <= rho_cut
+
+        if np.count_nonzero(near) < min_points:
+            near = np.ones_like(rho_m, dtype=bool)
+
+        # Robust center in local UV plane.
+        # Median is much safer than mean for combined/disconnected surfaces.
+        du = float(np.median(uu_m[near]))
+        dv = float(np.median(vv_m[near]))
+
+        delta = du * u_axis + dv * v_axis
+
+        # local scale used only for shift clamp
+        local_scale = float(max(0.02, np.quantile(rho_m, 0.80)))
+        max_shift = float(max_shift_frac) * local_scale
+
+        n = np.linalg.norm(delta)
+        if n > max_shift:
+            delta = delta / max(n, 1e-12) * max_shift
+
+        shifts[i] = float(scale) * delta
+
+    shifts = smooth_poly(shifts, window=smooth_win, iters=1)
+
+    # Do not move endpoints too aggressively.
+    # Endpoints are usually less reliable because the slab is one-sided.
+    if K >= 4:
+        shifts[0] *= 0.25
+        shifts[-1] *= 0.25
+        shifts[1] *= 0.50
+        shifts[-2] *= 0.50
+
+    return poly + shifts
 
 def nearest_polyline_projection(poly, pts):
     pts = np.asarray(pts, dtype=np.float64)
@@ -539,8 +649,8 @@ def reassign(seg):
     T, U, V, frames = compute_parallel_transport_frames(key)
 
     _, point_s, point_key_ids, _ = nearest_polyline_projection(key, pts)
-    r_train, r_wrap, r_cyl = radii_from_support(key, pts)
-    #r_train, r_wrap, r_cyl = radii_from_support_local_frame(key, T, U, V, pts)
+    #r_train, r_wrap, r_cyl = radii_from_support(key, pts)
+    r_train, r_wrap, r_cyl = radii_from_support_local_frame(key, T, U, V, pts)
 
     seg["point_s"] = point_s
     seg["point_key_ids"] = point_key_ids
@@ -646,13 +756,24 @@ def recenter_and_reassign(seg, center_shift_scale=0.6, center_max_shift_frac=0.3
 
     key, dominant_axis, flipped = canonicalize_curve_order(key)
     for _ in range(max(1, int(center_iters))):
-        key = centroid_align(
+        key = robust_local_frame_recenter(
             key,
             pts,
             scale=center_shift_scale,
             max_shift_frac=center_max_shift_frac,
             smooth_win=center_smooth_win,
+            slab_half_width=None,
+            trim_quantile=0.90,
+            min_points=20,
         )
+    #for _ in range(max(1, int(center_iters))):
+    #    key = centroid_align(
+    #        key,
+    #        pts,
+    #        scale=center_shift_scale,
+    #        max_shift_frac=center_max_shift_frac,
+    #        smooth_win=center_smooth_win,
+    #    )
     key, dominant_axis, flipped2 = canonicalize_curve_order(key)
 
     seg["keypoints"] = key
@@ -907,6 +1028,7 @@ def main():
             center_iters=int(rc.get("center_iters", 3)),
         )
         by_id[sid] = seg
+
 
     if "retain_ids" in ops:
         keep = set(map(int, ops["retain_ids"]))

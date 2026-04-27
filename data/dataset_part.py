@@ -19,10 +19,17 @@ class NGCDataset(Dataset):
         self.mode = arg['mode']
         self.n_sample = arg['n_sample'] # default 1024
         self.n_surface_sample = self.n_sample * 2 #arg['n_surface_sample'] # default 2048
-        self.data_path = arg['data_path']
+        self.input_data_path = arg['data_path']
 
-        self.data_names = np.loadtxt(
-            op.join(self.root_path, self.data_path), dtype=str).tolist()
+        self.data_name_type = np.loadtxt(
+            op.join(self.root_path, self.input_data_path), dtype=str).tolist()
+
+        self.data_names = []
+        self.shape_type = []
+        for name in self.data_name_type:
+            name, shape_type = name.split('|')
+            self.data_names.append(name)
+            self.shape_type.append(shape_type)
         
         if 'shape_name' in arg:
             self.data_names = [str(arg['shape_name'])]
@@ -47,12 +54,12 @@ class NGCDataset(Dataset):
     
     def load_handles(self):
         handles = []
-        for name in self.data_names:
+        for name,shape_type in zip(self.data_names, self.shape_type):
             item_path = op.join(self.root_path, name)
             #handle_path = op.join(item_path, 'handle', 'std_handle.pkl')
             handle_path = op.join(item_path, 'handle', 'std_handle.npz')
             handle = Handle()
-            handle.load(handle_path)
+            handle.load(handle_path, shape_type)
             handles.append(handle)
 
         return handles

@@ -113,17 +113,17 @@ class Handle():
 
             # Localize the samples for each curve
             #curve.localize_samples_test(name+"_"+str(cid), samples_bbox)
-            if "_on" in name:
-                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=True, update_radius=True, name=name+'_'+str(cid))
-                key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_train_radius': curve.core.key_train_radius, \
-                            'key_cylinder_radius': curve.core.key_cylinder_radius, 'key_frame': curve.core.key_frame, \
-                            'key_wrap_radius': curve.core.key_wrap_radius, 'key_occupancy_rho': curve.core.key_occupancy_rho, \
-                            'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, \
-                            'wrap_radius_max': curve.core.wrap_radius_max}
-                #curve_data, inside = curve.localize_samples(samples_bbox, name=name+'orig_'+str(cid))
-                meta_data[name+'_'+curve.name] = key_info
-            else:
-                curve_data, inside = curve.localize_samples(samples_bbox)
+#            if "_on" in name:
+#                curve_data, inside = curve.localize_samples(samples_bbox, update_curve=False, update_radius=False, name=name+'_'+str(cid))
+#                key_info = {'key_ts': curve.core.key_ts, 'key_points': curve.core.key_points, 'key_train_radius': curve.core.key_train_radius, \
+#                            'key_cylinder_radius': curve.core.key_cylinder_radius, 'key_frame': curve.core.key_frame, \
+#                            'key_wrap_radius': curve.core.key_wrap_radius, 'key_occupancy_rho': curve.core.key_occupancy_rho, \
+#                            'wrap_s_bins': curve.core.wrap_s_bins, 'wrap_theta_bins': curve.core.wrap_theta_bins, \
+#                            'wrap_radius_max': curve.core.wrap_radius_max}
+#                #curve_data, inside = curve.localize_samples(samples_bbox, name=name+'orig_'+str(cid))
+#                meta_data[name+'_'+curve.name] = key_info
+#            else:
+            curve_data, inside = curve.localize_samples(samples_bbox, update_curve=False, update_radius=False, name=name+'_'+str(cid))
             sidx_inside = sidx_bbox[inside]
             num_inside = sidx_inside.shape[0]
 
@@ -381,7 +381,7 @@ class Handle():
 
         self.num_curve = len(self.curves)
         
-    def load(self, data_path):
+    def load(self, data_path, shape_type='both', n_keypoints=36):
         #with open(data_path, 'rb') as f:
         #    data = pickle.load(f)
         data = np.load(data_path, allow_pickle=True)
@@ -391,6 +391,8 @@ class Handle():
         #for cid, curve_data in enumerate(data['curves']):
         for cid, curve_data in enumerate(data['segments']):
             curve_data['idx'] = cid
+            curve_data['type'] = shape_type
+            curve_data['n_keypoints'] = n_keypoints
             curve = CurveHandle()
             curve.load_data(curve_data)
             self.curve_dict[curve.name] = curve

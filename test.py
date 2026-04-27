@@ -4,6 +4,7 @@ import os, pickle, yaml, argparse
 import os.path as op
 import torch
 import numpy as np
+import yaml
 from utils import MCGrid, process_options, DotDict
 
 # seed = 2025
@@ -18,13 +19,19 @@ def start_test(opt):
     output_path = op.join(opt.root_path, 'inference', str(opt.num_samples), str(opt.out_path))
     os.makedirs(output_path, exist_ok=True)
 
+
+    if isinstance(config_path, str):
+        config =  yaml.safe_load(open(config_path))
+    else:
+        config = config_path
+
     model_path = opt.model_directory
     checkpoint = opt['checkpoints'][0]
 
     exp_name = 'train'
     #log_path = op.join(root_path, 'results', exp_name)
-    data_root = op.join(opt.root_path, opt.data_root)
-    data_path = op.join(data_root, opt.data_path)
+    data_root = op.join(opt.root_path, config['dataset']['root'])
+    data_path = op.join(data_root, config['dataset']['data_path'])
 
     #output_path = op.join(root_path, 'inference', exp_name)
     os.makedirs(output_path, exist_ok=True)
@@ -38,9 +45,9 @@ def start_test(opt):
     # Marching Cubes config
     config_path = './exp/train/manipulation'
     grid_config = {
-        'reso': 512,
+        'reso': 256,
         'level': 0.,
-        'size': 1.2,
+        'size': 1.0,
     }
 
     t0 = time()
@@ -58,14 +65,15 @@ def start_test(opt):
 #    agent('part_adapt', arg)
 #    print('time cost: ', time()-t0)
 #############################################################################
-    shape_name = 'oktopus_9_v1'
+    shape_name = args.shape_name #'oktopus_9_v1'
+    test_file = args.test_file
     arg = {
         'exp_name': 'adapt',
         'data_root': data_root, 
         'mc_grid': mc_grid,
         'output_folder': op.join(output_path, f'{shape_name}'),
         'shape': shape_name,
-        'adapt_file': op.join(config_path, f'adapt_{shape_name}_knight.yaml'),
+        'adapt_file': op.join(config_path, f'{test_file}'),
     }
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
@@ -114,8 +122,8 @@ if __name__ == '__main__':
     p.add_argument('-ckpt', '--checkpoints', required=False, type=str, nargs="+", default=['eval'], help='checkpoints to evaluate.')
     p.add_argument('-c', '--config_path', required=True)
     p.add_argument('-o', '--out_path', required=True)
-    p.add_argument('-r', '--data_root', required=True)
-    p.add_argument('-d', '--data_path', required=True)
+    p.add_argument('-s', '--shape_name', required=True)
+    p.add_argument('-y', '--test_file', required=True)
 
     args = p.parse_args()
     opt = {
@@ -124,8 +132,8 @@ if __name__ == '__main__':
             'checkpoints': args.checkpoints,
             'config_path': args.config_path,
             'out_path': args.out_path,
-            'data_path': args.data_path,
-            'data_root': args.data_root
+            'test_file': args.test_file,
+            'shape_name': args.shape_name
     }
 
     opt = process_options(opt, mode='inference')

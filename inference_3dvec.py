@@ -36,7 +36,7 @@ def start_inference(opt):
         })
         arg = {
             'mc_grid': mc_grid,
-            'data_root': 'Pack10Dataset',
+            'data_root': opt.data_root,
             'output_folder': output_path,
             'checkpoint': checkpoint,
             'data_path': opt.data_path,
@@ -51,6 +51,7 @@ if __name__ == '__main__':
     p.add_argument('-c', '--config_path', required=True)
     p.add_argument('-o', '--out_path', required=True)
     p.add_argument('-d', '--data_path', required=True)
+    p.add_argument('-r', '--data_root', required=True)
 
     args = p.parse_args()
     opt = {
@@ -59,7 +60,8 @@ if __name__ == '__main__':
             'checkpoints': args.checkpoints,
             'config_path': args.config_path,
             'out_path': args.out_path,
-            'data_path': args.data_path
+            'data_path': args.data_path,
+            'data_root': args.data_root
     }
 
     opt = process_options(opt, mode='inference')

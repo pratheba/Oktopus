@@ -51,11 +51,12 @@ class Agent():
         fid = 0
         self.shape_global_curveids = {}
         for idx, shape_name in enumerate(shapes):
+            shape_name, shape_type = shape_name.split('|')
             item_path = op.join(data_root, f'{shape_name}')
             #handle_path = op.join(item_path, 'handle/std_handle.pkl')
             handle_path = op.join(item_path, 'handle/std_handle.npz')
             #handle = utils.load_handle(handle_path)
-            handle = self.load_shape_with_npz(data_root, shape_name)
+            handle = self.load_shape_with_npz(data_root, shape_name, shape_type)
             handles[shape_name] = handle
             shape_curve_ids = []
             self.shape_global_curveids[idx] = fid
@@ -68,19 +69,19 @@ class Agent():
         self.handles = handles
         self.feat_dict = feat_dict
 
-    def load_shape_with_npz(self, data_root, shape_name):
+    def load_shape_with_npz(self, data_root, shape_name, shape_type):
         item_path = op.join(data_root, f'{shape_name}')
         handle_path = op.join(item_path, 'handle/std_handle.npz')
-        handle = utils.load_handle(handle_path)
+        handle = utils.load_handle(handle_path, shape_type)
 
-        npz_path = op.join(item_path, f'all_data/inference.npz')
-        if op.exists(npz_path):
-            self.apply_curve_state_npz(handle, npz_path, shape_name)
+        #npz_path = op.join(item_path, f'handle/inference.npz')
+        #if op.exists(npz_path):
+        #    self.apply_curve_state_npz(handle, npz_path, shape_name)
 
         return handle
 
-    def load_shape_handle(self, data_root, shape_name):
-        return self.load_shape_with_npz(data_root, shape_name)
+    def load_shape_handle(self, data_root, shape_name, shape_type):
+        return self.load_shape_with_npz(data_root, shape_name, shape_type)
         #item_path = op.join(data_root, f'{shape_name}')
         #handle_path = op.join(item_path, 'handle/std_handle.pkl')
         #handle_path = op.join(item_path, 'handle/std_handle.npz')
@@ -171,8 +172,9 @@ class Agent():
             #if "key_train_radius" in s:
             #    core.key_train_radius = np.asarray(s["key_train_radius"], dtype=np.float64)
             #    core.key_radius = core.key_train_radius
-            #if "key_cylinder_radius" in s:
-            #    core.key_cylinder_radius = np.asarray(s["key_cylinder_radius"], dtype=np.float64)
+            if "key_cylinder_radius" in s:
+                core.key_cylinder_radius = np.asarray(s["key_cylinder_radius"], dtype=np.float64)
+            core.key_cylinder_radius = core.key_cylinder_radius - 0.4 # np.asarray(s["key_cylinder_radius"], dtype=np.float64)
             if "key_wrap_radius" in s:
                 core.key_wrap_radius = np.asarray(s["key_wrap_radius"], dtype=np.float64)
             if "wrap_s_bins" in s:
@@ -186,8 +188,106 @@ class Agent():
 
             print(f"[npz] applied {found} -> {shape_name}|{curve.name}")
 
+    def local_support_mask(
+        self,
+        samples_data,
+        w_limit=999.0,
+        rho_limit=1.30,
+        end_margin=0.0,
+        return_debug=False,
+    ):
+        coords = np.asarray(samples_data["coords"]).reshape(-1)
+        sl = np.asarray(samples_data["samples_local"])
+
+        if sl.ndim != 2 or sl.shape[1] < 3:
+            raise ValueError(f"samples_local must have shape (N, >=3), got {sl.shape}")
+
+        if sl.shape[0] != coords.shape[0]:
+            raise ValueError(
+                f"coords and samples_local length mismatch: "
+                f"coords={coords.shape[0]}, samples_local={sl.shape[0]}"
+            )
+
+        vx = 2.0 * coords - 1.0
+        w_n = sl[:, 0] - vx
+
+        if "rho_n" in samples_data:
+            rho_n = np.asarray(samples_data["rho_n"]).reshape(-1)
+        else:
+            u_n = sl[:, 1]
+            v_n = sl[:, 2]
+            rho_n = np.sqrt(u_n * u_n + v_n * v_n)
+
+        valid = (
+            (coords >= 0.0) &
+            (coords <= 1.0) &
+            (rho_n <= rho_limit)
+        )
+
+        if w_limit < 100.0:
+            valid &= np.abs(w_n) <= w_limit
+
+        if end_margin > 0.0:
+            valid &= coords >= end_margin
+            valid &= coords <= 1.0 - end_margin
+
+        if return_debug:
+            debug = {
+                "num_total": int(valid.shape[0]),
+                "num_valid": int(valid.sum()),
+                "valid_ratio": float(valid.mean()) if valid.shape[0] > 0 else 0.0,
+                "w_min": float(w_n.min()) if w_n.shape[0] > 0 else 0.0,
+                "w_max": float(w_n.max()) if w_n.shape[0] > 0 else 0.0,
+                "rho_min": float(rho_n.min()) if rho_n.shape[0] > 0 else 0.0,
+                "rho_max": float(rho_n.max()) if rho_n.shape[0] > 0 else 0.0,
+                "used_rho_n_field": "rho_n" in samples_data,
+            }
+            return valid, debug
+
+        return valid
 
 
+
+    def clamp_pred_sdf_by_support(
+        self,
+        pred_sdf,
+        samples_data,
+        positive_value=1.0,
+        w_limit=1.20,
+        rho_limit=1.15,
+        end_margin=0.0,
+        verbose=False,
+        name="",
+    ):
+        valid, debug = self.local_support_mask(
+            samples_data,
+            w_limit=w_limit,
+            rho_limit=rho_limit,
+            end_margin=end_margin,
+            return_debug=True,
+        )
+
+        pred_sdf = np.asarray(pred_sdf).reshape(-1).copy()
+
+        if pred_sdf.shape[0] != valid.shape[0]:
+            raise ValueError(
+                f"pred_sdf and support mask length mismatch: "
+                f"pred_sdf={pred_sdf.shape[0]}, valid={valid.shape[0]}"
+            )
+
+        pred_sdf[~valid] = positive_value
+
+        if verbose:
+            print(
+                f"[support_clamp {name}] "
+                f"valid={debug['num_valid']}/{debug['num_total']} "
+                f"({100.0 * debug['valid_ratio']:.2f}%) "
+                f"w=[{debug['w_min']:.3f},{debug['w_max']:.3f}] "
+                f"rho=[{debug['rho_min']:.3f},{debug['rho_max']:.3f}] "
+                f"limits: w={w_limit}, rho={rho_limit}, end={end_margin}"
+            )
+
+        return pred_sdf, valid
 
     def __inference_vals(self, curve_data, key, batch_size=None, transform=None):
         # use_batch: aim to divide data into batches to save GPU mem
@@ -338,6 +438,31 @@ class Agent():
                     
                     #vals = self.__inference_vals(curve_data, context_data, key, batch_size=batch_size)
                     vals, vals_base = self.__inference_vals(curve_data, key, batch_size=batch_size)
+
+#                    vals, valid_support = self.clamp_pred_sdf_by_support(
+#                        vals,
+#                        curve_data,
+#                        positive_value=1.0,
+#                        w_limit=arg.get("support_w_limit", 1.2),
+#                        rho_limit=arg.get("support_rho_limit", 1.3),
+#                        end_margin=arg.get("support_end_margin", 0.0),
+#                        verbose=arg.get("support_clamp_verbose", False),
+#                        min_valid_ratio=0.60,
+#                        name=key,
+#                    )
+#
+#                    vals_base, _ = self.clamp_pred_sdf_by_support(
+#                        vals_base,
+#                        curve_data,
+#                        positive_value=1.0,
+#                        w_limit=arg.get("support_w_limit", 1.2),
+#                        rho_limit=arg.get("support_rho_limit", 1.3),
+#                        end_margin=arg.get("support_end_margin", 0.0),
+#                        verbose=False,
+#                        min_valid_ratio=0.60,
+#                        name=key + "_base",
+#                    )
+
                     temp_grid.update_grid(vals, kidx, mode='minimum')
                     temp_grid_base.update_grid(vals_base, kidx, mode='minimum')
                 
@@ -797,7 +922,7 @@ class Agent():
         config = utils.load_yaml_file(arg['adapt_file'])
 
         data_root = arg['data_root']
-        handle = self.load_shape_handle(data_root, shape_name)
+        handle = self.load_shape_handle(data_root, shape_name, 'avatar')
         out_name = f'{shape_name}_{exp_name}'
         os.makedirs(output_folder, exist_ok=True)
 
@@ -947,6 +1072,17 @@ class Agent():
                     accessory_data, accessory_key, batch_size=batch_size
                 )
 
+#                acc_vals, valid_support = self.clamp_pred_sdf_by_support(
+#                    acc_vals,
+#                    accessory_data,
+#                    positive_value=1.0,
+#                    w_limit=item.get("support_w_limit", arg.get("support_w_limit", 1.2)),
+#                    rho_limit=item.get("support_rho_limit", arg.get("support_rho_limit", 1.3)),
+#                    end_margin=item.get("support_end_margin", arg.get("support_end_margin", 0.0)),
+#                    verbose=item.get("support_clamp_verbose", arg.get("support_clamp_verbose", True)),
+#                    name=accessory_key,
+#                )
+
                 #delta = 0.01
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid_base = utils.create_grid_like(mc_grid)
@@ -960,22 +1096,62 @@ class Agent():
                 #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
                 #print("num total voxels:", acc_grid.empty_marks.shape[0])
 
+                vals_final = acc_vals.copy()
+
+                # 1) Push accessory outward/inflate accessory
+                # SDF convention: inside < 0, outside > 0
+                # subtracting offset expands the zero-level surface outward.
+                accessory_offset = float(adapt_arg.get("accessory_offset", 0.0))
+                if accessory_offset != 0.0:
+                    vals_final = vals_final - accessory_offset
+
+                # 2) Cut avatar volume from accessory
+                # Boolean difference:
+                # accessory \ avatar = max(sdf_accessory, -sdf_avatar)
+                cut_avatar = bool(adapt_arg.get("cut_avatar", False))
+                if cut_avatar:
+                    avatar_clearance = float(adapt_arg.get("avatar_clearance", 0.0))
+
+                    avatar_vals, avatar_vals_base = self.__inference_vals(
+                        avatar_data,
+                        key,
+                        batch_size=batch_size,
+                    )
+
+                    # Inflate avatar before subtracting it.
+                    avatar_vals_inflated = avatar_vals - avatar_clearance
+
+                    vals_final = np.maximum(
+                        vals_final,
+                        -avatar_vals_inflated,
+                    )
+
+                # 3) Debug/export this individual accessory after offset/cut
+                acc_grid = utils.create_grid_like(mc_grid)
+                acc_grid.clear_grid()
+                acc_grid.update_grid(vals_final, kidx, mark=True, mode="overwrite")
+
+
                 mesh_acc = acc_grid.extract_mesh()
                 if len(mesh_acc.faces) > 0:
                     parts = mesh_acc.split(only_watertight=False)
                     if len(parts) > 0:
                         mesh_acc = max(parts, key=lambda m: len(m.faces))
                     mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
+
                 mesh_acc_base = acc_grid_base.extract_mesh()
                 if len(mesh_acc_base.faces) > 0:
                     parts = mesh_acc_base.split(only_watertight=False)
                     if len(parts) > 0:
-                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
+                        mesh_acc_basg = max(parts, key=lambda m: len(m.faces))
                     mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
                 cc += 1
                 #mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
-                mc_grid.update_grid(acc_vals, kidx, mode='minimum')
+                #mc_grid.update_grid(acc_vals, kidx, mode='minimum')
+                # 4) Merge all accessories by hard union
+                mc_grid.update_grid(vals_final, kidx, mode="minimum")
+
 
         mesh = mc_grid.extract_mesh1()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
@@ -983,112 +1159,6 @@ class Agent():
         mesh.export(mesh_file)
 
 
-    @torch.no_grad()
-    def action_part_adapt1(self, arg):
-        output_folder = arg['output_folder']
-        exp_name = arg['exp_name']
-        mc_grid = arg['mc_grid']
-        shape_name = arg['shape']
-        config = utils.load_yaml_file(arg['adapt_file'])
-
-        data_root = arg['data_root']
-        handle = self.load_shape_handle(data_root, shape_name)
-        # out_name = exp_name
-        out_name = f'{shape_name}_{exp_name}'
-
-        batch_size = 64**3
-        count = 0
-        acc_grid = utils.create_grid_like(mc_grid)
-        #acc_grid.clear_grid(val=10.0)
-        #mc_grid.clear_grid(val=10.0)
-        acc_grid.clear_grid()
-        mc_grid.clear_grid()
-        
-        cc = 0 
-        adapted_support_cache = {}
-        for item in config:
-            target_key = item['target_key']
-            mode = item.get('mode', 'direct')
-            accessory_key = item['accessory_key']
-            for curve in handle.curves:
-                key = self.encode_key(shape_name, curve.name)
-                print(key)
-                if key != target_key:
-                    continue
-                count += 1
-                curve_grid = utils.create_grid_like(mc_grid)
-                #curve_grid.clear_grid(val=10.0)
-                curve_grid.clear_grid()
-
-                adapt_arg = {
-                    #'accessory_curve_handle': accessory_curve_handle,
-                    'avatar_curve_handle': curve,
-                    'device': self.device,
-                    'infer_scale': 1.35,
-                    'avatar_curve_idx': self.feat_dict[key],
-                    'accessory_curve_idx': self.feat_dict[accessory_key],
-                }
-                adapt_arg.update(item)
-
-                if mode == 'direct':
-                    accessory_curve_handle = self.curve_from_key(accessory_key)
-                    adapt_arg['accessory_curve_handle'] = accessory_curve_handle
-                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
-                    adapted_support_cache[accessory_key] = {
-                        "coords": accessory_data["coords"].copy(),
-                        "points": accessory_curve_handle.core.interpolate(accessory_data["coords"])["points"].copy(),
-                        "frame": accessory_data["frame"].copy(),
-                        "radius": accessory_data["radius"].copy(),
-                        "x_radius": accessory_curve_handle.core.calc_x_radius(accessory_data["coords"]).copy(),
-                    }
-                elif mode == 'dependent':
-                    adapt_arg['dep_template'] = self.dependent_template_from_key(accessory_key)
-
-                    # if ever needed for wrap radius on dependent support
-                    #adapt_arg['target_core_for_wrap'] = self.template_core_from_key(accessory_key)
-
-                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
-
-                    adapted_support_cache[accessory_key] = {
-                        "coords": accessory_data["coords"].copy(),
-                        "points": accessory_data["points"].copy(),
-                        "frame": accessory_data["frame"].copy(),
-                        "radius": accessory_data["radius"].copy(),
-                        "x_radius": accessory_data.get("x_radius", np.ones_like(accessory_data["coords"])).copy(),
-                    }
-                acc_vals, acc_vals_base = self.__inference_vals(accessory_data, accessory_key, batch_size=batch_size)
-                    #avatar_vals, avatar_vals_base = self.__inference_vals(avatar_data, key, batch_size=batch_size)
-                    #vals, vals_base = self.__mix_inference(curve_data, adapt_arg, batch_size)
-                    #vals = np.minimum(avatar_vals, acc_vals - 2e-3)
-    #                vals = acc_vals
-                delta = 0.01  # boot outward
-                #gap   = 0.01  # required clearance above leg
-
-                acc_grid = utils.create_grid_like(mc_grid)
-                #acc_grid.clear_grid(val=10.0)
-                acc_grid.clear_grid()
-                vals = acc_vals - delta
-                acc_grid.update_grid(vals, kidx, mark=True, mode="overwrite")
-                mesh_acc = acc_grid.extract_mesh()
-                mesh_acc = max(mesh_acc.split(only_watertight=False), key=lambda m: len(m.faces))
-                mesh_acc.export(op.join(output_folder, f"{cc}_acc_vals.ply"))
-                cc += 1
-                mc_grid.update_grid(vals, kidx, mode='minimum')
-
-                #else:
-                #    curve_data, kidx = curve.filter_grid(curve_grid)
-                #    vals, vals_base = self.__inference_vals(curve_data, key, batch_size)
-                #    mc_grid.update_grid(vals, kidx, mode='minimum')
-
-                #print(np.max(vals), np.min(vals))
-                count += 1
-
-                #mc_grid.update_grid(vals, kidx, mode='minimum')
-
-        mesh = mc_grid.extract_mesh1()
-        mesh_file = op.join(output_folder, f'{out_name}.ply')
-        os.makedirs(op.dirname(mesh_file), exist_ok=True)
-        mesh.export(mesh_file)
 
     @torch.no_grad()
     def action_part_mixing(self, arg):

@@ -12,6 +12,24 @@ from handle_3dvec import Handle
 import argparse
 import ast
 
+def trimesh_SDF_eval(shape_path, samples):
+    import trimesh
+    import numpy as np
+
+    mesh = trimesh.load(shape_path, process=True)
+
+    # important checks
+    print("is_watertight:", mesh.is_watertight)
+    print("winding consistent:", mesh.is_winding_consistent)
+    print("volume:", mesh.volume)
+
+    # trimesh convention: signed_distance is usually positive inside, negative outside
+    vals = trimesh.proximity.signed_distance(mesh, samples)
+
+    # convert to your convention: inside negative, outside positive
+    sdf = -vals.astype(np.float32)
+    return sdf
+
 def meshlab_on_surface_sampling(shape_path, num_samples):
     ms = ml.MeshSet()
     ms.load_new_mesh(shape_path)
@@ -28,7 +46,8 @@ def adaptive_surface_perturbation(
     alpha_scales,
     tag="tmp",
     sigma_min=1e-4,
-    sigma_max=2e-3,
+    sigma_max=5e-3,
+    max_total_perturbed=None
 ):
     """
     surface_samples: raw on-surface xyz points
@@ -59,6 +78,13 @@ def adaptive_surface_perturbation(
         raise ValueError(
             f"Mismatch: base_xyz has {base_xyz.shape[0]} samples but rho has {rho.shape[0]}"
         )
+    if max_total_perturbed is not None:
+        max_base_points = max(1, int(max_total_perturbed // len(alpha_scales)))
+
+        if base_xyz.shape[0] > max_base_points:
+            ids = np.random.choice(base_xyz.shape[0], max_base_points, replace=False)
+            base_xyz = base_xyz[ids]
+            rho = rho[ids]
 
     rho = np.maximum(rho, 1e-8)
 
@@ -249,11 +275,13 @@ def get_full_base_residual_samples_globalperturbation(
     # 2. ON-SURFACE samples (sampled on FULL and BASE mesh)
     # ------------------------------------------------------------
     on_surface_tag = f"{name_prefix}_on" if name_prefix else "on"
-    on_surface_data = handle.prepare_samples(on_surface_tag, on_surface_samples)
+    on_surface_data, on_surface_inferencedata = handle.prepare_samples(on_surface_tag, on_surface_samples)
 
     #on_surface_full_sdf = np.zeros(on_surface_data['samples'].shape[0], dtype=np.float32)
-    on_surface_full_sdf = meshlab_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
-    on_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
+    #on_surface_full_sdf = meshlab_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
+    #on_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
+    on_surface_full_sdf = trimesh_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
+    on_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
     on_surface_res_sdf  = on_surface_full_sdf - on_surface_base_sdf
 
     on_surface_data['sdf'] = on_surface_full_sdf
@@ -269,10 +297,12 @@ def get_full_base_residual_samples_globalperturbation(
     # 3. OFF-SURFACE near-surface samples (around FULL mesh)
     # ------------------------------------------------------------
     off_surface_tag = f"{name_prefix}_off" if name_prefix else "off"
-    pert_surface_data = handle.prepare_samples(off_surface_tag, pert_surface_samples)
+    pert_surface_data, _ = handle.prepare_samples(off_surface_tag, pert_surface_samples)
 
-    pert_surface_full_sdf = meshlab_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
-    pert_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
+    #pert_surface_full_sdf = meshlab_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
+    #pert_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
+    pert_surface_full_sdf = trimesh_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
+    pert_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
     pert_surface_res_sdf  = pert_surface_full_sdf - pert_surface_base_sdf
 
     pert_surface_data['sdf'] = pert_surface_full_sdf
@@ -288,7 +318,7 @@ def get_full_base_residual_samples_globalperturbation(
     # 4. SPACE / volumetric samples
     # ------------------------------------------------------------
     space_tag = f"{name_prefix}_space" if name_prefix else "space"
-    space_data = handle.prepare_samples(space_tag, space_samples)
+    space_data,_ = handle.prepare_samples(space_tag, space_samples)
 
     space_full_sdf = meshlab_SDF_eval(mesh_file, space_data['samples']).astype(np.float32)
     space_base_sdf = meshlab_SDF_eval(mesh_base_file, space_data['samples']).astype(np.float32)
@@ -298,7 +328,7 @@ def get_full_base_residual_samples_globalperturbation(
     space_data['sdf_base'] = space_base_sdf
     space_data['sdf_res'] = space_res_sdf
 
-    return on_surface_data, pert_surface_data, space_data
+    return on_surface_data, pert_surface_data, space_data, on_surface_inferencedata
 
 
 def get_full_base_residual_samples(
@@ -311,7 +341,7 @@ def get_full_base_residual_samples(
     noise_scales=[0.02, 0.04, 0.06],   # now interpreted as alpha multipliers on rho
     name_prefix="",
     sigma_min=1e-4,
-    sigma_max=2e-3,
+    sigma_max=5e-3,
 ):
     # ------------------------------------------------------------
     # 1. Sample ON-SURFACE points only
@@ -322,6 +352,7 @@ def get_full_base_residual_samples(
     # ------------------------------------------------------------
     # 2. Adaptive perturbation using rho from localized on-surface points
     # ------------------------------------------------------------
+    target_perturbed_per_mesh = int(0.25 * n_surface_samples)
     surface_full_samples, full_sigma_used, full_band_id = adaptive_surface_perturbation(
         handle,
         on_surface_full_samples,
@@ -329,6 +360,7 @@ def get_full_base_residual_samples(
         tag=f"{name_prefix}_full_for_rho" if name_prefix else "full_for_rho",
         sigma_min=sigma_min,
         sigma_max=sigma_max, 
+        max_total_perturbed=target_perturbed_per_mesh,
     )
 
     surface_base_samples, base_sigma_used, base_band_id = adaptive_surface_perturbation(
@@ -338,6 +370,7 @@ def get_full_base_residual_samples(
         tag=f"{name_prefix}_base_for_rho" if name_prefix else "base_for_rho",
         sigma_min=sigma_min,
         sigma_max=sigma_max,
+        max_total_perturbed=target_perturbed_per_mesh,
     )
 
     # ------------------------------------------------------------
@@ -419,12 +452,15 @@ def ngc_dataset(arg):
     n_surface_samples = arg['n_surface_samples']
     n_space_samples = arg['n_space_samples']
     noise_scales = arg['noise_scales']
+    overwrite = arg['overwrite']
+    n_keypoints = arg['n_keypoints']
 
     # items = os.listdir(root_path)
     items = np.loadtxt(op.join(root_path, data_path), dtype=str).tolist()
 
     with tqdm(total=len(items)) as pbar:
         for name in items:
+            name, shape_type = name.split('|')
             item_path = op.join(root_path, f'{name}')
             shape_file = op.join(item_path, 'mesh.ply')
             shape_base_file = op.join(item_path, 'mesh_base.ply')
@@ -434,10 +470,10 @@ def ngc_dataset(arg):
             handle_file = op.join(handle_path, 'std_handle.npz')
             #handle_file = op.join(handle_path, 'std_handle.pkl')
             handle_mesh_file = op.join(handle_path, 'std_mesh.ply')
-            output_train_path = op.join(item_path, 'train_data')
-            output_val_path = op.join(item_path, 'val_data')
-            output_all_path = op.join(item_path, 'all_data')
-            os.makedirs(output_train_path, exist_ok=True)
+            output_train_path = op.join(item_path, 'train_data', str(n_keypoints))
+            output_val_path = op.join(item_path, 'val_data', str(n_keypoints))
+            output_all_path = op.join(item_path, 'all_data', str(n_keypoints))
+            os.makedirs(output_train_path, exist_ok=True) 
             os.makedirs(output_val_path, exist_ok=True)
             os.makedirs(output_all_path, exist_ok=True)
 
@@ -447,13 +483,13 @@ def ngc_dataset(arg):
             output_all_inferencefile = op.join(handle_path, 'inference.npz')
             #output_path = os.path.join(item_
 
-            if op.exists(output_all_file):
+            if not overwrite: #op.exists(output_all_file):
                 print('Exists: ', item_path)
                 pbar.update(1)
                 continue
 
             handle = Handle()
-            handle.load(handle_file)
+            handle.load(handle_file, shape_type, n_keypoints)
             
             #if not op.exists(handle_mesh_file):
             #    export_handle_data(handle, output_path, handle_path)
@@ -462,6 +498,10 @@ def ngc_dataset(arg):
                                                         mesh_file = shape_file, mesh_base_file = shape_base_file, \
                                                         handle_mesh_file = handle_mesh_file, n_surface_samples= n_surface_samples, n_space_samples= n_space_samples, \
                                                         noise_scales=noise_scales, name_prefix=name)
+            #on_surface_data, pert_surface_data, space_data, on_surface_inferencedata = get_full_base_residual_samples_globalperturbation(handle=handle, \
+            #                                            mesh_file = shape_file, mesh_base_file = shape_base_file, \
+            #                                            handle_mesh_file = handle_mesh_file, n_surface_samples= n_surface_samples, n_space_samples= n_space_samples, \
+            #                                            noise_scales=noise_scales, name_prefix=name)
 
 
             all_data = {
@@ -494,15 +534,21 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description='Input to preoprocessing')
     p.add_argument('-r', '--root_path', required=True)
     p.add_argument('-d', '--data_path', required=True)
+    p.add_argument('-w', '--overwrite', type=bool, required=True)
+    p.add_argument('-k', '--n_keypoints', type=int, required=True)
     p.add_argument('-ns', '--noise_scales', type=ast.literal_eval, default=[0.02], required=True)
+    p.add_argument('-ss', '--n_surface_samples', type=int, default=320000, required=True)
+    p.add_argument('-sv', '--n_space_samples', type=int, default=40000, required=True)
 
     args = p.parse_args()
     arg = {
         'root_path': args.root_path,
         'data_path': args.data_path,
+        'overwrite': args.overwrite,
+        'n_keypoints': args.n_keypoints,
         'file_name': 'sdf_samples.pkl',
-        'n_surface_samples' : 320000,
-        'n_space_samples' : 40000,
+        'n_surface_samples' : args.n_surface_samples,
+        'n_space_samples' : args.n_space_samples,
         'noise_scales': args.noise_scales
     }
     ngc_dataset(arg)
