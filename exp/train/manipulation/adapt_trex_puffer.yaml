@@ -1,0 +1,139 @@
+- target_key: trex_9_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.1
+  src_1: 0.9
+  tgt_0: 0.2
+  tgt_1: 0.9
+  scale: 0.6
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  # Optional smoothing of runtime support
+  smooth_accessory_adapt_fields: true
+  accessory_adapt_smooth_points_sigma: 2.0
+  accessory_adapt_smooth_radius_sigma: 1.0
+  accessory_adapt_rebuild_frames: true
+
+  smooth_avatar_adapt_fields: false
+  avatar_adapt_smooth_points_sigma: 1.0
+  avatar_adapt_smooth_coords_sigma: 1.0
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: false 
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.00001
+  avatar_clearance: 0.00001
+  cut_avatar: true 
+
+
+- target_key: trex_9_v1|front_r_leg
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.0
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.9
+  scale: 0.7
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  # Optional smoothing of runtime support
+  smooth_accessory_adapt_fields: false
+  accessory_adapt_smooth_points_sigma: 1.0
+  accessory_adapt_smooth_radius_sigma: 1.0
+  accessory_adapt_rebuild_frames: true
+
+  smooth_avatar_adapt_fields: true
+  avatar_adapt_smooth_points_sigma: 3.0
+  avatar_adapt_smooth_coords_sigma: 1.0
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: local
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.00001
+  avatar_clearance: 0.00001
+  cut_avatar: true 
+
+
+- target_key: trex_9_v1|front_l_leg
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.0
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.9
+  scale: 0.7
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  # Optional smoothing of runtime support
+  smooth_accessory_adapt_fields: false
+  accessory_adapt_smooth_points_sigma: 1.0
+  accessory_adapt_smooth_radius_sigma: 1.0
+  accessory_adapt_rebuild_frames: true
+
+  smooth_avatar_adapt_fields: true
+  avatar_adapt_smooth_points_sigma: 3.0
+  avatar_adapt_smooth_coords_sigma: 1.0
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: local
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.00001
+  avatar_clearance: 0.00001
+  cut_avatar: true 

@@ -334,6 +334,47 @@ class Agent():
             vals = vals.detach().cpu().numpy()
             vals_base = vals_base.detach().cpu().numpy()
         return vals, vals_base
+
+
+    def __inference_full_vals(self, curve_data, key, batch_size=None, transform=None):
+        num_samples = curve_data['samples_local'].shape[0]
+
+        def _to_numpy_dict(out):
+            res = {}
+            for k, v in out.items():
+                if v is None:
+                    res[k] = None
+                else:
+                    res[k] = v.squeeze().detach().cpu().numpy()
+            return res
+
+        if batch_size is not None and num_samples > batch_size:
+            N = num_samples // batch_size + 1
+            batches = np.array_split(np.arange(num_samples), N)
+
+            chunks = {}
+            for batch in batches:
+                batch_curve_data = {k: v[batch] for k, v in curve_data.items()}
+                batch_curve_data['device'] = self.device
+                batch_curve_data['curve_idx'] = self.feat_dict[key]
+
+                out = self.model.inference_full(batch_curve_data, transform=transform)
+                out_np = _to_numpy_dict(out)
+
+                for k, v in out_np.items():
+                    if v is None:
+                        continue
+                    chunks.setdefault(k, []).append(v)
+
+            return {k: np.concatenate(vs) for k, vs in chunks.items()}
+
+        curve_data['device'] = self.device
+        curve_data['curve_idx'] = self.feat_dict[key]
+
+        with torch.no_grad():
+            out = self.model.inference_full(curve_data, transform=transform)
+
+        return _to_numpy_dict(out)
     
     def __mix_inference(self, curve_data, mix_arg, batch_size=None):
         num_samples = curve_data['samples'].shape[0]
@@ -913,6 +954,495 @@ class Agent():
         return template
 
 
+    @staticmethod
+    def _fill_invalid_periodic_theta_field(field):
+        field = np.asarray(field, dtype=np.float64).copy()
+        K, T = field.shape
+        x = np.arange(T)
+
+        for i in range(K):
+            row = field[i]
+            valid = np.isfinite(row)
+            if not np.any(valid):
+                continue
+
+            xv = x[valid]
+            yv = row[valid]
+            xv_ext = np.concatenate([xv - T, xv, xv + T])
+            yv_ext = np.concatenate([yv, yv, yv])
+            field[i] = np.interp(x, xv_ext, yv_ext)
+
+        return field
+
+    @staticmethod
+    def _fill_invalid_s_field(field, fallback_value):
+        field = np.asarray(field, dtype=np.float64).copy()
+        K, T = field.shape
+        x = np.arange(K)
+
+        for j in range(T):
+            col = field[:, j]
+            valid = np.isfinite(col)
+            if np.any(valid):
+                field[:, j] = np.interp(x, x[valid], col[valid])
+            else:
+                field[:, j] = fallback_value
+
+        return field
+
+    @staticmethod
+    def _smooth_periodic_theta_field(field, sigma):
+        from scipy.ndimage import gaussian_filter1d
+
+        field = np.asarray(field, dtype=np.float64)
+
+        if sigma is None or sigma <= 0:
+            return field.copy()
+
+        T = field.shape[1]
+        ext = np.concatenate([field, field, field], axis=1)
+        ext = gaussian_filter1d(ext, sigma=float(sigma), axis=1, mode="nearest")
+        return ext[:, T:2 * T]
+
+    @staticmethod
+    def build_avatar_snug_scale_field(
+        acc_sdf,
+        avatar_sdf,
+        avatar_coords,
+        avatar_theta,
+        n_s=48,
+        n_theta=64,
+        surface_band=0.015,
+        target_gap=0.001,
+        gain=12.0,
+        min_scale=0.85,
+        max_scale=1.15,
+        min_count=5,
+        smooth_s=2.0,
+        smooth_theta=1.0,
+        delta_in_max=None,
+        delta_out_max=None,
+        debug=False,
+    ):
+        """
+        Build local correction scale field from first-pass adaptation.
+
+        Uses near accessory-surface samples:
+            abs(acc_sdf) < surface_band
+
+        Measures:
+            gap = avatar_sdf
+
+        Desired:
+            gap ~= target_gap
+
+        Correction:
+            gap > target_gap  -> accessory too loose -> scale < 1
+            gap < target_gap  -> too close/inside    -> scale > 1
+
+        Returned field is used as:
+            r_src = r_src * scale(s, theta)
+        """
+        from scipy.ndimage import gaussian_filter1d
+
+        acc_sdf = np.asarray(acc_sdf).reshape(-1)
+        avatar_sdf = np.asarray(avatar_sdf).reshape(-1)
+        avatar_coords = np.asarray(avatar_coords).reshape(-1)
+        avatar_theta = np.asarray(avatar_theta).reshape(-1)
+
+        if not (
+            acc_sdf.shape[0]
+            == avatar_sdf.shape[0]
+            == avatar_coords.shape[0]
+            == avatar_theta.shape[0]
+        ):
+            raise ValueError(
+                "[snug_field] length mismatch: "
+                f"acc={acc_sdf.shape[0]} avatar={avatar_sdf.shape[0]} "
+                f"coords={avatar_coords.shape[0]} theta={avatar_theta.shape[0]}"
+            )
+
+        surf = np.abs(acc_sdf) < float(surface_band)
+
+        if np.sum(surf) < max(32, min_count):
+            print(
+                "[snug_field] too few near-surface samples:",
+                int(np.sum(surf)),
+                "surface_band=",
+                surface_band,
+            )
+            return None
+
+        s = np.clip(avatar_coords[surf], 0.0, 1.0)
+        th = avatar_theta[surf]
+        gap = avatar_sdf[surf]
+
+        s_bins = np.linspace(0.0, 1.0, int(n_s))
+        theta_bins = np.linspace(-np.pi, np.pi, int(n_theta), endpoint=False)
+
+        # s bin ids
+        si = np.searchsorted(s_bins, s, side="right") - 1
+        si = np.clip(si, 0, int(n_s) - 1)
+
+        # theta bin ids
+        theta0 = theta_bins[0]
+        period = 2.0 * np.pi
+        dtheta = period / float(n_theta)
+        th_wrap = ((th - theta0) % period) + theta0
+        ti = np.floor((th_wrap - theta0) / dtheta).astype(np.int64) % int(n_theta)
+
+        gap_field = np.full((int(n_s), int(n_theta)), np.nan, dtype=np.float64)
+        count = np.zeros((int(n_s), int(n_theta)), dtype=np.int32)
+
+        # Median gap per (s, theta) band
+        for i in range(int(n_s)):
+            mi = si == i
+            if not np.any(mi):
+                continue
+
+            for j in range(int(n_theta)):
+                m = mi & (ti == j)
+                count[i, j] = int(np.sum(m))
+                if count[i, j] >= int(min_count):
+                    gap_field[i, j] = np.median(gap[m])
+
+        # Fill missing bins
+        gap_field = Agent._fill_invalid_periodic_theta_field(gap_field)
+        gap_field = Agent._fill_invalid_s_field(gap_field, fallback_value=float(target_gap))
+        gap_field = np.where(np.isfinite(gap_field), gap_field, float(target_gap))
+
+        # Convert gap error to source-wrap scale.
+        # gap > target => too loose => scale < 1
+        # gap < target => too close => scale > 1
+        error = gap_field - float(target_gap)
+        scale = 1.0 - float(gain) * error
+        scale = np.clip(scale, float(min_scale), float(max_scale))
+
+        # Smooth correction field
+        if smooth_theta and smooth_theta > 0:
+            scale = Agent._smooth_periodic_theta_field(scale, sigma=float(smooth_theta))
+
+        if smooth_s and smooth_s > 0:
+            scale = gaussian_filter1d(scale, sigma=float(smooth_s), axis=0, mode="nearest")
+
+        scale = np.clip(scale, float(min_scale), float(max_scale))
+
+        # ------------------------------------------------------------
+        # Additive (signed SDF offset) field, parallel to the
+        # multiplicative scale field. Same (s, theta) bins.
+        #
+        # delta = target_gap - measured_gap, clipped.
+        #   delta > 0  -> avatar is closer than target (penetrate / tight)
+        #                 -> push accessory OUTWARD: vals_final -= delta
+        #                    (subtracting positive shifts iso-surface OUTWARD
+        #                     by ~delta along the accessory normal).
+        #   delta < 0  -> avatar is farther than target (loose)
+        #                 -> pull accessory INWARD.
+        #
+        # This is locally additive in SDF units, so it does NOT inflate the
+        # whole bin's volume the way r_src *= scale does. Two-sided.
+        #
+        # Application site: agent_3dvec.action_part_adapt, after detail
+        # reconstruction:
+        #     vals_final = vals_final - interp(delta_field, s, theta)
+        # ------------------------------------------------------------
+        if delta_in_max is None:
+            delta_in_max = float(target_gap) * 1.5
+        if delta_out_max is None:
+            delta_out_max = float(target_gap) * 1.5
+
+        delta_field = float(target_gap) - gap_field
+        delta_field = np.clip(delta_field, -float(delta_in_max), float(delta_out_max))
+
+        if smooth_theta and smooth_theta > 0:
+            delta_field = Agent._smooth_periodic_theta_field(
+                delta_field, sigma=float(smooth_theta)
+            )
+
+        if smooth_s and smooth_s > 0:
+            delta_field = gaussian_filter1d(
+                delta_field, sigma=float(smooth_s), axis=0, mode="nearest"
+            )
+
+        delta_field = np.clip(delta_field, -float(delta_in_max), float(delta_out_max))
+
+        if debug:
+            active = count >= int(min_count)
+            print(
+                "[snug_field]",
+                "surf=", int(np.sum(surf)),
+                "active_bins=", int(np.sum(active)), "/", int(active.size),
+                "gap[min/mean/max]=",
+                float(np.nanmin(gap_field)),
+                float(np.nanmean(gap_field)),
+                float(np.nanmax(gap_field)),
+                "scale[min/mean/max]=",
+                float(np.min(scale)),
+                float(np.mean(scale)),
+                float(np.max(scale)),
+                "delta[min/mean/max]=",
+                float(np.min(delta_field)),
+                float(np.mean(delta_field)),
+                float(np.max(delta_field)),
+            )
+
+        return {
+            "scale": scale,
+            "delta": delta_field,
+            "s_bins": s_bins,
+            "theta_bins": theta_bins,
+            "gap_field": gap_field,
+            "count": count,
+        }
+    
+    @staticmethod
+    def apply_accessory_avatar_offset(vals_final, adapt_arg, avatar_sdf=None):
+        """
+        Post-process accessory SDF.
+
+        Modes:
+            accessory_offset_mode = "none"
+            accessory_offset_mode = "global"
+            accessory_offset_mode = "local"
+            accessory_offset_mode = "both"
+
+        SDF convention assumed:
+            sdf < 0 : inside object
+            sdf = 0 : surface
+            sdf > 0 : outside object
+
+        vals_final:
+            accessory SDF evaluated on active grid/sample points
+
+        avatar_sdf:
+            avatar SDF evaluated on the SAME active grid/sample points
+        """
+
+        mode = adapt_arg.get("accessory_offset_mode", None)
+
+        # Backward compatibility:
+        # if old accessory_offset exists and no explicit mode is given, use global.
+        if mode is None:
+            if float(adapt_arg.get("accessory_offset", 0.0)) != 0.0:
+                mode = "global"
+            else:
+                mode = "none"
+
+        mode = str(mode).lower()
+
+        if mode in ["none", "off", "false"]:
+            return vals_final
+
+        #is_torch = hasattr(vals_final, "device") and hasattr(vals_final, "dtype")
+        is_torch = torch.is_tensor(vals_final)
+
+        def _clip(x, lo, hi):
+            if is_torch:
+                import torch
+                return torch.clamp(x, min=lo, max=hi)
+            return np.clip(x, lo, hi)
+
+        def _exp(x):
+            if is_torch:
+                import torch
+                return torch.exp(x)
+            return np.exp(x)
+
+        def _maximum(a, b):
+            if is_torch:
+                import torch
+                return torch.maximum(a, b)
+            return np.maximum(a, b)
+
+        # ------------------------------------------------------------
+        # 1. Global offset
+        # Positive accessory_offset expands/thickens the accessory because:
+        # vals_final = vals_final - offset
+        # ------------------------------------------------------------
+        if mode in ["global", "both"]:
+            accessory_offset = float(adapt_arg.get("accessory_offset", 0.0))
+            if accessory_offset != 0.0:
+                vals_final = vals_final - accessory_offset
+
+        # ------------------------------------------------------------
+        # 2. Local avatar-aware correction
+        # ------------------------------------------------------------
+        if mode in ["local", "both"]:
+            if avatar_sdf is None:
+                print("[offset] accessory_offset_mode is local/both, but avatar_sdf is None. Skipping local offset.")
+                return vals_final
+
+            target_gap = float(adapt_arg.get("target_gap", 0.003))
+            local_strength = float(adapt_arg.get("local_offset_strength", 0.75))
+            local_band = float(adapt_arg.get("local_offset_band", 0.015))
+            local_gate_sigma = float(adapt_arg.get("local_offset_gate_sigma", 0.01))
+
+            use_soft_snug = bool(adapt_arg.get("use_soft_snug", True))
+            use_hard_clamp = bool(adapt_arg.get("use_hard_avatar_clamp", True))
+            hard_clearance = float(adapt_arg.get("hard_clearance", target_gap))
+
+            if use_soft_snug and local_strength != 0.0:
+                # delta < 0 where accessory is too close/intersecting avatar
+                # delta > 0 where accessory is too far from avatar
+                delta = avatar_sdf - target_gap
+                delta = _clip(delta, -local_band, local_band)
+
+                # only modify near accessory surface
+                sigma2 = 2.0 * local_gate_sigma * local_gate_sigma + 1e-12
+                gate = _exp(-(vals_final * vals_final) / sigma2)
+
+                vals_final = vals_final + local_strength * gate * delta
+
+            if use_hard_clamp:
+                # Remove accessory material inside forbidden avatar clearance band.
+                #
+                # If avatar_sdf < hard_clearance:
+                #   hard_clearance - avatar_sdf > 0
+                #   vals_final becomes positive there
+                #   => accessory cannot exist there.
+                forbidden = hard_clearance - avatar_sdf
+                vals_final = _maximum(vals_final, forbidden)
+
+        return vals_final
+
+    def apply_adaptive_shell_thinning(
+        self,
+        vals_base,
+        adapt_arg,
+        avatar_sdf=None,
+    ):
+        """
+        Base-only adaptive inner-shell thinning.
+
+        Purpose:
+            Preserve the outer visible garment surface as much as possible,
+            but remove excessive inner volume near the avatar.
+
+        SDF convention:
+            vals_base < 0  : inside accessory solid
+            vals_base = 0  : accessory surface
+            vals_base > 0  : outside accessory
+
+            avatar_sdf < 0 : inside avatar
+            avatar_sdf = 0 : avatar surface
+            avatar_sdf > 0 : outside avatar
+
+        Hard inner carve equivalent:
+            accessory \\ inflated_avatar
+
+            vals_new = max(vals_base, -avatar_sdf + clearance)
+
+        This function provides a soft version:
+            vals_new = vals_base + strength * relu(forbidden - vals_base)
+
+        where:
+            forbidden = -avatar_sdf + clearance
+
+        If strength=1.0, it becomes close to the hard max operation.
+        If strength<1.0, it is a gentler thinning correction.
+        """
+
+        if not bool(adapt_arg.get("use_adaptive_shell_thinning", False)):
+            return vals_base
+
+        if avatar_sdf is None:
+            return vals_base
+
+        vals_base = np.asarray(vals_base, dtype=np.float64)
+        avatar_sdf = np.asarray(avatar_sdf, dtype=np.float64)
+
+        if vals_base.shape[0] != avatar_sdf.shape[0]:
+            raise ValueError(
+                f"adaptive shell thinning shape mismatch: "
+                f"base={vals_base.shape[0]}, avatar={avatar_sdf.shape[0]}"
+            )
+
+        clearance = float(adapt_arg.get("shell_inner_clearance", 0.0015))
+        strength = float(adapt_arg.get("shell_thin_strength", 0.35))
+
+        # Optional: avoid affecting points very far from avatar.
+        # This is only a locality gate; the real operation is still the max-like carve.
+        avatar_band = float(adapt_arg.get("shell_avatar_band", 0.02))
+
+        # Optional: restrict correction to accessory SDF band.
+        # Usually keep this <= 0 or absent for correct SDF carving.
+        sdf_band = float(adapt_arg.get("shell_sdf_band", -1.0))
+
+        mode = adapt_arg.get("shell_thin_mode", "soft")
+
+        # Inflated-avatar forbidden field.
+        # The accessory SDF should not be below this near the avatar.
+        forbidden = -avatar_sdf + clearance
+
+        if mode == "hard":
+            vals_new = np.maximum(vals_base, forbidden)
+
+            if adapt_arg.get("shell_thin_debug", False):
+                changed = vals_new > vals_base
+                print(
+                    "[adaptive_shell_thin hard]",
+                    "clearance=", clearance,
+                    "changed=", int(np.sum(changed)), "/", int(vals_base.shape[0]),
+                    "delta max/mean=",
+                    float(np.max(vals_new - vals_base)),
+                    float(np.mean(vals_new - vals_base)),
+                )
+
+            return vals_new
+
+        # Soft max-like correction.
+        delta = np.maximum(forbidden - vals_base, 0.0)
+
+        gate = np.ones_like(vals_base, dtype=np.float64)
+
+        # Avatar locality gate:
+        # Full effect near/inside avatar clearance, fades out by clearance + avatar_band.
+        if avatar_band > 0:
+            x = (avatar_sdf - clearance) / (avatar_band + 1e-12)
+            x = np.clip(x, 0.0, 1.0)
+            smooth = x * x * (3.0 - 2.0 * x)
+            avatar_gate = 1.0 - smooth
+            gate *= avatar_gate
+
+        # Optional accessory SDF band gate.
+        # Use only if the correction is too volumetric.
+        # If enabled, it mostly affects values near the current accessory surface.
+        if sdf_band is not None and sdf_band > 0:
+            sdf_gate = np.exp(
+                -(vals_base * vals_base)
+                / (2.0 * sdf_band * sdf_band + 1e-12)
+            )
+            gate *= sdf_gate
+
+        vals_new = vals_base + strength * gate * delta
+
+        if adapt_arg.get("shell_thin_debug", False):
+            changed = delta > 0
+            print(
+                "[adaptive_shell_thin soft]",
+                "clearance=", clearance,
+                "strength=", strength,
+                "avatar_band=", avatar_band,
+                "sdf_band=", sdf_band,
+                "changed=", int(np.sum(changed)), "/", int(vals_base.shape[0]),
+                "gate min/mean/max=",
+                float(np.min(gate)),
+                float(np.mean(gate)),
+                float(np.max(gate)),
+                "delta min/mean/max=",
+                float(np.min(delta)),
+                float(np.mean(delta)),
+                float(np.max(delta)),
+                "applied min/mean/max=",
+                float(np.min(strength * gate * delta)),
+                float(np.mean(strength * gate * delta)),
+                float(np.max(strength * gate * delta)),
+            )
+
+        return vals_new
+
+
+
     @torch.no_grad()
     def action_part_adapt(self, arg):
         output_folder = arg['output_folder']
@@ -955,7 +1485,7 @@ class Agent():
                     'mode': mode,
                     'avatar_curve_handle': curve,
                     'device': self.device,
-                    'infer_scale': 1.35,
+                    'infer_scale': 2.0,
                     'avatar_curve_idx': self.feat_dict[key],
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
@@ -991,86 +1521,160 @@ class Agent():
                         #"x_radius": accessory_curve_handle.core.calc_x_radius(acc_coords).copy(),
                     }
                     #adapted_support_cache[cache_key]["assembly_scale"] = root_scale
-                elif mode == 'dependent_split':
-                    parent_accessory_key = adapt_arg['parent_accessory_key']
-                    parent_support_key = adapt_arg.get('parent_support_key', parent_accessory_key)
-
-                    if parent_support_key not in adapted_support_cache:
-                        raise ValueError(f"Missing parent cached support: {parent_support_key}")
-
-                    adapt_arg['parent_support_data'] = adapted_support_cache[parent_support_key]
-
-                    split_s = float(adapt_arg['split_t_src_0'])
-                    child_s0 = float(adapt_arg['split_t_src_0'])
-                    child_s1 = float(adapt_arg['split_t_src_1'])
-
-                    adapt_arg['dep_template'] = self.split_template_from_key(
-                        accessory_key=accessory_key,
-                        split_s=split_s,
-                        child_s0=child_s0,
-                        child_s1=child_s1,
-                    )
-
-                    accessory_data, runtime_child_support, kidx = self.filter_grid_dependent_runtime(
-                        curve_grid,
-                        adapt_arg,
-                    )
-
-                    cache_key = item.get("cache_as", f"{accessory_key}_split")
-                    adapted_support_cache[cache_key] = {
-                        "coords": runtime_child_support["coords"].copy(),
-                        "points": runtime_child_support["points"].copy(),
-                        "frame": runtime_child_support["frame"].copy(),
-                        "radius": runtime_child_support["radius"].copy(),
-                        "x_radius": runtime_child_support.get("x_radius", np.ones_like(runtime_child_support["coords"])).copy(),
-                        "assembly_scale": runtime_child_support.get(
-                            "assembly_scale",
-                            adapt_arg['parent_support_data'].get("assembly_scale", 1.0)
-                        ),
-                    }
-
-
-                elif mode == 'dependent':
-                    parent_accessory_key = adapt_arg['parent_accessory_key']
-                    if parent_accessory_key not in adapted_support_cache:
-                        raise ValueError(f"Missing parent cached support: {parent_accessory_key}")
-
-                    adapt_arg['parent_support_data'] = adapted_support_cache[parent_accessory_key]
-                    #adapt_arg['dep_template'] = self.dependent_template_from_key(accessory_key)
-                    parent_joint_s = float(adapt_arg['parent_joint_s'])
-                    child_joint_s = float(adapt_arg.get('child_joint_s', 0.0))
-                    child_s0 = float(adapt_arg.get("child_s0", 0.0))
-                    child_s1 = float(adapt_arg.get("child_s1", 1.0))
-
-                    adapt_arg['dep_template'] = self.attached_template_from_keys(
-                        parent_key=parent_accessory_key,
-                        child_key=accessory_key,
-                        parent_joint_s=parent_joint_s,
-                        child_joint_s=child_joint_s,
-                        child_s0=child_s0,
-                        child_s1=child_s1
-                    )
-                    curve_grid = utils.create_grid_like(mc_grid, res=256)
-                    #curve_grid.clear_grid(val=10.0)
-                    curve_grid.clear_grid()
-
-                    accessory_data, runtime_child_support, kidx = self.filter_grid_dependent_runtime(curve_grid, adapt_arg)
-
-                    cache_key = item.get("cache_as", accessory_key)
-                    adapted_support_cache[cache_key] = {
-                        "coords": runtime_child_support["coords"].copy(),
-                        "points": runtime_child_support["points"].copy(),
-                        "frame": runtime_child_support["frame"].copy(),
-                        "radius": runtime_child_support["radius"].copy(),
-                        "x_radius": runtime_child_support.get("x_radius", np.ones_like(runtime_child_support["coords"])).copy(),
-                    }
 
                 else:
                     raise ValueError(f"Unknown adapt mode: {mode}")
 
-                acc_vals, acc_vals_base = self.__inference_vals(
-                    accessory_data, accessory_key, batch_size=batch_size
+                #acc_vals, acc_vals_base = self.__inference_vals(
+                #    accessory_data, accessory_key, batch_size=batch_size
+                #)
+                # ------------------------------------------------------------
+                # Optional two-pass implicit snug-wrap correction.
+                #
+                # Pass 1:
+                #   normal adapted accessory + avatar SDF
+                #   measure local gap on near-accessory-surface points
+                #
+                # Pass 2:
+                #   rerun filter_grid_adapt with avatar_snug_scale_field
+                # ------------------------------------------------------------
+                if bool(adapt_arg.get("auto_avatar_snug_field", False)) and mode == "direct":
+                    if not adapt_arg.get("wrap_radius", False):
+                        print(
+                            "[snug_field] auto_avatar_snug_field requested, "
+                            "but wrap_radius is false. Skipping snug field."
+                        )
+                    else:
+                        # First-pass accessory SDF
+                        acc_out0 = self.__inference_full_vals(
+                            accessory_data,
+                            accessory_key,
+                            batch_size=batch_size,
+                        )
+                        # Debug: first-pass base BEFORE snug rerun
+#                        pre_snug_base_grid = utils.create_grid_like(mc_grid)
+#                        pre_snug_base_grid.clear_grid()
+#                        pre_snug_base_grid.update_grid(
+#                            acc_out0["sdf_base"],
+#                            kidx,
+#                            mark=True,
+#                            mode="overwrite",
+#                        )
+#
+#                        mesh_pre_snug_base = pre_snug_base_grid.extract_mesh()
+#                        if len(mesh_pre_snug_base.faces) > 0:
+#                            parts = mesh_pre_snug_base.split(only_watertight=False)
+#                            if len(parts) > 0:
+#                                mesh_pre_snug_base = max(parts, key=lambda m: len(m.faces))
+#                            mesh_pre_snug_base.export(
+#                                op.join(
+#                                    output_folder,
+#                                    f"{cc}_{mode}_PRE_SNUG_base_{accessory_key.replace('|','_')}.ply"
+#                                )
+#                            )
+
+                        # First-pass avatar SDF on same samples/order
+                        avatar_out0 = self.__inference_full_vals(
+                            avatar_data,
+                            key,
+                            batch_size=batch_size,
+                        )
+
+                        snug_field = self.build_avatar_snug_scale_field(
+                            acc_sdf=acc_out0['sdf_base'],
+                            avatar_sdf=avatar_out0['sdf'],
+                            avatar_coords=avatar_data["coords"],
+                            avatar_theta=avatar_data["angles"],
+                            n_s=int(adapt_arg.get("snug_field_n_s", 48)),
+                            n_theta=int(adapt_arg.get("snug_field_n_theta", 64)),
+                            surface_band=float(adapt_arg.get("snug_surface_band", 0.015)),
+                            target_gap=float(adapt_arg.get("snug_target_gap", 0.001)),
+                            gain=float(adapt_arg.get("snug_gain", 12.0)),
+                            min_scale=float(adapt_arg.get("snug_min_scale", 0.85)),
+                            max_scale=float(adapt_arg.get("snug_max_scale", 1.15)),
+                            min_count=int(adapt_arg.get("snug_min_count", 5)),
+                            smooth_s=float(adapt_arg.get("snug_smooth_s", 2.0)),
+                            smooth_theta=float(adapt_arg.get("snug_smooth_theta", 1.0)),
+                            delta_in_max=adapt_arg.get("snug_delta_in_max", None),
+                            delta_out_max=adapt_arg.get("snug_delta_out_max", None),
+                            debug=bool(adapt_arg.get("snug_debug", True)),
+                        )
+
+                        if snug_field is not None:
+                            # NOTE: previous code had a typo here
+                            # ("avatar_snu g_scale_field" with a stray space)
+                            # which meant the snug field was never read by
+                            # PWLA_curve_handle. Fixed.
+                            adapt_arg["avatar_snug_scale_field"] = snug_field
+
+                            # Rerun direct adaptation with the correction field.
+                            curve_grid = utils.create_grid_like(mc_grid)
+                            curve_grid.clear_grid()
+
+                            accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
+                                curve_grid,
+                                adapt_arg,
+                            )
+
+                            # If this direct accessory is cached for dependent children,
+                            # refresh the cached support to match the corrected pass.
+                            cache_key = item.get("cache_as", accessory_key)
+                            if cache_key in adapted_support_cache:
+                                acc_coords = accessory_data["coords"]
+                                adapted_support_cache[cache_key] = {
+                                    "coords": acc_coords.copy(),
+                                    "points": accessory_data["runtime_points"].copy(),
+                                    "frame": accessory_data["runtime_frame"].copy(),
+                                    "radius": accessory_data["radius"].copy(),
+                                    "x_radius": accessory_data["x_radius"].copy(),
+                                    "assembly_scale": root_scale,
+                                }
+
+
+                acc_out = self.__inference_full_vals(
+                    accessory_data,
+                    accessory_key,
+                    batch_size=batch_size,
                 )
+
+                acc_vals = acc_out["sdf"]
+                acc_vals_base = acc_out["sdf_base"]
+                acc_vals_detail = acc_out["sdf_detail"]
+
+                if bool(adapt_arg.get("use_accessory_support_clamp", False)):
+                    acc_vals, valid_support = self.clamp_pred_sdf_by_support(
+                        acc_vals,
+                        accessory_data,
+                        positive_value=float(adapt_arg.get("support_positive_value", 1.0)),
+                        w_limit=float(adapt_arg.get("support_w_limit", 999.0)),
+                        rho_limit=float(adapt_arg.get("support_rho_limit", 1.35)),
+                        end_margin=float(adapt_arg.get("support_end_margin", 0.0)),
+                        verbose=bool(adapt_arg.get("support_clamp_verbose", True)),
+                        name=accessory_key,
+                    )
+
+                    acc_vals_base, _ = self.clamp_pred_sdf_by_support(
+                        acc_vals_base,
+                        accessory_data,
+                        positive_value=float(adapt_arg.get("support_positive_value", 1.0)),
+                        w_limit=float(adapt_arg.get("support_w_limit", 999.0)),
+                        rho_limit=float(adapt_arg.get("support_rho_limit", 1.35)),
+                        end_margin=float(adapt_arg.get("support_end_margin", 0.0)),
+                        verbose=False,
+                        name=accessory_key + "_base",
+                    )
+
+                    if acc_vals_detail is not None:
+                        acc_vals_detail = np.where(valid_support, acc_vals_detail, 0.0)
+
+
+
+                if acc_vals_detail is None:
+                    raise ValueError(
+                        "model.inference_full did not return sdf_detail. "
+                        "Need sdf_detail for base-snug + detail reconstruction."
+                    )
+
 
 #                acc_vals, valid_support = self.clamp_pred_sdf_by_support(
 #                    acc_vals,
@@ -1096,40 +1700,298 @@ class Agent():
                 #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
                 #print("num total voxels:", acc_grid.empty_marks.shape[0])
 
+                # Collision/snug operations happen on BASE only.
+                vals_base_fit = acc_vals_base.copy()
                 vals_final = acc_vals.copy()
 
-                # 1) Push accessory outward/inflate accessory
-                # SDF convention: inside < 0, outside > 0
-                # subtracting offset expands the zero-level surface outward.
-                accessory_offset = float(adapt_arg.get("accessory_offset", 0.0))
-                if accessory_offset != 0.0:
-                    vals_final = vals_final - accessory_offset
-
-                # 2) Cut avatar volume from accessory
-                # Boolean difference:
-                # accessory \ avatar = max(sdf_accessory, -sdf_avatar)
+                # Optional avatar SDF for local offset / cut.
+                offset_mode = str(adapt_arg.get("accessory_offset_mode", "none")).lower()
+                wants_local_offset = offset_mode in ["local", "both"]
                 cut_avatar = bool(adapt_arg.get("cut_avatar", False))
-                if cut_avatar:
-                    avatar_clearance = float(adapt_arg.get("avatar_clearance", 0.0))
 
-                    avatar_vals, avatar_vals_base = self.__inference_vals(
+                # New flags also need the avatar SDF on the same active samples.
+                wants_detail_avatar_gate = bool(
+                    adapt_arg.get("detail_avatar_gate", False)
+                )
+                wants_final_carve = bool(adapt_arg.get("final_carve", False))
+                wants_additive_snug = (
+                    str(adapt_arg.get("snug_mode", "multiplicative")).lower()
+                    == "additive"
+                )
+
+                avatar_sdf_for_offset = None
+                avatar_out = None
+
+                if (
+                    wants_local_offset
+                    or cut_avatar
+                    or wants_detail_avatar_gate
+                    or wants_final_carve
+                    or wants_additive_snug
+                ) and (avatar_data is not None):
+                    avatar_out = self.__inference_full_vals(
                         avatar_data,
                         key,
                         batch_size=batch_size,
                     )
 
-                    # Inflate avatar before subtracting it.
-                    avatar_vals_inflated = avatar_vals - avatar_clearance
+                    # Use avatar FINAL as obstacle.
+                    avatar_sdf_for_offset = avatar_out["sdf"]
 
-                    vals_final = np.maximum(
-                        vals_final,
-                        -avatar_vals_inflated,
+                    if avatar_sdf_for_offset.shape[0] != vals_base_fit.shape[0]:
+                        raise ValueError(
+                            f"avatar_sdf and accessory sdf length mismatch: "
+                            f"avatar={avatar_sdf_for_offset.shape[0]}, "
+                            f"accessory={vals_base_fit.shape[0]}"
+                        )
+
+                # Apply local soft snug / hard clamp to BASE only.
+                vals_base_fit = self.apply_accessory_avatar_offset(
+                    vals_base_fit,
+                    adapt_arg,
+                    avatar_sdf=avatar_sdf_for_offset,
+                )
+                vals_base_fit = self.apply_adaptive_shell_thinning(
+                    vals_base_fit,
+                    adapt_arg,
+                    avatar_sdf=avatar_sdf_for_offset,
+                )
+
+
+                # Boolean difference, but apply to BASE only:
+                # accessory_base \ avatar = max(sdf_accessory_base, -sdf_avatar)
+                if cut_avatar and avatar_sdf_for_offset is not None:
+                    avatar_clearance = float(adapt_arg.get("avatar_clearance", 0.0))
+                    avatar_vals_inflated = avatar_sdf_for_offset - avatar_clearance
+                    vals_base_fit = np.maximum(vals_base_fit, -avatar_vals_inflated)
+
+                # ------------------------------------------------------------
+                # Recompute detail gate from the corrected/snugged base.
+                #
+                # Standard form:
+                #   final = base_snug + gate(base_snug) * sdf_detail
+                #
+                # NEW (optional) avatar-proximity gate on the detail term:
+                # Even if base is correctly carved, the signed detail term
+                # can drag the iso-surface back inside the avatar.
+                # We multiply the detail amplitude by a smoothstep that is
+                # 0 inside the avatar clearance band and 1 outside.
+                # Off by default (preserves legacy behavior); enable with
+                # detail_avatar_gate: true in YAML.
+                # ------------------------------------------------------------
+                sigma_detail = float(self.model.detail_model.sigma)
+                gate_detail_snug = np.exp(
+                    -(vals_base_fit * vals_base_fit)
+                    / (2.0 * sigma_detail * sigma_detail + 1e-12)
+                )
+
+                detail_amp = acc_vals_detail
+                use_detail_avatar_gate = bool(
+                    adapt_arg.get("detail_avatar_gate", False)
+                )
+                if use_detail_avatar_gate and avatar_sdf_for_offset is not None:
+                    detail_clearance = float(
+                        adapt_arg.get("detail_clearance", 0.0005)
+                    )
+                    detail_band = float(
+                        adapt_arg.get("detail_band", 0.004)
+                    )
+                    x = (avatar_sdf_for_offset - detail_clearance) / (
+                        detail_band + 1e-12
+                    )
+                    x = np.clip(x, 0.0, 1.0)
+                    gate_avatar = x * x * (3.0 - 2.0 * x)  # smoothstep01
+                    detail_amp = detail_amp * gate_avatar
+
+                    if bool(adapt_arg.get("snug_debug", False)):
+                        print(
+                            "[detail_avatar_gate]",
+                            "clearance=", detail_clearance,
+                            "band=", detail_band,
+                            "gate min/mean/max=",
+                            float(np.min(gate_avatar)),
+                            float(np.mean(gate_avatar)),
+                            float(np.max(gate_avatar)),
+                        )
+
+                vals_final = vals_base_fit + gate_detail_snug * detail_amp
+
+                # ------------------------------------------------------------
+                # Additive snug delta: applied to the FINAL SDF.
+                #
+                # Active when:
+                #   adapt_arg["snug_mode"] == "additive"
+                #   adapt_arg["avatar_snug_scale_field"] has "delta"
+                #
+                # Two-sided, local in (s, theta). Does NOT inflate the wrap.
+                # ------------------------------------------------------------
+                snug_mode = str(adapt_arg.get("snug_mode", "multiplicative")).lower()
+                snug_field_obj = adapt_arg.get("avatar_snug_scale_field", None)
+                if (
+                    snug_mode == "additive"
+                    and snug_field_obj is not None
+                    and "delta" in snug_field_obj
+                    and avatar_data is not None
+                ):
+                    avatar_curve = adapt_arg.get("avatar_curve_handle", None)
+                    if avatar_curve is not None:
+                        # avatar_curve is the wrapped Curve; helpers live on .core
+                        avatar_curve_core = getattr(avatar_curve, "core", avatar_curve)
+                        delta_per_sample = avatar_curve_core.interpolate_snug_delta_field(
+                            snug_field_obj,
+                            avatar_data["coords"],
+                            avatar_data["angles"],
+                        )
+                        # convention: positive delta -> push outward
+                        # vals_final - delta moves the iso-surface outward
+                        # along the accessory normal by ~delta.
+                        vals_final = vals_final - delta_per_sample
+
+                        if bool(adapt_arg.get("snug_debug", False)):
+                            print(
+                                "[snug_additive_apply]",
+                                "delta_per_sample min/mean/max=",
+                                float(np.min(delta_per_sample)),
+                                float(np.mean(delta_per_sample)),
+                                float(np.max(delta_per_sample)),
+                            )
+
+                # ------------------------------------------------------------
+                # Final-SDF carve with optional curvature-aware clearance.
+                #
+                # Hard guarantee: vals_final >= clearance(x) - avatar_sdf(x)
+                # so the accessory iso-surface is at least clearance(x) away
+                # from the avatar surface everywhere.
+                #
+                # clearance(x) = c0 + k_bulge * bulge_proxy(x)
+                # bulge_proxy is computed from avatar_sdf either as
+                #   "grad_deficit": clip(1 - |grad(avatar_sdf)|, 0, 1)
+                #     positive on convex bulges where the SDF gradient is
+                #     not unit (the network deviates most there), or
+                #   "neg_lap": clip(-laplacian(avatar_sdf), 0, +inf)
+                #     positive on convex bulges (mean curvature > 0).
+                #
+                # Off by default; enable with final_carve: true.
+                # ------------------------------------------------------------
+                use_final_carve = bool(adapt_arg.get("final_carve", False))
+                if use_final_carve and avatar_sdf_for_offset is not None:
+                    c0 = float(adapt_arg.get("carve_c0", 0.0002))
+                    k_bulge = float(adapt_arg.get("carve_k_bulge", 0.0))
+                    proxy_kind = str(
+                        adapt_arg.get("carve_curvature_proxy", "grad_deficit")
+                    ).lower()
+
+                    bulge_active = np.zeros_like(avatar_sdf_for_offset)
+
+                    if k_bulge > 0.0:
+                        # Compute curvature proxy on a temp grid and read back.
+                        try:
+                            av_grid_full = utils.create_grid_like(mc_grid)
+                            av_grid_full.clear_grid()
+                            av_grid_full.update_grid(
+                                avatar_sdf_for_offset,
+                                kidx,
+                                mark=True,
+                                mode="overwrite",
+                            )
+                            val_arr = np.asarray(av_grid_full.val_grid)
+
+                            grid3d = None
+                            if val_arr.ndim == 3:
+                                grid3d = val_arr
+                            else:
+                                # try to reshape from reso
+                                reso = getattr(av_grid_full, "reso", None)
+                                if reso is not None:
+                                    if np.isscalar(reso):
+                                        nx = ny = nz = int(reso)
+                                    else:
+                                        try:
+                                            nx, ny, nz = (int(r) for r in reso)
+                                        except Exception:
+                                            nx = ny = nz = None
+                                    if nx is not None and val_arr.size == nx * ny * nz:
+                                        grid3d = val_arr.reshape(nx, ny, nz)
+
+                            if grid3d is not None:
+                                if proxy_kind == "neg_lap":
+                                    gx = np.gradient(grid3d, axis=0)
+                                    gy = np.gradient(grid3d, axis=1)
+                                    gz = np.gradient(grid3d, axis=2)
+                                    lap = (
+                                        np.gradient(gx, axis=0)
+                                        + np.gradient(gy, axis=1)
+                                        + np.gradient(gz, axis=2)
+                                    )
+                                    proxy_full = np.clip(-lap, 0.0, None)
+                                else:
+                                    gx = np.gradient(grid3d, axis=0)
+                                    gy = np.gradient(grid3d, axis=1)
+                                    gz = np.gradient(grid3d, axis=2)
+                                    grad_mag = np.sqrt(
+                                        gx * gx + gy * gy + gz * gz
+                                    )
+                                    proxy_full = np.clip(
+                                        1.0 - grad_mag, 0.0, 1.0
+                                    )
+
+                                # normalize so k_bulge has stable magnitude
+                                pmax = float(np.max(proxy_full)) + 1e-12
+                                proxy_full = proxy_full / pmax
+
+                                bulge_active = proxy_full.reshape(-1)[kidx]
+                        except Exception as e:
+                            print(
+                                "[final_carve] curvature proxy unavailable, "
+                                f"falling back to constant clearance: {e}"
+                            )
+                            bulge_active = np.zeros_like(avatar_sdf_for_offset)
+
+                    clearance_local = c0 + k_bulge * bulge_active
+                    forbidden_final = clearance_local - avatar_sdf_for_offset
+                    vals_final_pre = vals_final.copy()
+                    vals_final = np.maximum(vals_final, forbidden_final)
+
+                    if bool(adapt_arg.get("snug_debug", False)):
+                        carved = vals_final > vals_final_pre
+                        print(
+                            "[final_carve]",
+                            "c0=", c0,
+                            "k_bulge=", k_bulge,
+                            "proxy=", proxy_kind,
+                            "carved=", int(np.sum(carved)),
+                            "/", int(vals_final.size),
+                            "clearance min/mean/max=",
+                            float(np.min(clearance_local)),
+                            float(np.mean(clearance_local)),
+                            float(np.max(clearance_local)),
+                        )
+
+                acc_grid_base_fit = utils.create_grid_like(mc_grid)
+                acc_grid_base_fit.clear_grid()
+                acc_grid_base_fit.update_grid(vals_base_fit, kidx, mark=True, mode="overwrite")
+
+                mesh_acc_base_fit = acc_grid_base_fit.extract_mesh()
+                if len(mesh_acc_base_fit.faces) > 0:
+                    parts = mesh_acc_base_fit.split(only_watertight=False)
+                    if len(parts) > 0:
+                        mesh_acc_base_fit = max(parts, key=lambda m: len(m.faces))
+                    mesh_acc_base_fit.export(
+                        op.join(
+                            output_folder,
+                            f"{cc}_{mode}_basefit_{accessory_key.replace('|','_')}.ply"
+                        )
                     )
 
-                # 3) Debug/export this individual accessory after offset/cut
+
+
+                # 3) Debug/export this individual accessory after offset/cut/detail-reapply
                 acc_grid = utils.create_grid_like(mc_grid)
                 acc_grid.clear_grid()
                 acc_grid.update_grid(vals_final, kidx, mark=True, mode="overwrite")
+
+                # raw base debug
+                acc_grid_base.update_grid(acc_vals_base, kidx, mark=True, mode="overwrite")
 
 
                 mesh_acc = acc_grid.extract_mesh()
@@ -1143,7 +2005,7 @@ class Agent():
                 if len(mesh_acc_base.faces) > 0:
                     parts = mesh_acc_base.split(only_watertight=False)
                     if len(parts) > 0:
-                        mesh_acc_basg = max(parts, key=lambda m: len(m.faces))
+                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
                     mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
                 cc += 1

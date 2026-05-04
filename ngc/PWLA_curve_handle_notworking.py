@@ -3366,31 +3366,39 @@ class PWLACurve():
                     x = np.clip(x, 0.0, 1.0)
                     return x * x * (3.0 - 2.0 * x)
 
+                def _coord01(coord, coord_type):
+                    """
+                    Convert avatar/accessory coordinate to relative [0,1].
+                    This makes config independent of actual src/tgt interval.
+                    """
+                    coord = np.asarray(coord, dtype=np.float64)
 
+                    coord_space = adapt_arg.get("attach_coord_space", "relative")
+                    if coord_space != "relative":
+                        return coord
+
+                    if coord_type == "avatar":
+                        a0, a1 = src_0, src_1
+                    else:
+                        a0, a1 = tgt_0, tgt_1
+
+                    out = (coord - a0) / (a1 - a0 + 1e-12)
+                    return np.clip(out, 0.0, 1.0)
+
+                # --------------------------------------------------------
+                # A) attach -> transition -> free blend weight
+                # --------------------------------------------------------
                 blend_coord_type = adapt_arg.get(
                     "attach_blend_coord",
                     adapt_arg.get("wrap_blend_coord", "accessory"),
                 )
 
                 if blend_coord_type == "avatar":
-                    blend_coord = avatar_coords
+                    blend_coord_raw = avatar_coords
                 else:
-                    blend_coord = acc_coords
+                    blend_coord_raw = acc_coords
 
-                blend_coord_space = adapt_arg.get("attach_coord_space", "relative")
-
-                if blend_coord_space == "relative":
-                    if blend_coord_type == "avatar":
-                        b0 = src_0
-                        b1 = src_1
-                    else:
-                        b0 = tgt_0
-                        b1 = tgt_1
-
-                    blend_coord_used = (blend_coord - b0) / (b1 - b0 + 1e-12)
-                    blend_coord_used = np.clip(blend_coord_used, 0.0, 1.0)
-                else:
-                    blend_coord_used = blend_coord
+                blend_coord_used = _coord01(blend_coord_raw, blend_coord_type)
 
                 attach_s0 = float(
                     adapt_arg.get(
@@ -3405,27 +3413,56 @@ class PWLACurve():
                     )
                 )
 
-                tau = (blend_coord_used - attach_s0) / (attach_s1 - attach_s0 + 1e-12)
-                fade = _smoothstep01(tau)
+                tau_attach = (blend_coord_used - attach_s0) / (attach_s1 - attach_s0 + 1e-12)
+                fade_to_free = _smoothstep01(tau_attach)
 
-                weight_attach = 1.0 - fade
+                weight_attach = 1.0 - fade_to_free
                 weight_attach = np.clip(weight_attach, 0.0, 1.0)
 
+                # --------------------------------------------------------
+                # B) free branch
+                #
+                # scale      affects only wrap branch above.
+                # free_scale affects only this free branch.
+                #
+                # Important inverse:
+                # We are mapping world query points into accessory-local query
+                # space. To make the generated garment bigger in world, the
+                # local query radius must become smaller.
+                #
+                # Therefore:
+                #   free_scale > 1.0  => bigger skirt in world
+                #   local scale       => 1 / free_scale
+                # --------------------------------------------------------
                 free_mode = adapt_arg.get(
                     "free_mode",
                     adapt_arg.get("wrap_blend_rigid_mode", "rigid"),
                 )
 
-                # This is now WORLD meaning:
-                # free_scale > 1.0 => larger garment
-                # free_scale < 1.0 => smaller garment
                 free_world_scale = float(
                     adapt_arg.get(
                         "free_scale",
-                        adapt_arg.get("rigid_blend_scale", global_scale),
+                        adapt_arg.get("rigid_blend_scale", 1.0),  # do NOT default to global scale
                     )
                 )
 
+                free_world_scale_s = np.full_like(rho_avatar, free_world_scale)
+
+                # --------------------------------------------------------
+                # C) optional free profile scale
+                #
+                # ramp:
+                #   starts at profile_start, grows until profile_end,
+                #   then stays large.
+                #
+                # bump:
+                #   grows from profile_start to profile_peak,
+                #   then returns toward normal at profile_end.
+                #
+                # For armadillo skirt:
+                #   bump is better: expand around thighs/legs, then come
+                #   closer to original skirt at hem.
+                # --------------------------------------------------------
                 use_free_profile_scale = bool(
                     adapt_arg.get(
                         "use_free_profile_scale",
@@ -3433,37 +3470,46 @@ class PWLACurve():
                     )
                 )
 
-                if use_free_profile_scale:
-                    profile_coord_space = adapt_arg.get("free_profile_coord_space", "relative")
+                profile_w = np.zeros_like(rho_avatar, dtype=np.float64)
 
-                    if profile_coord_space == "relative":
-                        profile_coord_used = (acc_coords - tgt_0) / (tgt_1 - tgt_0 + 1e-12)
-                        profile_coord_used = np.clip(profile_coord_used, 0.0, 1.0)
+                if use_free_profile_scale:
+                    profile_coord_type = adapt_arg.get("free_profile_coord", "accessory")
+
+                    if profile_coord_type == "avatar":
+                        profile_coord_raw = avatar_coords
                     else:
-                        profile_coord_used = acc_coords
+                        profile_coord_raw = acc_coords
+
+                    profile_coord_space = adapt_arg.get("free_profile_coord_space", "relative")
+                    if profile_coord_space == "relative":
+                        profile_coord_used = _coord01(profile_coord_raw, profile_coord_type)
+                    else:
+                        profile_coord_used = profile_coord_raw
 
                     profile_start = float(
                         adapt_arg.get(
                             "free_profile_start",
-                            adapt_arg.get("rigid_flare_start", 0.20),
+                            adapt_arg.get("rigid_flare_start", 0.25),
                         )
                     )
                     profile_end = float(
                         adapt_arg.get(
                             "free_profile_end",
-                            adapt_arg.get("rigid_flare_end", 1.00),
+                            adapt_arg.get("rigid_flare_end", 0.95),
                         )
                     )
-                    # Optional guard: do not let flare start inside the attach-release band.
-                    if (
-                        adapt_arg.get("attach_coord_space", "relative") == "relative"
-                        and adapt_arg.get("free_profile_coord_space", "relative") == "relative"
-                    ):
-                        flare_attach_gap = float(adapt_arg.get("free_profile_attach_gap", 0.08))
-                        profile_start = max(profile_start, attach_s1 + flare_attach_gap)
-                        profile_end = max(profile_end, profile_start + 1e-6)
 
+                    # Do not start flare inside the attach-release band unless explicitly allowed.
+                    if bool(adapt_arg.get("free_profile_guard_after_attach", True)):
+                        if (
+                            adapt_arg.get("attach_coord_space", "relative") == "relative"
+                            and profile_coord_space == "relative"
+                        ):
+                            attach_gap = float(adapt_arg.get("free_profile_attach_gap", 0.04))
+                            profile_start = max(profile_start, attach_s1 + attach_gap)
+                            profile_end = max(profile_end, profile_start + 1e-6)
 
+                    profile_type = str(adapt_arg.get("free_profile_type", "ramp")).lower()
                     profile_gain = float(
                         adapt_arg.get(
                             "free_profile_gain",
@@ -3471,18 +3517,11 @@ class PWLACurve():
                         )
                     )
 
-
-                    #profile_tau = (profile_coord_used - profile_start) / (
-                    #    profile_end - profile_start + 1e-12
-                    #)
-                    #profile_w = _smoothstep01(profile_tau)
-                    profile_type = str(adapt_arg.get("free_profile_type", "ramp")).lower()
-
                     if profile_type == "ramp":
-                        profile_tau = (profile_coord_used - profile_start) / (
+                        t = (profile_coord_used - profile_start) / (
                             profile_end - profile_start + 1e-12
                         )
-                        profile_w = _smoothstep01(profile_tau)
+                        profile_w = _smoothstep01(t)
 
                     elif profile_type == "bump":
                         profile_peak = float(
@@ -3510,30 +3549,68 @@ class PWLACurve():
 
                     else:
                         raise ValueError(
-                            f"Unknown free_profile_type={profile_type}. Use 'ramp' or 'bump'."
+                            f"Unknown free_profile_type={profile_type}. "
+                            "Use 'ramp' or 'bump'."
                         )
 
                     free_world_scale_s = free_world_scale * (1.0 + profile_gain * profile_w)
-                else:
-                    free_world_scale_s = np.full_like(rho_avatar, free_world_scale)
 
-                # IMPORTANT:
-                # We are mapping world query points into accessory-local query space.
-                # To make world garment larger, local query radius must become smaller.
+                # --------------------------------------------------------
+                # D) optional directional boost hook
+                #
+                # Disabled unless use_free_directional_boost=true.
+                # Useful later if one leg is still uncovered because the
+                # avatar skeleton is tilted/off-center.
+                # --------------------------------------------------------
+                if bool(adapt_arg.get("use_free_directional_boost", False)):
+                    boost_center_deg = float(adapt_arg.get("free_boost_theta_deg", 0.0))
+                    boost_width_deg = float(adapt_arg.get("free_boost_width_deg", 45.0))
+                    boost_gain = float(adapt_arg.get("free_boost_gain", 0.0))
+
+                    boost_center = np.deg2rad(boost_center_deg)
+                    boost_width = np.deg2rad(boost_width_deg)
+
+                    # circular angular difference in [-pi, pi]
+                    dtheta = np.arctan2(
+                        np.sin(theta_tgt - boost_center),
+                        np.cos(theta_tgt - boost_center),
+                    )
+
+                    boost_w = np.exp(-0.5 * (dtheta / (boost_width + 1e-12)) ** 2)
+
+                    # apply mostly in free region, not waist
+                    free_region_w = 1.0 - weight_attach
+                    free_world_scale_s = free_world_scale_s * (
+                        1.0 + boost_gain * boost_w * free_region_w
+                    )
+
                 local_free_scale_s = 1.0 / np.maximum(free_world_scale_s, 1e-8)
+                free_scale_s = free_world_scale_s
 
                 if free_mode == "default":
-                    scale_rho_free = local_free_scale_s * 0.5 * (scale_y + scale_z)
+                    scale_rho_free = free_scale_s * 0.5 * (scale_y + scale_z)
                 else:
-                    scale_rho_free = local_free_scale_s
+                    scale_rho_free = free_scale_s
 
                 rho_acc_free = rho_avatar * scale_rho_free
 
+                #if free_mode == "default":
+                #    # Keeps avatar/accessory radius ratio in the free part.
+                #    # Usually NOT best for skirts, because it follows body thickness.
+                #    scale_rho_free = local_free_scale_s * 0.5 * (scale_y + scale_z)
+                #elif free_mode == "rigid":
+                #    # Best for skirt bottom: preserve garment shape, only apply free_scale/profile.
+                #    scale_rho_free = local_free_scale_s
+                #else:
+                #    raise ValueError(
+                #        f"Unknown free_mode={free_mode}. Use 'rigid' or 'default'."
+                #    )
 
+                #rho_acc_free = rho_avatar * scale_rho_free
 
-
-
-
+                # --------------------------------------------------------
+                # E) final attach/free blend
+                # --------------------------------------------------------
                 rho_acc = (
                     weight_attach * rho_acc_wrap
                     + (1.0 - weight_attach) * rho_acc_free
@@ -3548,11 +3625,20 @@ class PWLACurve():
                         "coord=", blend_coord_type,
                         "attach_s0/s1=", attach_s0, attach_s1,
                         "free_mode=", free_mode,
-                        "free_world_scale_world=", free_world_scale,
+                        "free_scale=", free_world_scale,
+                        "profile_type=", adapt_arg.get("free_profile_type", "ramp"),
                         "weight_attach min/mean/max=",
                         float(np.min(weight_attach)),
                         float(np.mean(weight_attach)),
                         float(np.max(weight_attach)),
+                        "profile_w min/mean/max=",
+                        float(np.min(profile_w)),
+                        float(np.mean(profile_w)),
+                        float(np.max(profile_w)),
+                        "free_world_scale_s min/mean/max=",
+                        float(np.min(free_world_scale_s)),
+                        float(np.mean(free_world_scale_s)),
+                        float(np.max(free_world_scale_s)),
                         "rho_attach mean=",
                         float(np.mean(rho_acc_wrap)),
                         "rho_free mean=",
@@ -3563,7 +3649,6 @@ class PWLACurve():
 
             else:
                 rho_acc = rho_acc_wrap
-
 
             if adapt_arg.get("wrap_debug", False):
                 q_src = rho_avatar / (r_src + 1e-12)

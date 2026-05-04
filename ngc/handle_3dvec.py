@@ -393,6 +393,24 @@ class Handle():
             curve_data['idx'] = cid
             curve_data['type'] = shape_type
             curve_data['n_keypoints'] = n_keypoints
+
+            # Optional global runtime cylinder inflation defaults.
+            # These are consumed by PWLACurve.set_curve().
+            shape_type_l = str(shape_type).lower()
+
+            if shape_type_l == "avatar":
+                # Do NOT use 3.0 by default. It creates the giant ring support.
+                curve_data.setdefault("inference_cylinder_radius_scale", 3.0)
+                curve_data.setdefault("inference_cylinder_radius_add", 0.0)
+
+            elif shape_type_l in ["acc", "accessory"]:
+                # Keep source/accessory support close to training support.
+                curve_data.setdefault("inference_cylinder_radius_scale", 1.0)
+                curve_data.setdefault("inference_cylinder_radius_add", 0.00)
+
+            else:
+                curve_data.setdefault("inference_cylinder_radius_scale", 1.2)
+                curve_data.setdefault("inference_cylinder_radius_add", 0.02)
             curve = CurveHandle()
             curve.load_data(curve_data)
             self.curve_dict[curve.name] = curve

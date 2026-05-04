@@ -1,0 +1,257 @@
+# ============================================================
+# Armadillo dress adaptation
+# Current PWLA behavior:
+#   - top: pure wrap/snug
+#   - bottom: attach-to-free + ramp flare profile
+#
+# NOTE:
+#   In this PWLA file, free_profile_type is NOT used.
+#   The free profile is always a ramp:
+#     profile_start -> profile_end
+#
+#   free_profile_attach_gap is active:
+#     effective_start = max(free_profile_start, attach_s1 + free_profile_attach_gap)
+# ============================================================
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_2_v1|bottom
+
+  src_0: 0.55
+  src_1: 1.00
+  tgt_0: 0.25
+  tgt_1: 0.85
+
+  rot_deg: 0.0
+
+  scale: 1.0
+  wrap_radius: true
+  rigid_radius: false
+
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.25
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.10
+  attach_s1: 0.30
+
+  free_mode: rigid
+  free_scale: 1.05
+
+  use_free_profile_scale: true
+  free_profile_coord_space: relative
+  free_profile_start: 0.30
+  free_profile_end: 1.00
+  free_profile_gain: 0.55
+  free_profile_attach_gap: 0.08
+
+  wrap_scale_min: 0.50
+  wrap_scale_max: 2.20
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+  accessory_offset_mode: none
+
+  smooth_accessory_adapt_fields: false
+  smooth_avatar_adapt_fields: false
+  use_src_runtime_uv_center: false
+  use_tgt_runtime_uv_center: false
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+
+# ------------------------------------------------------------
+# 1. TOP / WAIST / BODY-FITTING PART
+# Pure wrap + snug. No attach/free here.
+# ------------------------------------------------------------
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_2_v1|top
+
+  src_0: 0.00
+  src_1: 0.60
+
+  tgt_0: 0.00
+  tgt_1: 0.50
+
+  rot_deg: 0.0
+
+  # Top wrap size.
+  # Lower = tighter; higher = looser.
+  scale: 0.60
+
+  wrap_radius: true
+  rigid_radius: false
+
+  # Current PWLA supports this, but top should not use it.
+  use_attach_to_free_blend: false
+  use_wrap_to_rigid_blend: false
+  use_free_profile_scale: false
+
+  # If your local runtime-cylinder patch is wired:
+  # use this to keep top support tight.
+  # If not wired, these keys are harmless but will not do anything.
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.50
+  wrap_scale_max: 2.20
+
+  # Top should snug to body
+  auto_avatar_snug_field: true
+  snug_mode: multiplicative
+
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+
+  snug_target_gap: 0.005
+  snug_gain: 2.0
+  snug_min_scale: 0.90
+  snug_max_scale: 1.08
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+
+  snug_penetration_guard: false
+  snug_penetration_clearance: 0.0001
+  snug_pushout_scale: 1.02
+
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  accessory_offset_mode: none
+
+  # Keep all runtime smoothing / UV center off first.
+  smooth_accessory_adapt_fields: false
+  smooth_avatar_adapt_fields: false
+  use_src_runtime_uv_center: false
+  use_tgt_runtime_uv_center: false
+
+  attach_blend_debug: false
+  wrap_debug: true
+  adapt_debug_counts: true
+
+
+
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_2_v1|bottom
+
+  src_0: 0.55
+  src_1: 1.00
+
+  tgt_0: 0.25
+  tgt_1: 0.85
+
+  rot_deg: 0.0
+
+  # This affects the attached/wrap branch.
+  scale: 0.6
+
+  wrap_radius: true
+  rigid_radius: false
+
+  # If your runtime cylinder patch is actually wired in localize_samples_adapt:
+  # start with 1.0 for baseline. Do NOT use 3.0 here initially.
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.5
+
+  # Accessory support clamp from your old config.
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.45
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  # Main attach -> free logic.
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+
+  # Your previous values.
+  attach_s0: 0.10
+  attach_s1: 0.30
+
+  free_mode: rigid
+
+  # Current PWLA inverse semantics:
+  # free_scale > 1 means larger in world because local query scale is inverted.
+  free_scale: 1.5
+
+  # Current PWLA only supports ramp profile.
+  # Do NOT add free_profile_type here; this file ignores it anyway.
+  use_free_profile_scale: true
+  free_profile_coord_space: relative
+
+  # Your previous values.
+  # Effective start becomes max(0.25, attach_s1 + 0.08) = 0.38
+  free_profile_start: 0.25
+  free_profile_end: 1.00
+  free_profile_gain: 0.75
+  free_profile_attach_gap: 0.08
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.50
+  wrap_scale_max: 2.20
+
+  # Your previous bottom used snug too.
+  # Keep it because we are matching your old config.
+  auto_avatar_snug_field: true
+  snug_mode: multiplicative
+
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.90
+  snug_max_scale: 1.08
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+
+  snug_penetration_guard: false
+  snug_penetration_clearance: 0.0001
+  snug_pushout_scale: 1.02
+
+  use_soft_snug: true
+  use_hard_avatar_clamp: true
+  cut_avatar: false
+
+  accessory_offset_mode: none
+
+  # Keep runtime smoothing / UV center off for baseline.
+  smooth_accessory_adapt_fields: false
+  smooth_avatar_adapt_fields: false
+  use_src_runtime_uv_center: false
+  use_tgt_runtime_uv_center: false
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true

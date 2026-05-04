@@ -58,6 +58,7 @@ class NGCDataset(Dataset):
             item_path = op.join(self.root_path, name)
             #handle_path = op.join(item_path, 'handle', 'std_handle.pkl')
             handle_path = op.join(item_path, 'handle', 'std_handle.npz')
+            print(handle_path)
             handle = Handle()
             handle.load(handle_path, shape_type)
             handles.append(handle)
@@ -102,7 +103,7 @@ class NGCDataset(Dataset):
         # the local curve ids internally can start from [0, 1, 2]
 
         # here input_curve_idx is the global one
-        #print("input_curve_idx = ", input_curve_idx)
+        #print("input_curve_idx = ", input_curve_idx, flush=True)
         #exit()
 
         #input1, gt1, sidx1 = self.get_curve_data(data['surface'], input_curve_idx, self.n_sample)

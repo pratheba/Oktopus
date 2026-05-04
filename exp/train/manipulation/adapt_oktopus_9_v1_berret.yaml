@@ -1,0 +1,12 @@
+- target_key: oktopus_9_v1|body
+  accessory_key: berret_1_v1|berret
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.2
+  src_1: 0.3
+  tgt_0: 0.1
+  tgt_1: 0.9
+  scale: 4.0
+  rot_deg: 0.0
+  cache_as: berret_1_v1|berret

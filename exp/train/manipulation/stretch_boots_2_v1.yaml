@@ -1,0 +1,22 @@
+boots_2_v1|foot:
+  new_key: boots_2_v1|foot
+  mode: end_extension
+  use_runtime_support: true
+  t0: 0.8
+  stretch_scale: 2.0
+  detail_tiles: 1.0
+  eps_region: 0.03
+  eps_seam: 0.05
+
+boots_2_v1|shaft:
+  new_key: boots_2_v1|shaft
+  mode: interval_forward 
+  anchor: coord
+  anchor_coord: 0.80
+  use_runtime_support: true
+  t0: 0.3
+  t1: 0.8
+  stretch_scale: 1.5
+  detail_tiles: 1.0
+  eps_region: 0.03
+  eps_seam: 0.05

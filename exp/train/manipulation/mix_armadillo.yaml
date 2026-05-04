@@ -1,0 +1,6 @@
+armadillo|L_leg:
+  new_key: boots|0
+  mode: TL_sym
+  seg: [0.01, 0.49]
+  sym_axis: 0.5
+  ts_reverse: False

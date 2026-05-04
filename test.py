@@ -45,7 +45,7 @@ def start_test(opt):
     # Marching Cubes config
     config_path = './exp/train/manipulation'
     grid_config = {
-        'reso': 256,
+        'reso': 128,
         'level': 0.,
         'size': 1.0,
     }

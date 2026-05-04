@@ -717,6 +717,25 @@ class NGCNetGrid(nn.Module):
         return out['sdf'], out['sdf_base']
 
     @torch.no_grad()
+    def inference_full(self, model_input, transform=None):
+        if transform == 'stretch':
+            curve_input = self.pack_data_stretch(model_input)
+            out = self.forwardstretch(curve_input)
+        else:
+            curve_input = self.pack_data(model_input)
+            out = self.forwardsimple(curve_input, istrain=False)
+
+        return {
+            "sdf": out["sdf"],
+            "sdf_base": out["sdf_base"],
+            "sdf_detail": out.get("sdf_detail", None),
+            "gate_detail": out.get("gate_detail", None),
+            "sdf_base1": out.get("sdf_base1", None),
+            "sdf_base2": out.get("sdf_base2", None),
+            "gate_base2": out.get("gate_base2", None),
+        }
+
+    @torch.no_grad()
     def mix_curve(self, model_input):
         mi = model_input
         curve_data = self.pack_data(mi)

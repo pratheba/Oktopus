@@ -1,0 +1,5 @@
+boots|0:
+  accessory_key: boots|1
+
+boots|1:
+  accessory_key: boots|0

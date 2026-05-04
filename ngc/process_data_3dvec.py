@@ -278,10 +278,10 @@ def get_full_base_residual_samples_globalperturbation(
     on_surface_data, on_surface_inferencedata = handle.prepare_samples(on_surface_tag, on_surface_samples)
 
     #on_surface_full_sdf = np.zeros(on_surface_data['samples'].shape[0], dtype=np.float32)
-    #on_surface_full_sdf = meshlab_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
-    #on_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
-    on_surface_full_sdf = trimesh_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
-    on_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
+    on_surface_full_sdf = meshlab_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
+    on_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
+    #on_surface_full_sdf = trimesh_SDF_eval(mesh_file, on_surface_data['samples']).astype(np.float32)
+    #on_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, on_surface_data['samples']).astype(np.float32)
     on_surface_res_sdf  = on_surface_full_sdf - on_surface_base_sdf
 
     on_surface_data['sdf'] = on_surface_full_sdf
@@ -299,10 +299,10 @@ def get_full_base_residual_samples_globalperturbation(
     off_surface_tag = f"{name_prefix}_off" if name_prefix else "off"
     pert_surface_data, _ = handle.prepare_samples(off_surface_tag, pert_surface_samples)
 
-    #pert_surface_full_sdf = meshlab_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
-    #pert_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
-    pert_surface_full_sdf = trimesh_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
-    pert_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
+    pert_surface_full_sdf = meshlab_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
+    pert_surface_base_sdf = meshlab_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
+    #pert_surface_full_sdf = trimesh_SDF_eval(mesh_file, pert_surface_data['samples']).astype(np.float32)
+    #pert_surface_base_sdf = trimesh_SDF_eval(mesh_base_file, pert_surface_data['samples']).astype(np.float32)
     pert_surface_res_sdf  = pert_surface_full_sdf - pert_surface_base_sdf
 
     pert_surface_data['sdf'] = pert_surface_full_sdf
@@ -318,7 +318,10 @@ def get_full_base_residual_samples_globalperturbation(
     # 4. SPACE / volumetric samples
     # ------------------------------------------------------------
     space_tag = f"{name_prefix}_space" if name_prefix else "space"
+    print("space_sample", space_samples.shape)
     space_data,_ = handle.prepare_samples(space_tag, space_samples)
+    print("space data after prepare samples", space_data['samples_local'].shape)
+    exit()
 
     space_full_sdf = meshlab_SDF_eval(mesh_file, space_data['samples']).astype(np.float32)
     space_base_sdf = meshlab_SDF_eval(mesh_base_file, space_data['samples']).astype(np.float32)
@@ -433,7 +436,10 @@ def get_full_base_residual_samples(
     # 4. SPACE / volumetric samples
     # ------------------------------------------------------------
     space_tag = f"{name_prefix}_space" if name_prefix else "space"
-    space_data, _ = handle.prepare_samples(space_tag, space_samples)
+    print("space_sample", space_samples.shape)
+    space_data,_ = handle.prepare_samples(space_tag, space_samples)
+    print("space data after prepare samples", space_data['samples_local'].shape)
+    exit()
 
     space_full_sdf = meshlab_SDF_eval(mesh_file, space_data['samples']).astype(np.float32)
     space_base_sdf = meshlab_SDF_eval(mesh_base_file, space_data['samples']).astype(np.float32)
@@ -470,9 +476,9 @@ def ngc_dataset(arg):
             handle_file = op.join(handle_path, 'std_handle.npz')
             #handle_file = op.join(handle_path, 'std_handle.pkl')
             handle_mesh_file = op.join(handle_path, 'std_mesh.ply')
-            output_train_path = op.join(item_path, 'train_data', str(n_keypoints))
-            output_val_path = op.join(item_path, 'val_data', str(n_keypoints))
-            output_all_path = op.join(item_path, 'all_data', str(n_keypoints))
+            output_train_path = op.join(item_path, 'train_data') # str(n_keypoints))
+            output_val_path = op.join(item_path, 'val_data') # str(n_keypoints))
+            output_all_path = op.join(item_path, 'all_data')# str(n_keypoints))
             os.makedirs(output_train_path, exist_ok=True) 
             os.makedirs(output_val_path, exist_ok=True)
             os.makedirs(output_all_path, exist_ok=True)
@@ -483,8 +489,10 @@ def ngc_dataset(arg):
             output_all_inferencefile = op.join(handle_path, 'inference.npz')
             #output_path = os.path.join(item_
 
-            if not overwrite: #op.exists(output_all_file):
-                print('Exists: ', item_path)
+
+            #if not overwrite: #op.exists(output_all_file):
+            if (not overwrite) and op.exists(output_all_file):
+                print('Exists: ', item_path, flush=True)
                 pbar.update(1)
                 continue
 
@@ -534,7 +542,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description='Input to preoprocessing')
     p.add_argument('-r', '--root_path', required=True)
     p.add_argument('-d', '--data_path', required=True)
-    p.add_argument('-w', '--overwrite', type=bool, required=True)
+    p.add_argument('-w', '--overwrite', action="store_true")
     p.add_argument('-k', '--n_keypoints', type=int, required=True)
     p.add_argument('-ns', '--noise_scales', type=ast.literal_eval, default=[0.02], required=True)
     p.add_argument('-ss', '--n_surface_samples', type=int, default=320000, required=True)

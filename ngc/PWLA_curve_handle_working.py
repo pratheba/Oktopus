@@ -3472,46 +3472,10 @@ class PWLACurve():
                     )
 
 
-                    #profile_tau = (profile_coord_used - profile_start) / (
-                    #    profile_end - profile_start + 1e-12
-                    #)
-                    #profile_w = _smoothstep01(profile_tau)
-                    profile_type = str(adapt_arg.get("free_profile_type", "ramp")).lower()
-
-                    if profile_type == "ramp":
-                        profile_tau = (profile_coord_used - profile_start) / (
-                            profile_end - profile_start + 1e-12
-                        )
-                        profile_w = _smoothstep01(profile_tau)
-
-                    elif profile_type == "bump":
-                        profile_peak = float(
-                            adapt_arg.get(
-                                "free_profile_peak",
-                                0.5 * (profile_start + profile_end),
-                            )
-                        )
-                        profile_peak = np.clip(
-                            profile_peak,
-                            profile_start + 1e-6,
-                            profile_end - 1e-6,
-                        )
-
-                        t_up = (profile_coord_used - profile_start) / (
-                            profile_peak - profile_start + 1e-12
-                        )
-                        t_down = (profile_end - profile_coord_used) / (
-                            profile_end - profile_peak + 1e-12
-                        )
-
-                        up = _smoothstep01(t_up)
-                        down = _smoothstep01(t_down)
-                        profile_w = up * down
-
-                    else:
-                        raise ValueError(
-                            f"Unknown free_profile_type={profile_type}. Use 'ramp' or 'bump'."
-                        )
+                    profile_tau = (profile_coord_used - profile_start) / (
+                        profile_end - profile_start + 1e-12
+                    )
+                    profile_w = _smoothstep01(profile_tau)
 
                     free_world_scale_s = free_world_scale * (1.0 + profile_gain * profile_w)
                 else:

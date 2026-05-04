@@ -1,0 +1,9 @@
+boots_2_v1|foot:
+  new_key: boots_2_v1|2
+  mode: part_stretch 
+  anchor: start
+  length: 2.0
+  t0: 0.0
+  t1: 1.0
+  eps_region: 0.03
+  eps_seam: 0.05

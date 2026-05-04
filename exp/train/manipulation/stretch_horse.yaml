@@ -1,0 +1,10 @@
+horse|body:
+  new_key: horse|body
+  mode: part_stretch 
+  t0: 0.3
+  t0_new: 0.9
+horse|leg1:
+  new_key: horse|leg1
+  mode: part_stretch 
+  t0: 0.3
+  t0_new: 0.9
