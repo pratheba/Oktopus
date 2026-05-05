@@ -513,9 +513,9 @@ class PWLACurve():
 
         self.key_wrap_radius_full = self.key_wrap_radius.copy()
         self.wrap_s_bins_full = self.wrap_s_bins.copy()
-        n_adapt = int(arg.get("wrap_adapt_n_keypoints", 64))
-        smooth_s = float(arg.get("wrap_adapt_smooth_s", 1.0))
-        smooth_theta = float(arg.get("wrap_adapt_smooth_theta", 1.0))
+        n_adapt = int(arg.get("wrap_adapt_n_keypoints", 100))
+        smooth_s = float(arg.get("wrap_adapt_smooth_s", 5.0))
+        smooth_theta = float(arg.get("wrap_adapt_smooth_theta", 3.0))
 
         if self.key_wrap_radius is not None:
             self.key_wrap_radius_adapt, self.wrap_s_bins_adapt = self.smooth_downsample_wrap_for_adapt(
@@ -2746,6 +2746,7 @@ class PWLACurve():
         dep_radius_z = dep_intpl["radius"][:, 1]
 
         delta_theta = np.deg2rad(float(dep_arg.get("rot_deg", 0.0)))
+        #translate_local = adapt_arg.get("translate_local", None)
         theta_tgt = theta_avatar + delta_theta
 
         scale_w_sample = tangent_dep / (tangent_avatar + 1e-12)
@@ -2844,6 +2845,8 @@ class PWLACurve():
         tgt_0 = float(adapt_arg["tgt_0"])
         tgt_1 = float(adapt_arg["tgt_1"])
         delta_theta = np.deg2rad(float(adapt_arg.get("rot_deg", 0.0)))
+        tloc = np.array([0.0, -0.3, 0.0], dtype=np.float64)
+        #if translate_local is not None:
 
         # ------------------------------------------------------------
         # 2) Crop to source interval
@@ -3522,17 +3525,121 @@ class PWLACurve():
                 # To make world garment larger, local query radius must become smaller.
                 local_free_scale_s = 1.0 / np.maximum(free_world_scale_s, 1e-8)
 
-                if free_mode == "default":
-                    scale_rho_free = local_free_scale_s * 0.5 * (scale_y + scale_z)
+                if free_mode == "unified_wrap":
+                    s_rel = blend_coord_used
+
+                    release_band = float(adapt_arg.get("unified_release_band", 0.03))
+                    m = np.abs(s_rel - attach_s1) <= release_band
+
+                    if np.any(m):
+                        r_release = float(np.median(r_tgt[m]))
+                    else:
+                        idx = int(np.argmin(np.abs(s_rel - attach_s1)))
+                        r_release = float(r_tgt[idx])
+
+                    flare_end = float(adapt_arg.get("unified_flare_end", 0.55))
+                    flare_gain = float(adapt_arg.get("unified_flare_gain", 0.8))
+
+                    t = (s_rel - attach_s1) / (flare_end - attach_s1 + 1e-12)
+                    w = _smoothstep01(t)
+
+                    # theta-independent umbrella radius
+                    r_umbrella = r_release * (1.0 + flare_gain * w)
+
+                    # optional return to actual skirt wrap radius lower down
+                    flow_start = float(adapt_arg.get("unified_flow_start", flare_end))
+                    flow_end = float(adapt_arg.get("unified_flow_end", 1.0))
+                    tf = (s_rel - flow_start) / (flow_end - flow_start + 1e-12)
+                    wf = _smoothstep01(tf)
+
+                    # r_tgt keeps the skirt's original theta/ripple/skirt flow
+                    #r_free_target = (1.0 - wf) * r_umbrella + wf * r_tgt
+                    r_free_target = r_umbrella
+                    r_free_target = np.maximum(r_free_target, 1e-6)
+                    r_tgt_safe = np.maximum(r_tgt, 1e-6)
+
+                    scale_rho_free = global_scale * r_tgt_safe / r_free_target
+                    rho_acc_free = rho_avatar * scale_rho_free
+
+                    #scale_rho_free = global_scale * r_free_target / (r_src + 1e-12)
+                    #rho_acc_free = rho_avatar * scale_rho_free
+
+                    rho_acc = weight_attach * rho_acc_wrap + (1.0 - weight_attach) * rho_acc_free
+                    print("[unified]",
+                          "r_src", np.min(r_src), np.mean(r_src), np.max(r_src),
+                          "r_tgt", np.min(r_tgt), np.mean(r_tgt), np.max(r_tgt),
+                          "r_release", r_release,
+                          "r_umbrella", np.min(r_umbrella), np.mean(r_umbrella), np.max(r_umbrella),
+                          "scale_free", np.min(scale_rho_free), np.mean(scale_rho_free), np.max(scale_rho_free))
                 else:
-                    scale_rho_free = local_free_scale_s
-
-                rho_acc_free = rho_avatar * scale_rho_free
-
-
-
+                    if free_mode == "default":
+                        scale_rho_free_raw = local_free_scale_s * 0.5 * (scale_y + scale_z)
+                    else:
+                        scale_rho_free_raw = local_free_scale_s
 
 
+                    # ------------------------------------------------------------
+                    # Optional release anchoring:
+                    # Make free_scale/profile relative to the wrap scale at attach_s1.
+                    #
+                    # Meaning:
+                    #   free_scale = 1.0 at profile_w=0
+                    #   => start from the same effective radius as wrap at release.
+                    #
+                    # This changes the target free branch itself.
+                    # free_match_wrap_at_release below then smooths into this target.
+                    # ------------------------------------------------------------
+                    if adapt_arg.get("free_anchor_to_release_scale", False):
+                        release_band = float(adapt_arg.get("free_release_sample_band", 0.03))
+
+                        release_mask = np.abs(blend_coord_used - attach_s1) <= release_band
+
+                        if np.any(release_mask):
+                            wrap_anchor_scale = float(np.median(scale_rho_wrap[release_mask]))
+                            free_anchor_scale = float(np.median(scale_rho_free_raw[release_mask]))
+                        else:
+                            idx = int(np.argmin(np.abs(blend_coord_used - attach_s1)))
+                            wrap_anchor_scale = float(scale_rho_wrap[idx])
+                            free_anchor_scale = float(scale_rho_free_raw[idx])
+
+                        # Normalize raw free branch so that at attach_s1 it equals wrap scale.
+                        scale_rho_free_raw = scale_rho_free_raw * (
+                            wrap_anchor_scale / (free_anchor_scale + 1e-8)
+                        )
+
+                        if adapt_arg.get("attach_blend_debug", False):
+                            print(
+                                "[free_anchor_to_release]",
+                                "release_band=", release_band,
+                                "wrap_anchor_scale=", wrap_anchor_scale,
+                                "free_anchor_scale=", free_anchor_scale,
+                                "scale_free_raw anchored min/mean/max=",
+                                float(np.min(scale_rho_free_raw)),
+                                float(np.mean(scale_rho_free_raw)),
+                                float(np.max(scale_rho_free_raw)),
+                            )
+
+
+                    # ------------------------------------------------------------
+                    # Optional continuity correction:
+                    # Make the free branch start from the wrap branch instead of
+                    # jumping immediately to independent free scale.
+                    # ------------------------------------------------------------
+                    if adapt_arg.get("free_match_wrap_at_release", False):
+                        print("in free match")
+                        free_band = float(adapt_arg.get("free_match_wrap_band", 0.20))
+
+                        t_free = (blend_coord_used - attach_s1) / (free_band + 1e-12)
+                        w_free = _smoothstep01(t_free)
+
+                        scale_rho_free = (
+                            (1.0 - w_free) * scale_rho_wrap
+                            + w_free * scale_rho_free_raw
+                        )
+                    else:
+                        scale_rho_free = scale_rho_free_raw
+
+                    rho_acc_free = rho_avatar * scale_rho_free
 
                 rho_acc = (
                     weight_attach * rho_acc_wrap
@@ -3630,6 +3737,39 @@ class PWLACurve():
         # ------------------------------------------------------------
         # 11) Normalize accessory local coords for model input
         # ------------------------------------------------------------
+        #tloc = np.array([0.0, -0.15, 0.0], dtype=np.float64)
+        tloc = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+
+        w_acc = w_acc - tloc[0]
+        u_acc = u_acc - tloc[1]
+        v_acc = v_acc - tloc[2]
+
+        rho_acc = np.sqrt(u_acc ** 2 + v_acc ** 2)
+
+        tilt_deg = 0.0
+        tilt_rad = np.deg2rad(tilt_deg)
+
+        # choose anchor in accessory coord space
+        # use tgt_0 or tgt_1 depending which side is heel/ankle
+        anchor_s = float(tgt_1)   # try tgt_1 first; if wrong, use tgt_0
+
+        # signed distance along accessory curve, approximate
+        curve_len, _ = accessory_curve_handle.core.calc_curve_length()
+        d = (acc_coords - anchor_s) * curve_len
+
+        # only tilt one side of anchor
+        side = np.sign(float(tgt_0) - float(tgt_1))  # direction toward front/toe
+        forward = np.maximum(side * d, 0.0)
+
+        # pitch toe upward:
+        # try u_acc first. If it tilts sideways, switch to v_acc.
+        u_acc = u_acc - np.tan(tilt_rad) * forward
+        tilt_deg = 0.0
+        tilt_rad = np.deg2rad(tilt_deg)
+        v_acc = v_acc - np.tan(tilt_rad) * forward
+
+
+
         w_n_acc = w_acc / (tangent_acc + 1e-12)
         u_n_acc = u_acc / (acc_radius_y + 1e-12)
         v_n_acc = v_acc / (acc_radius_z + 1e-12)

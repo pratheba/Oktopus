@@ -1,3 +1,241 @@
+
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.4
+  src_1: 1.0
+
+  tgt_0: 0.2
+  tgt_1: 0.9
+
+  rot_deg: 0.0
+
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 1.0
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.2
+  attach_s1: 0.4
+  #free_mode: unified_wrap
+
+  #unified_release_band: 0.06
+  #unified_flare_end: 0.5
+  #unified_flare_gain: 0.9
+
+  # keep umbrella radius until knee/hem, then optionally blend back to real skirt wrap
+  #unified_flow_start: 0.55
+  #unified_flow_end: 1.00
+
+
+  free_mode: rigid
+  free_scale: 1.5
+
+  use_free_profile_scale: true
+  free_profile_coord_space: relative
+  free_profile_type: ramp
+  free_anchor_to_release_scale: true
+  free_release_sample_band: 0.06
+  free_match_wrap_at_release: true
+  free_match_wrap_band: 0.6
+  free_profile_start: 0.5
+  free_profile_end: 0.7
+  free_profile_gain: 1.5
+  free_profile_attach_gap: 0.0
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.0
+  snug_min_scale: 0.9
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+
+
+
+
+
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.6
+  src_1: 1.0
+
+  tgt_0: 0.3
+  tgt_1: 0.9
+
+  rot_deg: 30.0
+
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 1.0
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.0
+  attach_s1: 0.03
+  free_mode: unified_wrap
+
+  unified_release_band: 0.03
+  unified_flare_end: 0.3
+  unified_flare_gain: 0.9
+
+  # keep umbrella radius until knee/hem, then optionally blend back to real skirt wrap
+  #unified_flow_start: 0.55
+  #unified_flow_end: 1.00
+
+
+  #free_mode: rigid
+  #free_scale: 1.0
+
+  #use_free_profile_scale: true
+  #free_profile_coord_space: relative
+  #free_profile_type: ramp
+  #free_anchor_to_release_scale: true
+  #free_release_sample_band: 0.03
+  #free_match_wrap_at_release: true
+  #free_match_wrap_band: 0.02
+  #free_profile_start: 0.05
+  #free_profile_end: 0.2
+  #free_profile_gain: 1.0
+  #free_profile_attach_gap: 0.0
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.95
+  snug_max_scale: 1.05
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+
+
+#=========================
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_lower
+
+  src_0: 0.72
+  src_1: 1.00
+
+  tgt_0: 0.5
+  tgt_1: 1.00
+
+  rot_deg: 0.0
+
+  wrap_radius: true
+  rigid_radius: false
+
+  # Slightly larger at the top helps meet upper piece.
+  scale: 1.00
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.45
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  # Lower starts somewhat attached so it follows the upper/knee area,
+  # then becomes rigid/original.
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.00
+  attach_s1: 0.1
+
+  free_mode: rigid
+  free_scale: 1.00
+
+  # Very mild reverse idea: no extra flare first.
+  use_free_profile_scale: false
+  free_profile_gain: 0.0
+  free_profile_type: ramp
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+
+
 # ============================================================
 # Armadillo dress adaptation
 # Current PWLA behavior:
@@ -34,7 +272,7 @@
   adapt_use_owned_gate: false
 
   use_accessory_support_clamp: true
-  support_rho_limit: 1.25
+  support_rho_limit: 1.0
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
@@ -42,25 +280,40 @@
   use_attach_to_free_blend: true
   attach_blend_coord: accessory
   attach_coord_space: relative
-  attach_s0: 0.10
-  attach_s1: 0.30
+  attach_s0: 0.0
+  attach_s1: 0.1
 
   free_mode: rigid
-  free_scale: 1.05
+  free_scale: 1.5
 
   use_free_profile_scale: true
+  free_profile_type: ramp
   free_profile_coord_space: relative
-  free_profile_start: 0.30
-  free_profile_end: 1.00
-  free_profile_gain: 0.55
-  free_profile_attach_gap: 0.08
+  free_profile_start: 0.1
+  free_profile_peak: 0.5
+  free_profile_end: 0.8
+  free_profile_gain: 0.5
+  free_profile_attach_gap: 0.02
 
   wrap_scale_min: 0.50
   wrap_scale_max: 2.20
 
-  auto_avatar_snug_field: false
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.0
+  snug_min_scale: 0.90
+  snug_max_scale: 1.08
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+
   use_soft_snug: false
-  use_hard_avatar_clamp: false
+  use_hard_avatar_clamp: true
   cut_avatar: false
   accessory_offset_mode: none
 
@@ -82,17 +335,17 @@
   mode: direct
   cache_as: dress_2_v1|top
 
-  src_0: 0.00
+  src_0: 0.1
   src_1: 0.60
 
-  tgt_0: 0.00
+  tgt_0: 0.1
   tgt_1: 0.50
 
   rot_deg: 0.0
 
   # Top wrap size.
   # Lower = tighter; higher = looser.
-  scale: 0.60
+  scale: 0.8
 
   wrap_radius: true
   rigid_radius: false
@@ -123,12 +376,12 @@
   snug_surface_band: 0.015
 
   snug_target_gap: 0.005
-  snug_gain: 2.0
+  snug_gain: 3.0
   snug_min_scale: 0.90
   snug_max_scale: 1.08
   snug_min_count: 6
-  snug_smooth_s: 0.75
-  snug_smooth_theta: 0.75
+  snug_smooth_s: 3.0
+  snug_smooth_theta: 2.0
   snug_debug: true
 
   snug_penetration_guard: false
