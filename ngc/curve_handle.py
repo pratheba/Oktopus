@@ -253,14 +253,14 @@ class CurveHandle():
         kidx = kidx[inside]
         return accessory_data, avatar_data, kidx, inside
 
-    def filter_grid_adapt(self, mc_grid, adapt_arg):
+    def filter_grid_adapt_old2(self, mc_grid, adapt_arg):
         samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
         #samples, kidx = mc_grid.generate_samples()
 
         mode = adapt_arg.get("mode", "direct")
 
         if mode == "direct":
-            accessory_data, avatar_data, inside, runtime_support = self.core.localize_samples_adapt(samples, adapt_arg)
+            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
             #accessory_curve_handle = adapt_arg["accessory_curve_handle"]
             #accessory_data, kidx = accessory_curve_handle.filter_grid_on_runtime_support(
             #    mc_grid,
@@ -282,6 +282,37 @@ class CurveHandle():
         kidx = kidx[inside]
         return accessory_data, avatar_data, kidx, inside
 
+    def filter_grid_adapt(self, mc_grid, adapt_arg):
+        if bool(adapt_arg.get("use_adapt_control_filter_grid", False)):
+            s = np.linspace(0.0, 1.0, n_sample_curve)
+            ctrl = self.core.build_adapt_control_field(
+                s,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
+                smooth_points_sigma=float(adapt_arg.get("avatar_control_smooth_points_sigma", 8.0)),
+                smooth_radius_sigma=float(adapt_arg.get("avatar_control_smooth_radius_sigma", 0.0)),
+                rebuild_frames=bool(adapt_arg.get("avatar_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="cylinder",
+            )
+            intpl = {
+                "points": ctrl["points"],
+                "frame": ctrl["frame"],
+                "radius": ctrl["radius"],
+                "thetas": (2.0 * np.pi) * np.linspace(0, 1, n_sample_circle, endpoint=False),
+            }
+            cyl_mesh = self.__gen_cyl_mesh(intpl)
+            samples, kidx = cyl_mesh.filter_grid(mc_grid)
+        else:
+            samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
+
+        mode = adapt_arg.get("mode", "direct")
+        if mode == "direct":
+            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+        else:
+            raise ValueError(f"Unknown adapt mode: {mode}")
+
+        kidx = kidx[inside]
+        return accessory_data, avatar_data, kidx, inside
 
     def filter_grid_adapt_test(self, mc_grid, adapt_arg):
         self.core.update_coords()

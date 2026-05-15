@@ -91,7 +91,9 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
     # 0_keypoints.ply
     # 0_surface_points_all.ply
     # 0_surface_points_owned.ply
-    pat = re.compile(r"^(\d+)_(keypoints|surface_points_all|surface_points_owned)\.ply$")
+    #pat = re.compile(r"^(\d+)_(keypoints|surface_points_all|surface_points_owned)\.ply$")
+    #pat = re.compile(r"^(\d+)_(keypoints|surface_points_all)\.ply$")
+    pat = re.compile(r"^(\d+)_(keypoints)\.ply$")
 
     grouped = {}
     for fp in glob.glob(os.path.join(ply_dir, "*.ply")):
@@ -112,17 +114,17 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
 
         if update_keypoints and "keypoints" in files:
             seg["keypoints"] = load_ply_xyz(files["keypoints"])
-
-        if "surface_points_all" in files:
-            seg["surface_points_all"] = load_ply_xyz(files["surface_points_all"])
-
-        if "surface_points_owned" in files:
-            seg["surface_points_owned"] = load_ply_xyz(files["surface_points_owned"])
-        elif "surface_points_all" in files:
-            # if only all is supplied, keep behavior simple: owned := all
-            seg["surface_points_owned"] = np.asarray(seg["surface_points_all"], dtype=np.float64).copy()
-
-        seg = recompute_segment_fields_preserve_owned(seg)
+#
+#        if "surface_points_all" in files:
+#            seg["surface_points_all"] = load_ply_xyz(files["surface_points_all"])
+#
+#        if "surface_points_owned" in files:
+#            seg["surface_points_owned"] = load_ply_xyz(files["surface_points_owned"])
+#        elif "surface_points_all" in files:
+#            # if only all is supplied, keep behavior simple: owned := all
+#            seg["surface_points_owned"] = np.asarray(seg["surface_points_all"], dtype=np.float64).copy()
+#
+#        seg = recompute_segment_fields_preserve_owned(seg)
         by_id[sid] = seg
         print(f"[updated] segment {sid}: {list(files.keys())}")
 

@@ -4,7 +4,6 @@ import os
 import json
 import numpy as np
 from copy import deepcopy
-import glob
 import trimesh
 from scipy.ndimage import gaussian_filter1d
 
@@ -37,163 +36,6 @@ def save_segments(path, out_dir, segs):
         json.dump({"segments": summary}, f, indent=2)
 
 
-def _safe_seg_name(seg):
-    return str(seg.get("name", f"segment_{int(seg['id'])}")).replace("/", "_")
-
-
-def find_part_mesh(parts_dir, seg, part_kind="full"):
-    """
-    Resolve part mesh path for one segment.
-
-    Preferred:
-        <id>_<name>.ply
-
-    Fallback:
-        <id>_*.ply
-    """
-    sid = int(seg["id"])
-    name = _safe_seg_name(seg)
-
-    exact = os.path.join(parts_dir, f"{sid}_{name}.ply")
-    if os.path.exists(exact):
-        return exact
-
-    matches = sorted(glob.glob(os.path.join(parts_dir, f"{sid}_*.ply")))
-
-    if len(matches) == 1:
-        print(
-            f"[part mesh] exact {part_kind} mesh missing for "
-            f"id={sid}, name={name}; using {matches[0]}"
-        )
-        return matches[0]
-
-    if len(matches) == 0:
-        raise FileNotFoundError(
-            f"No {part_kind} part mesh found for segment id={sid}, "
-            f"name={name}, in {parts_dir}"
-        )
-
-    raise RuntimeError(
-        f"Ambiguous {part_kind} part meshes for segment id={sid}: {matches}"
-    )
-
-
-def mesh_surface_area(mesh_path):
-    mesh = trimesh.load(mesh_path, process=False)
-
-    if not isinstance(mesh, trimesh.Trimesh):
-        raise TypeError(f"Expected Trimesh at {mesh_path}, got {type(mesh)}")
-
-    if len(mesh.faces) == 0:
-        raise ValueError(f"Part mesh has no faces: {mesh_path}")
-
-    area = float(mesh.area)
-    if not np.isfinite(area) or area <= 0.0:
-        raise ValueError(f"Invalid surface area {area} for mesh: {mesh_path}")
-
-    return area
-
-
-def sample_part_surface(mesh_path, n_samples):
-    mesh = trimesh.load(mesh_path, process=False)
-
-    if not isinstance(mesh, trimesh.Trimesh):
-        raise TypeError(f"Expected Trimesh at {mesh_path}, got {type(mesh)}")
-
-    if len(mesh.faces) == 0:
-        raise ValueError(f"Part mesh has no faces: {mesh_path}")
-
-    sampled, _ = trimesh.sample.sample_surface(mesh, int(n_samples))
-    sampled = np.asarray(sampled, dtype=np.float64)
-
-    print(
-        "[part sample]",
-        os.path.basename(mesh_path),
-        "n=",
-        len(sampled),
-        "area=",
-        float(mesh.area),
-    )
-
-    return sampled
-
-
-def allocate_samples_by_area(
-    segs,
-    parts_dir,
-    total_samples,
-    min_part_samples,
-    part_kind="full",
-):
-    """
-    Allocate a global sample budget across part meshes by surface area.
-
-    Returns
-    -------
-    allocation : dict[int, dict]
-        allocation[segment_id] = {
-            "mesh_path": ...,
-            "area": ...,
-            "n_samples": ...
-        }
-    """
-    records = []
-
-    for seg in segs:
-        sid = int(seg["id"])
-        mesh_path = find_part_mesh(parts_dir, seg, part_kind=part_kind)
-        area = mesh_surface_area(mesh_path)
-
-        records.append({
-            "id": sid,
-            "mesh_path": mesh_path,
-            "area": area,
-        })
-
-    total_area = sum(r["area"] for r in records)
-    if total_area <= 0.0:
-        raise ValueError(f"Total {part_kind} mesh area is invalid: {total_area}")
-
-    total_samples = int(total_samples)
-    min_part_samples = int(min_part_samples)
-
-    # Initial allocation: area-proportional, with minimum floor.
-    for r in records:
-        area_count = int(round(total_samples * (r["area"] / total_area)))
-        r["n_samples"] = max(min_part_samples, area_count)
-
-    # The minimum floor may push total above requested budget.
-    # We keep that behavior because under-sampling tiny parts is worse.
-    actual_total = sum(r["n_samples"] for r in records)
-
-    print(f"[sample allocation:{part_kind}]")
-    print(
-        f"  requested_total={total_samples} "
-        f"actual_total={actual_total} "
-        f"min_part_samples={min_part_samples} "
-        f"total_area={total_area:.6f}"
-    )
-
-    for r in records:
-        frac = r["area"] / total_area
-        print(
-            f"  id={r['id']:>3} "
-            f"area={r['area']:.6f} "
-            f"frac={frac:.4f} "
-            f"n_samples={r['n_samples']} "
-            f"mesh={os.path.basename(r['mesh_path'])}"
-        )
-
-    return {
-        r["id"]: {
-            "mesh_path": r["mesh_path"],
-            "area": r["area"],
-            "n_samples": r["n_samples"],
-        }
-        for r in records
-    }
-
-
 def compute_tangents(poly):
     poly = np.asarray(poly, dtype=np.float64)
     K = len(poly)
@@ -224,54 +66,6 @@ def orthogonal_vector(v):
 
     u = a - np.dot(a, v) * v
     return u / (np.linalg.norm(u) + 1e-12)
-
-def resample_polyline_by_arclength(poly, n):
-    poly = np.asarray(poly, dtype=np.float64)
-
-    if len(poly) <= 2 or n >= len(poly):
-        return poly.copy()
-
-    seg = np.diff(poly, axis=0)
-    seglen = np.linalg.norm(seg, axis=1)
-    cs = np.concatenate([[0.0], np.cumsum(seglen)])
-    total = cs[-1]
-
-    if total < 1e-12:
-        return np.repeat(poly[:1], n, axis=0)
-
-    s_new = np.linspace(0.0, total, int(n))
-
-    out = np.stack([
-        np.interp(s_new, cs, poly[:, 0]),
-        np.interp(s_new, cs, poly[:, 1]),
-        np.interp(s_new, cs, poly[:, 2]),
-    ], axis=1)
-
-    return out
-
-
-def choose_n_keypoints_by_arclength(
-    key,
-    bbox_unit_ref=5.0,
-    max_keypoints=64,
-    min_keypoints=12,
-):
-    key = np.asarray(key, dtype=np.float64)
-
-    if len(key) < 2:
-        return len(key)
-
-    L = np.sum(np.linalg.norm(np.diff(key, axis=0), axis=1))
-
-    # Your rule:
-    # arclength 5 in unit bbox -> max 64 keypoints
-    n = int(np.ceil((L / float(bbox_unit_ref)) * int(max_keypoints)))
-
-    n = max(int(min_keypoints), n)
-    n = min(int(max_keypoints), n)
-    n = min(n, len(key))
-
-    return n
 
 
 def compute_parallel_transport_frames(poly):
@@ -425,14 +219,10 @@ def orthonormalize_frames(T, U, V):
     return T, U, V
 
 
-def localize_owned_points(key, T, U, V, pts, center_offsets=None):
+def localize_owned_points(key, T, U, V, pts):
     proj, s, seg_ids, dist = nearest_polyline_projection(key, pts)
 
     key_s = np.linspace(0.0, 1.0, len(key))
-    if center_offsets is not None:
-        center_offsets = np.asarray(center_offsets, dtype=np.float64)
-        offset_q = interp_key_field(key_s, center_offsets, s)
-        proj = proj + offset_q
 
     Tq = interp_key_field(key_s, T, s)
     Uq = interp_key_field(key_s, U, s)
@@ -458,162 +248,6 @@ def localize_owned_points(key, T, U, V, pts, center_offsets=None):
     return s, key_ids, w, u, v
 
 
-def compute_wrap_tangent_offsets(
-    key,
-    T,
-    pts,
-    window_frac=0.035,
-    min_points=20,
-    smooth_sigma=2.0,
-    max_shift_frac=0.35,
-    tangent_bias=0.0,
-):
-    """
-    Tangent/W-only offset for wrap-radius estimation.
-    Does NOT modify skeleton/keypoints.
-    """
-    key = np.asarray(key, dtype=np.float64)
-    T = np.asarray(T, dtype=np.float64)
-    pts = np.asarray(pts, dtype=np.float64)
-
-    K = len(key)
-    offsets = np.zeros((K, 3), dtype=np.float64)
-
-    if K < 2 or len(pts) == 0:
-        return offsets
-
-    _, s_pts, _, _ = nearest_polyline_projection(key, pts)
-    key_s = np.linspace(0.0, 1.0, K)
-
-    for i, s0 in enumerate(key_s):
-        m = np.abs(s_pts - s0) <= float(window_frac)
-        if np.sum(m) < int(min_points):
-            continue
-
-        rel = pts[m] - key[i][None, :]
-        ww = rel @ T[i]
-
-        dw = float(np.median(ww))
-        dw += float(tangent_bias)
-
-        #max_shift = float(max_shift_frac) * max(float(local_step), 1e-6)
-        #dw = float(np.clip(dw, -max_shift, max_shift))
-        #offsets[i] = dw * T[i]
-
-        # per-keypoint local spacing clamp
-        if i == 0:
-            local_step = np.linalg.norm(key[1] - key[0])
-        elif i == K - 1:
-            local_step = np.linalg.norm(key[-1] - key[-2])
-        else:
-            local_step = 0.5 * (
-                np.linalg.norm(key[i] - key[i - 1])
-                + np.linalg.norm(key[i + 1] - key[i])
-            )
-
-        max_shift = float(max_shift_frac) * max(float(local_step), 1e-6)
-        dw = float(np.clip(dw, -max_shift, max_shift))
-
-        offsets[i] = dw * T[i]
-
-    if smooth_sigma and smooth_sigma > 0:
-        offsets = gaussian_filter1d(
-            offsets,
-            sigma=float(smooth_sigma),
-            axis=0,
-            mode="nearest",
-        )
-
-    if K > 2:
-        offsets[0] *= 0.25
-        offsets[-1] *= 0.25
-
-    return offsets
-
-def compute_wrap_center_offsets(
-    key,
-    T,
-    U,
-    V,
-    pts,
-    window_frac=0.035,
-    min_points=20,
-    smooth_sigma=2.0,
-    max_shift_frac=0.35,
-):
-    """
-    Compute per-keypoint center offsets for wrap-radius estimation only.
-    Does NOT modify skeleton/keypoints.
-
-    Offset is restricted to local U/V plane, so tangent position stays fixed.
-    """
-    key = np.asarray(key, dtype=np.float64)
-    pts = np.asarray(pts, dtype=np.float64)
-    K = len(key)
-
-    offsets = np.zeros((K, 3), dtype=np.float64)
-
-    if K < 2 or len(pts) == 0:
-        return offsets
-
-    _, s_pts, _, _ = nearest_polyline_projection(key, pts)
-    key_s = np.linspace(0.0, 1.0, K)
-
-    for i, s0 in enumerate(key_s):
-        m = np.abs(s_pts - s0) <= float(window_frac)
-
-        if np.sum(m) < int(min_points):
-            continue
-
-        local_pts = pts[m]
-        C = key[i]
-
-        rel = local_pts - C[None, :]
-        uu = rel @ U[i]
-        vv = rel @ V[i]
-        rho = np.sqrt(uu * uu + vv * vv)
-
-        # trim far outliers
-        if len(rho) >= min_points:
-            keep = rho <= np.quantile(rho, 0.90)
-            if np.sum(keep) >= min_points:
-                uu = uu[keep]
-                vv = vv[keep]
-                rho = rho[keep]
-
-        # robust local center in UV
-        du = float(np.median(uu))
-        dv = float(np.median(vv))
-
-        #delta = du * U[i] + dv * V[i]
-        w = rel @ T[i]
-        dw = float(np.median(w))
-        delta = dw * T[i]
-
-        # clamp shift so it does not recenter too aggressively
-        local_scale = float(max(1e-4, np.quantile(rho, 0.80)))
-        max_shift = float(max_shift_frac) * local_scale
-
-        n = np.linalg.norm(delta)
-        if n > max_shift:
-            delta = delta / (n + 1e-12) * max_shift
-
-        offsets[i] = delta
-
-    if smooth_sigma and smooth_sigma > 0:
-        offsets = gaussian_filter1d(
-            offsets,
-            sigma=float(smooth_sigma),
-            axis=0,
-            mode="nearest",
-        )
-
-    # keep endpoints conservative
-    if K > 2:
-        offsets[0] *= 0.25
-        offsets[-1] *= 0.25
-
-    return offsets
 
 
 def compute_train_cylinder_radius(
@@ -721,8 +355,7 @@ def compute_directional_wrap_radius(
     fallback_radius=None,
     wrap_margin=0.01,
     wrap_relative_margin=0.03,
-    wrap_w_factor=1.5,
-    wrap_center_offsets=False,
+    wrap_w_factor=1.5
 ):
     K = len(key)
     theta_bins = np.linspace(-np.pi, np.pi, n_theta_bins, endpoint=False)
@@ -741,7 +374,7 @@ def compute_directional_wrap_radius(
             "wrap_radius_max": np.max(wrap, axis=1),
         }
 
-    s, key_ids, w, u, v = localize_owned_points(key, T, U, V, pts, wrap_center_offsets)
+    s, key_ids, w, u, v = localize_owned_points(key, T, U, V, pts)
     rho = np.sqrt(u * u + v * v)
     theta = np.arctan2(v, u)
 
@@ -822,10 +455,10 @@ def compute_directional_wrap_radius(
         #if np.any(np.isfinite(wrap[i])):
         #    wrap[i] = fill_invalid_periodic_theta(wrap[i])
         valid_bins = np.isfinite(wrap[i])
-        n_valid = int(np.sum(valid_bins))
         # require enough angular support before periodic interpolation
-        if n_valid >= max(6, min_count):
+        if np.sum(valid_bins) >= max(6, min_count):
             wrap[i] = fill_invalid_periodic_theta(wrap[i])
+
 
 
     # fill missing s bins per theta
@@ -920,80 +553,18 @@ def compute_directional_wrap_radius(
     }
 
 
-def update_segment_radius(seg, args, full_alloc, base_alloc):
+def update_segment_radius(seg, args):
+
     seg = deepcopy(seg)
 
     key = np.asarray(seg["keypoints"], dtype=np.float64)
 
 
-#    # Use owned points if present. This is the important part.
-#    if args.use_owned and "surface_points_owned" in seg:
-#        pts = np.asarray(seg["surface_points_owned"], dtype=np.float64)
-#    else:
-#        pts = np.asarray(seg.get("surface_points_all", np.zeros((0, 3))), dtype=np.float64)
-#
-#    if args.mesh_path is not None and args.extra_surface_samples > 0:
-#        mesh = trimesh.load(args.mesh_path, process=False)
-#        sampled, _ = trimesh.sample.sample_surface(mesh, args.extra_surface_samples)
-#
-#        # keep only sampled points close to this segment's existing support
-#        from scipy.spatial import cKDTree
-#        tree = cKDTree(pts)
-#        d, _ = tree.query(sampled, k=1)
-#
-#        keep = d < args.sample_keep_dist
-#        sampled = sampled[keep]
-#
-#        pts = np.concatenate([pts, sampled], axis=0)
-#        seg["surface_points_all"] = pts.copy()
-#        seg["surface_points_owned"] = pts.copy()
-
-
-    # ------------------------------------------------------------------
-    # Per-curve part-mesh sampling.
-    #
-    # full part samples:
-    #   - used to compute train/cylinder/wrap radii
-    #   - saved as surface_points_all / surface_points_owned
-    #
-    # base part samples:
-    #   - saved for process_data_3dvec.py
-    #   - NOT used to compute radii here
-    # ------------------------------------------------------------------
-
-
-    sid = int(seg["id"])
-
-    full_info = full_alloc[sid]
-    base_info = base_alloc[sid]
-
-    full_mesh_path = full_info["mesh_path"]
-    base_mesh_path = base_info["mesh_path"]
-
-    pts_full = sample_part_surface(
-        full_mesh_path,
-        full_info["n_samples"],
-    )
-
-    pts_base = sample_part_surface(
-        base_mesh_path,
-        base_info["n_samples"],
-    )
-
-    # Radius/wrap support comes from FULL/detail part samples.
-    pts = pts_full
-
-    # Keep your old naming consistent: all == owned.
-    seg["surface_points_all"] = pts_full.copy()
-    seg["surface_points_owned"] = pts_full.copy()
-
-    # New field for base-mesh surface training samples.
-    seg["surface_points_base"] = pts_base.copy()
-
-    # Useful provenance in the final NPZ.
-    seg["surface_mesh_full_path"] = full_mesh_path
-    seg["surface_mesh_base_path"] = base_mesh_path
-
+    # Use owned points if present. This is the important part.
+    if args.use_owned and "surface_points_owned" in seg:
+        pts = np.asarray(seg["surface_points_owned"], dtype=np.float64)
+    else:
+        pts = np.asarray(seg.get("surface_points_all", np.zeros((0, 3))), dtype=np.float64)
 
     if args.recenter:
         key = recenter_keypoints_from_owned_points(
@@ -1007,18 +578,6 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
         )
 
         seg["keypoints"] = key
-
-    if args.resample_keypoints_by_arclen:
-        n_key = choose_n_keypoints_by_arclength(
-            key,
-            bbox_unit_ref=args.keypoint_arclen_ref,
-            max_keypoints=args.max_keypoints,
-            min_keypoints=args.min_keypoints,
-        )
-
-        key = resample_polyline_by_arclength(key, n_key)
-        seg["keypoints"] = key
-
 
     if args.smooth_keypoints_sigma > 0:
         key0 = key.copy()
@@ -1037,17 +596,6 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
 
     T, U, V, frames = compute_parallel_transport_frames(key)
     _, point_s, point_key_ids, _ = nearest_polyline_projection(key, pts)
-
-    wrap_center_offsets = None
-    if args.wrap_center_offsets:
-        wrap_center_offsets = compute_wrap_tangent_offsets(
-            key, T, pts,
-            window_frac=args.wrap_center_window_frac,
-            min_points=args.wrap_center_min_points,
-            smooth_sigma=args.wrap_center_smooth_sigma,
-            max_shift_frac=args.wrap_center_max_shift_frac,
-            tangent_bias=args.wrap_center_tangent_bias,
-        )
 
     train, cylinder = compute_train_cylinder_radius(
         key, T, U, V, pts,
@@ -1070,7 +618,6 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
         wrap_margin=args.wrap_margin,
         wrap_relative_margin=args.wrap_relative_margin,
         wrap_w_factor=args.wrap_w_factor,
-        wrap_center_offsets=wrap_center_offsets
     )
 
     if args.cylinder_from_wrap:
@@ -1119,28 +666,17 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
 
     meta = dict(seg.get("metadata", {}))
     meta["radius_updated_by"] = "update_radius.py"
-    #meta["radius_source_points"] = "surface_points_owned" if args.use_owned and "surface_points_owned" in seg else "surface_points_all"
-    meta["radius_source_points"] = "sampled_full_part_mesh"
-    meta["surface_full_mesh_path"] = full_mesh_path
-    meta["surface_base_mesh_path"] = base_mesh_path
-    meta["surface_full_mesh_area"] = float(full_info["area"])
-    meta["surface_base_mesh_area"] = float(base_info["area"])
-    meta["n_surface_full"] = int(len(pts_full))
-    meta["n_surface_base"] = int(len(pts_base))
+    meta["radius_source_points"] = "surface_points_owned" if args.use_owned and "surface_points_owned" in seg else "surface_points_all"
     meta["radius_train_shape"] = list(train.shape)
     meta["radius_cylinder_shape"] = list(cylinder.shape)
     meta["key_wrap_radius_shape"] = list(wrap["key_wrap_radius"].shape)
     meta["n_theta_bins"] = int(args.n_theta_bins)
     seg["metadata"] = meta
 
-
-    #f"train={train.shape} cyl={cylinder.shape} wrap={wrap['key_wrap_radius'].shape}"
     print(
         f"[radius] id={seg.get('id')} name={seg.get('name','')} "
         f"K={len(key)} pts={len(pts)} "
-        f"full_pts={len(pts_full)} base_pts={len(pts_base)} "
-        f"train={train.shape} cyl={cylinder.shape} "
-        f"wrap={wrap['key_wrap_radius'].shape}"
+        f"train={train.shape} cyl={cylinder.shape} wrap={wrap['key_wrap_radius'].shape}"
     )
 
     return seg
@@ -1414,53 +950,7 @@ def main():
     p.add_argument("--out_dir", required=True)
     p.add_argument("--version", required=True)
 
-    #p.add_argument("--use_owned", action="store_true", help="Use surface_points_owned instead of surface_points_all when available.")
-    #p.add_argument("--mesh_path", default=None)
-    #p.add_argument("--extra_surface_samples", type=int, default=0)
-    p.add_argument("--sample_keep_dist", type=float, default=0.01)
-
-    p.add_argument(
-        "--full_parts_dir",
-        required=True,
-        help="Folder containing full/detail open part meshes: <id>_<name>.ply",
-    )
-    p.add_argument(
-        "--base_parts_dir",
-        required=True,
-        help="Folder containing base open part meshes: <id>_<name>.ply",
-    )
-    p.add_argument(
-        "--n_full_part_samples",
-        type=int,
-        default=50000,
-        help="Surface samples drawn per full/detail part mesh.",
-    )
-    p.add_argument(
-        "--n_base_part_samples",
-        type=int,
-        default=50000,
-        help="Surface samples drawn per base part mesh.",
-    )
-    p.add_argument(
-        "--n_full_surface_samples_total",
-        type=int,
-        default=400000,
-        help="Total full/detail part surface samples across all parts.",
-    )
-    p.add_argument(
-        "--n_base_surface_samples_total",
-        type=int,
-        default=400000,
-        help="Total base part surface samples across all parts.",
-    )
-    p.add_argument(
-        "--min_part_samples",
-        type=int,
-        default=10000,
-        help="Minimum samples assigned to any part, after area allocation.",
-    )
-
-
+    p.add_argument("--use_owned", action="store_true", help="Use surface_points_owned instead of surface_points_all when available.")
 
     p.add_argument("--q_train", type=float, default=0.95)
     p.add_argument("--q_cylinder", type=float, default=0.995)
@@ -1468,16 +958,6 @@ def main():
 
     p.add_argument("--min_count", type=int, default=8)
     p.add_argument("--wrap_min_count", type=int, default=5)
-    p.add_argument("--wrap_center_offsets", action="store_true")
-    p.add_argument("--wrap_center_window_frac", type=float, default=0.035)
-    p.add_argument("--wrap_center_min_points", type=int, default=20)
-    p.add_argument("--wrap_center_smooth_sigma", type=float, default=2.0)
-    p.add_argument("--wrap_center_max_shift_frac", type=float, default=0.35)
-    p.add_argument("--wrap_center_tangent_bias", type=float, default=0.0)
-    p.add_argument("--resample_keypoints_by_arclen", action="store_true")
-    p.add_argument("--keypoint_arclen_ref", type=float, default=5.0)
-    p.add_argument("--max_keypoints", type=int, default=64)
-    p.add_argument("--min_keypoints", type=int, default=12)
 
     p.add_argument("--n_theta_bins", type=int, default=48)
 
@@ -1508,30 +988,7 @@ def main():
     args = p.parse_args()
 
     segs = load_segments(args.in_npz)
-    #out = [update_segment_radius(seg, args) for seg in segs]
-
-    full_alloc = allocate_samples_by_area(
-        segs=segs,
-        parts_dir=args.full_parts_dir,
-        total_samples=args.n_full_surface_samples_total,
-        min_part_samples=args.min_part_samples,
-        part_kind="full",
-    )
-
-    base_alloc = allocate_samples_by_area(
-        segs=segs,
-        parts_dir=args.base_parts_dir,
-        total_samples=args.n_base_surface_samples_total,
-        min_part_samples=args.min_part_samples,
-        part_kind="base",
-    )
-
-    out = [
-        update_segment_radius(seg, args, full_alloc, base_alloc)
-        for seg in segs
-    ]
-
-
+    out = [update_segment_radius(seg, args) for seg in segs]
     if args.viz_ply:
         viz_dir = args.viz_dir or os.path.join(args.out_dir, "radius_viz_ply"+str(args.version))
         os.makedirs(viz_dir, exist_ok=True)

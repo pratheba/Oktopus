@@ -180,7 +180,8 @@ class Handle():
         skeleton = {}
         mc_config = {
             'reso': reso,
-            'level': 0.
+            'level': 0.,
+            'size': 1.2
         }
         mc_grid = MCGrid(mc_config)
         
@@ -400,7 +401,7 @@ class Handle():
 
             if shape_type_l == "avatar":
                 # Do NOT use 3.0 by default. It creates the giant ring support.
-                curve_data.setdefault("inference_cylinder_radius_scale", 2.0)
+                curve_data.setdefault("inference_cylinder_radius_scale", 1.0)
                 curve_data.setdefault("inference_cylinder_radius_add", 0.0)
 
             elif shape_type_l in ["acc", "accessory"]:

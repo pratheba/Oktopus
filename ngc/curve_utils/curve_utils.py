@@ -369,14 +369,14 @@ def compute_local_centering_stats(samples_local0, s_vals, n_bins=24, min_count=5
         good = np.where(valid_mask)[0]
         bad = np.where(~valid_mask)[0]
 
-    if len(good) == 1:
-        offset_uv[bad] = offset_uv[good[0]]
-        offset_rel[bad] = offset_rel[good[0]]
-    elif len(good) > 1:
-        offset_uv[bad, 0] = np.interp(bad, good, offset_uv[good, 0])
-        offset_uv[bad, 1] = np.interp(bad, good, offset_uv[good, 1])
-        # optional: interpolate rel too
-        offset_rel[bad] = np.interp(bad, good, offset_rel[good])
+        if len(good) == 1:
+            offset_uv[bad] = offset_uv[good[0]]
+            offset_rel[bad] = offset_rel[good[0]]
+        elif len(good) > 1:
+            offset_uv[bad, 0] = np.interp(bad, good, offset_uv[good, 0])
+            offset_uv[bad, 1] = np.interp(bad, good, offset_uv[good, 1])
+            # optional: interpolate rel too
+            offset_rel[bad] = np.interp(bad, good, offset_rel[good])
 
     return {
         "offset_uv": offset_uv,

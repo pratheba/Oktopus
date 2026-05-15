@@ -62,6 +62,7 @@ class Agent():
             self.shape_global_curveids[idx] = fid
             for curve in handle.curves:
                 key = f'{shape_name}|{curve.name}'
+                print("key=",key)
                 key = self.encode_key(shape_name, curve.name)
                 feat_dict[key] = fid
                 fid += 1
@@ -246,9 +247,7 @@ class Agent():
 
         return valid
 
-
-
-    def clamp_pred_sdf_by_support(
+    def clamp_soft_pred_sdf_by_support(
         self,
         pred_sdf,
         samples_data,
@@ -258,6 +257,9 @@ class Agent():
         end_margin=0.0,
         verbose=False,
         name="",
+        soft=True,
+        rho_fade_limit=None,
+        w_fade_limit=None,
     ):
         valid, debug = self.local_support_mask(
             samples_data,
@@ -275,7 +277,205 @@ class Agent():
                 f"pred_sdf={pred_sdf.shape[0]}, valid={valid.shape[0]}"
             )
 
-        pred_sdf[~valid] = positive_value
+        # ------------------------------------------------------------
+        # Old behavior: hard clamp
+        # This creates the staircase:
+        #   pred_sdf[~valid] = positive_value
+        # ------------------------------------------------------------
+        if not soft:
+            pred_sdf[~valid] = positive_value
+            return pred_sdf, valid
+
+        # ------------------------------------------------------------
+        # New behavior: soft rho support fade
+        # rho <= rho_limit        : unchanged
+        # rho_limit -> fade_limit : smoothly blended to positive
+        # rho >= fade_limit       : fully positive
+        # ------------------------------------------------------------
+        sl = np.asarray(samples_data["samples_local"])
+        coords = np.asarray(samples_data["coords"]).reshape(-1)
+
+        vx = 2.0 * coords - 1.0
+        w_n = sl[:, 0] - vx
+
+        if "rho_n" in samples_data:
+            rho_n = np.asarray(samples_data["rho_n"]).reshape(-1)
+        else:
+            u_n = sl[:, 1]
+            v_n = sl[:, 2]
+            rho_n = np.sqrt(u_n * u_n + v_n * v_n)
+
+        rho0 = float(rho_limit)
+        rho1 = float(rho_fade_limit) if rho_fade_limit is not None else rho0 + 0.18
+        rho1 = max(rho1, rho0 + 1e-6)
+
+        t_rho = np.clip((rho_n - rho0) / (rho1 - rho0 + 1e-12), 0.0, 1.0)
+        fade = t_rho * t_rho * (3.0 - 2.0 * t_rho)
+
+        # Hard invalid for coord/end only. These are not the skirt side boundary.
+        hard_invalid = (coords < 0.0) | (coords > 1.0)
+
+        if end_margin > 0.0:
+            hard_invalid |= coords < end_margin
+            hard_invalid |= coords > 1.0 - end_margin
+
+        # Optional soft/hard w support.
+        if w_limit < 100.0:
+            if w_fade_limit is None:
+                hard_invalid |= np.abs(w_n) > w_limit
+            else:
+                w0 = float(w_limit)
+                w1 = max(float(w_fade_limit), w0 + 1e-6)
+                t_w = np.clip((np.abs(w_n) - w0) / (w1 - w0 + 1e-12), 0.0, 1.0)
+                fade_w = t_w * t_w * (3.0 - 2.0 * t_w)
+                fade = np.maximum(fade, fade_w)
+
+        pred_sdf = (1.0 - fade) * pred_sdf + fade * float(positive_value)
+        pred_sdf[hard_invalid] = float(positive_value)
+
+        # For detail masking, valid_support should mean "not fully outside".
+        soft_valid = ~hard_invalid
+        soft_valid &= rho_n <= rho1
+
+        if w_limit < 100.0 and w_fade_limit is not None:
+            soft_valid &= np.abs(w_n) <= float(w_fade_limit)
+        elif w_limit < 100.0:
+            soft_valid &= np.abs(w_n) <= float(w_limit)
+
+        if verbose:
+            print(
+                f"[support_clamp {name}] "
+                f"valid={debug['num_valid']}/{debug['num_total']} "
+                f"({100.0 * debug['valid_ratio']:.2f}%) "
+                f"w=[{debug['w_min']:.3f},{debug['w_max']:.3f}] "
+                f"rho=[{debug['rho_min']:.3f},{debug['rho_max']:.3f}] "
+                f"rho_fade=[{rho0:.3f},{rho1:.3f}] "
+                f"soft_valid={int(soft_valid.sum())}/{soft_valid.shape[0]} "
+                f"soft={soft}"
+            )
+
+        return pred_sdf, soft_valid
+
+
+    def estimate_rho_limit_from_pred(
+        self,
+        pred_sdf,
+        samples_data,
+        n_bins=48,
+        surface_band=0.03,
+        q=0.98,
+        margin=0.08,
+        smooth_s=2.0,
+        fallback=1.2,
+    ):
+        from scipy.ndimage import gaussian_filter1d
+
+        pred_sdf = np.asarray(pred_sdf).reshape(-1)
+        sl = np.asarray(samples_data["samples_local"])
+        coords = np.asarray(samples_data["coords"]).reshape(-1)
+
+        u_n = sl[:, 1]
+        v_n = sl[:, 2]
+        rho_n = np.sqrt(u_n * u_n + v_n * v_n)
+
+        near = np.abs(pred_sdf) < float(surface_band)
+
+        edges = np.linspace(0.0, 1.0, int(n_bins) + 1)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+
+        rho_lim = np.full(int(n_bins), np.nan, dtype=np.float64)
+
+        for i in range(int(n_bins)):
+            m = near & (coords >= edges[i]) & (coords < edges[i + 1])
+            if np.sum(m) >= 10:
+                rho_lim[i] = np.quantile(rho_n[m], float(q)) + float(margin)
+
+        good = np.isfinite(rho_lim)
+        if np.any(good):
+            rho_lim[~good] = np.interp(centers[~good], centers[good], rho_lim[good])
+        else:
+            rho_lim[:] = float(fallback)
+
+        if smooth_s > 0:
+            rho_lim = gaussian_filter1d(rho_lim, sigma=float(smooth_s), mode="nearest")
+
+        return centers, rho_lim
+
+
+    def clamp_pred_sdf_by_support(
+        self,
+        pred_sdf,
+        samples_data,
+        positive_value=1.0,
+        w_limit=1.20,
+        rho_limit=1.15,
+        end_margin=0.0,
+        verbose=False,
+        name="",
+    ):
+#        valid, debug = self.local_support_mask(
+#            samples_data,
+#            w_limit=w_limit,
+#            rho_limit=rho_limit,
+#            end_margin=end_margin,
+#            return_debug=True,
+#        )
+
+        s_bins, rho_lim_bins = self.estimate_rho_limit_from_pred(
+            pred_sdf,
+            samples_data,
+            n_bins=48,
+            surface_band=0.03,
+            q=0.98,
+            margin=0.08,
+            smooth_s=2.0,
+            fallback=rho_limit,
+        )
+        sl = np.asarray(samples_data["samples_local"])
+        coords = np.asarray(samples_data["coords"]).reshape(-1)
+        vx = 2.0 * coords - 1.0
+        w_n = sl[:, 0] - vx
+
+        u_n = sl[:, 1]
+        v_n = sl[:, 2]
+        rho_n = np.sqrt(u_n * u_n + v_n * v_n)
+
+        rho_limit_i = np.interp(coords, s_bins, rho_lim_bins)
+        band = 0.25
+        support_sdf = (rho_n - rho_limit_i) / (band + 1e-12)
+        support_sdf = np.clip(support_sdf, -1.0, 1.0) * float(positive_value)
+
+        pred_sdf = np.maximum(pred_sdf, support_sdf)
+
+
+        pred_sdf = np.asarray(pred_sdf).reshape(-1).copy()
+
+#        if pred_sdf.shape[0] != valid.shape[0]:
+#            raise ValueError(
+#                f"pred_sdf and support mask length mismatch: "
+#                f"pred_sdf={pred_sdf.shape[0]}, valid={valid.shape[0]}"
+#            )
+#
+
+
+
+        #pred_sdf[~valid] = positive_value
+        # Only clamp points that are outside rho support AND predicted as material.
+        outside = rho_n > float(rho_limit)
+        bad = outside & (pred_sdf < 0.0)
+
+        # Push those bad points positive, but leave everything else untouched.
+        pred_sdf[bad] = float(positive_value)
+
+        if verbose:
+            print(
+                f"[adaptive_rho_clamp {name}] "
+                f"bad={int(bad.sum())}/{bad.shape[0]} "
+                f"rho_limit={rho_limit:.3f} "
+                f"rho=[{rho_n.min():.3f},{rho_n.max():.3f}]"
+            )
+
+        return pred_sdf, ~bad
 
         if verbose:
             print(
@@ -513,11 +713,11 @@ class Agent():
                 mesh.export(mesh_file)
                 temp_grid = None
 
-                mesh = temp_grid_base.extract_mesh()
-                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_base_{checkpoint}_mesh{reso}.ply')
-                os.makedirs(op.dirname(mesh_file), exist_ok=True)
-                mesh.export(mesh_file)
-                temp_grid_base = None
+#                mesh = temp_grid_base.extract_mesh()
+#                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_base_{checkpoint}_mesh{reso}.ply')
+#                os.makedirs(op.dirname(mesh_file), exist_ok=True)
+#                mesh.export(mesh_file)
+#                temp_grid_base = None
 
                 # gt_file = op.join(data_root, shape_name, 'mesh.ply')
                 # err = utils.eval_shape(mesh_file, gt_file)
@@ -1004,6 +1204,13 @@ class Agent():
         ext = gaussian_filter1d(ext, sigma=float(sigma), axis=1, mode="nearest")
         return ext[:, T:2 * T]
 
+
+    @staticmethod
+    def smooth_union_sdf(a, b, k):
+        # polynomial smooth min, k = blend width in SDF units
+        h = np.clip(0.5 + 0.5 * (b - a) / (k + 1e-12), 0.0, 1.0)
+        return b * (1.0 - h) + a * h - k * h * (1.0 - h)
+
     @staticmethod
     def build_avatar_snug_scale_field(
         acc_sdf,
@@ -1441,6 +1648,51 @@ class Agent():
 
         return vals_new
 
+    def add_tiled_detail_coords_for_adapt(self, accessory_data, adapt_arg):
+        s = np.asarray(accessory_data["coords"], dtype=np.float64)
+
+        tgt_0 = float(adapt_arg["tgt_0"])   # accessory interval start
+        tgt_1 = float(adapt_arg["tgt_1"])   # accessory interval end
+        src_0 = float(adapt_arg["src_0"])   # avatar interval start
+        src_1 = float(adapt_arg["src_1"])   # avatar interval end
+
+        tlo, thi = min(tgt_0, tgt_1), max(tgt_0, tgt_1)
+        slo, shi = min(src_0, src_1), max(src_0, src_1)
+
+        # auto tile count from normalized skeleton interval ratio
+        auto_tiles = abs(shi - slo) / (abs(thi - tlo) + 1e-12)
+        tiles = float(adapt_arg.get("detail_tiles", auto_tiles))
+
+        tile_start = float(adapt_arg.get("detail_tile_start", tlo))
+        tile_end   = float(adapt_arg.get("detail_tile_end", thi))
+
+        out = s.copy()
+
+        m = (s >= min(tile_start, tile_end)) & (s <= max(tile_start, tile_end))
+
+        u = (s[m] - tile_start) / (tile_end - tile_start + 1e-12)
+        u_tile = np.mod(u * tiles, 1.0)
+
+        out[m] = tile_start + u_tile * (tile_end - tile_start)
+
+        # Outside [tile_start, tile_end], keep original coords.
+        # So only the stretched interval gets tiled details.
+        accessory_data["coords_detail"] = out
+        accessory_data["samples_detail"] = accessory_data["samples_local"].copy()
+
+        if adapt_arg.get("tiled_detail_debug", False):
+            print(
+                "[tiled_detail]",
+                "src=", (src_0, src_1),
+                "tgt=", (tgt_0, tgt_1),
+                "tile_range=", (tile_start, tile_end),
+                "auto_tiles=", auto_tiles,
+                "used_tiles=", tiles,
+                "active=", int(m.sum()), "/", int(s.shape[0]),
+            )
+
+        return accessory_data
+
 
 
     @torch.no_grad()
@@ -1461,6 +1713,8 @@ class Agent():
         mc_grid.clear_grid()
 
         adapted_support_cache = {}
+        all_acc_grids = []
+        blend_groups = {}
         cc = 0
 
         for item in config:
@@ -1511,15 +1765,15 @@ class Agent():
                     # For direct mode, store the actual support used by inference.
                     acc_coords = accessory_data["coords"]
                     #acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
-                    adapted_support_cache[cache_key] = {
-                        "coords": acc_coords.copy(),
-                        "points": accessory_data["runtime_points"].copy(),
-                        "frame": accessory_data["runtime_frame"].copy(),
-                        "radius": accessory_data["radius"].copy(),
-                        "x_radius": accessory_data["x_radius"].copy(),
-                        "assembly_scale": root_scale,
-                        #"x_radius": accessory_curve_handle.core.calc_x_radius(acc_coords).copy(),
-                    }
+                    #adapted_support_cache[cache_key] = {
+                    #    "coords": acc_coords.copy(),
+                    #    "points": accessory_data["runtime_points"].copy(),
+                    #    "frame": accessory_data["runtime_frame"].copy(),
+                    #    "radius": accessory_data["radius"].copy(),
+                    #    "x_radius": accessory_data["x_radius"].copy(),
+                    #    "assembly_scale": root_scale,
+                    #    #"x_radius": accessory_curve_handle.core.calc_x_radius(acc_coords).copy(),
+                    #}
                     #adapted_support_cache[cache_key]["assembly_scale"] = root_scale
 
                 else:
@@ -1618,24 +1872,38 @@ class Agent():
 
                             # If this direct accessory is cached for dependent children,
                             # refresh the cached support to match the corrected pass.
-                            cache_key = item.get("cache_as", accessory_key)
-                            if cache_key in adapted_support_cache:
-                                acc_coords = accessory_data["coords"]
-                                adapted_support_cache[cache_key] = {
-                                    "coords": acc_coords.copy(),
-                                    "points": accessory_data["runtime_points"].copy(),
-                                    "frame": accessory_data["runtime_frame"].copy(),
-                                    "radius": accessory_data["radius"].copy(),
-                                    "x_radius": accessory_data["x_radius"].copy(),
-                                    "assembly_scale": root_scale,
-                                }
+#                            cache_key = item.get("cache_as", accessory_key)
+#                            if cache_key in adapted_support_cache:
+#                                acc_coords = accessory_data["coords"]
+#                                adapted_support_cache[cache_key] = {
+#                                    "coords": acc_coords.copy(),
+#                                    "points": accessory_data["runtime_points"].copy(),
+#                                    "frame": accessory_data["runtime_frame"].copy(),
+#                                    "radius": accessory_data["radius"].copy(),
+#                                    "x_radius": accessory_data["x_radius"].copy(),
+#                                    "assembly_scale": root_scale,
+#                                }
 
 
-                acc_out = self.__inference_full_vals(
-                    accessory_data,
-                    accessory_key,
-                    batch_size=batch_size,
-                )
+                use_tiled_detail = bool(adapt_arg.get("use_tiled_detail", False))
+
+                if use_tiled_detail:
+                    accessory_data = self.add_tiled_detail_coords_for_adapt(
+                        accessory_data,
+                        adapt_arg,
+                    )
+                    acc_out = self.__inference_full_vals(
+                        accessory_data,
+                        accessory_key,
+                        batch_size=batch_size,
+                        transform="stretch",
+                    )
+                else:
+                    acc_out = self.__inference_full_vals(
+                        accessory_data,
+                        accessory_key,
+                        batch_size=batch_size,
+                    )
 
                 acc_vals = acc_out["sdf"]
                 acc_vals_base = acc_out["sdf_base"]
@@ -1708,6 +1976,7 @@ class Agent():
                 offset_mode = str(adapt_arg.get("accessory_offset_mode", "none")).lower()
                 wants_local_offset = offset_mode in ["local", "both"]
                 cut_avatar = bool(adapt_arg.get("cut_avatar", False))
+                print("curt avatar = ", cut_avatar)
 
                 # New flags also need the avatar SDF on the same active samples.
                 wants_detail_avatar_gate = bool(
@@ -1761,6 +2030,7 @@ class Agent():
                 # Boolean difference, but apply to BASE only:
                 # accessory_base \ avatar = max(sdf_accessory_base, -sdf_avatar)
                 if cut_avatar and avatar_sdf_for_offset is not None:
+                    print("cut_avatar")
                     avatar_clearance = float(adapt_arg.get("avatar_clearance", 0.0))
                     avatar_vals_inflated = avatar_sdf_for_offset - avatar_clearance
                     vals_base_fit = np.maximum(vals_base_fit, -avatar_vals_inflated)
@@ -1972,16 +2242,16 @@ class Agent():
                 acc_grid_base_fit.update_grid(vals_base_fit, kidx, mark=True, mode="overwrite")
 
                 mesh_acc_base_fit = acc_grid_base_fit.extract_mesh()
-                if len(mesh_acc_base_fit.faces) > 0:
-                    parts = mesh_acc_base_fit.split(only_watertight=False)
-                    if len(parts) > 0:
-                        mesh_acc_base_fit = max(parts, key=lambda m: len(m.faces))
-                    mesh_acc_base_fit.export(
-                        op.join(
-                            output_folder,
-                            f"{cc}_{mode}_basefit_{accessory_key.replace('|','_')}.ply"
-                        )
-                    )
+#                if len(mesh_acc_base_fit.faces) > 0:
+#                    parts = mesh_acc_base_fit.split(only_watertight=False)
+#                    if len(parts) > 0:
+#                        mesh_acc_base_fit = max(parts, key=lambda m: len(m.faces))
+#                    mesh_acc_base_fit.export(
+#                        op.join(
+#                            output_folder,
+#                            f"{cc}_{mode}_basefit_{accessory_key.replace('|','_')}.ply"
+#                        )
+#                    )
 
 
 
@@ -2001,21 +2271,83 @@ class Agent():
                         mesh_acc = max(parts, key=lambda m: len(m.faces))
                     mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
 
-                mesh_acc_base = acc_grid_base.extract_mesh()
-                if len(mesh_acc_base.faces) > 0:
-                    parts = mesh_acc_base.split(only_watertight=False)
-                    if len(parts) > 0:
-                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
-                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
+#                mesh_acc_base = acc_grid_base.extract_mesh()
+#                if len(mesh_acc_base.faces) > 0:
+#                    parts = mesh_acc_base.split(only_watertight=False)
+#                    if len(parts) > 0:
+#                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
+#                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
                 cc += 1
                 #mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
                 #mc_grid.update_grid(acc_vals, kidx, mode='minimum')
                 # 4) Merge all accessories by hard union
-                mc_grid.update_grid(vals_final, kidx, mode="minimum")
+                blend_group = str(adapt_arg.get("blend_group", "none"))
+
+                if blend_group not in ["none", "", "false"]:
+                    blend_groups.setdefault(blend_group, []).append({
+                        "val_grid": acc_grid.val_grid.copy(),
+                        "empty_marks": acc_grid.empty_marks.copy(),
+                        "adapt_arg": dict(adapt_arg),
+                    })
+                    #blend_groups.setdefault(blend_group, []).append({
+                    #    "vals": vals_final.copy(),
+                    #    "kidx": kidx.copy(),
+                    #    "adapt_arg": dict(adapt_arg),
+                    #})
+                else:
+                    pass
+                    #valid_acc = ~acc_grid.empty_marks
+
+                    #mc_grid.val_grid[valid_acc] = np.minimum(
+                    #    mc_grid.val_grid[valid_acc],
+                    #    acc_grid.val_grid[valid_acc],
+                    #)
+
+                    #mc_grid.empty_marks[valid_acc] = False
+                    #mc_grid.update_grid(vals_final, kidx, mode="minimum", mark=True)
+
+        mc_grid.clear_grid()
+
+        for group_name, items in blend_groups.items():
+
+            blend_delta = float(
+                items[0]["adapt_arg"].get("mesh_blend_delta", 0.0)
+            )
+
+            group_vals = np.full_like(mc_grid.val_grid, 10.0)
+            group_empty = np.ones_like(mc_grid.empty_marks, dtype=bool)
+
+            for ii, it in enumerate(items):
+                vals_i = it["val_grid"]
+                valid_i = ~it["empty_marks"]
+
+                overlap = (~group_empty) & valid_i
+
+                group_vals[valid_i] = np.minimum(
+                    group_vals[valid_i],
+                    vals_i[valid_i],
+                )
+
+                if blend_delta > 0.0 and np.any(overlap):
+                    group_vals[overlap] = self.smooth_union_sdf(
+                        group_vals[overlap],
+                        vals_i[overlap],
+                        blend_delta,
+                    )
+
+                group_empty[valid_i] = False
+
+            valid_group = ~group_empty
+
+            mc_grid.val_grid[valid_group] = np.minimum(
+                mc_grid.val_grid[valid_group],
+                group_vals[valid_group],
+            )
+            mc_grid.empty_marks[valid_group] = False
 
 
-        mesh = mc_grid.extract_mesh1()
+        mesh = mc_grid.extract_mesh()
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)

@@ -318,10 +318,10 @@ def get_full_base_residual_samples_globalperturbation(
     # 4. SPACE / volumetric samples
     # ------------------------------------------------------------
     space_tag = f"{name_prefix}_space" if name_prefix else "space"
-    print("space_sample", space_samples.shape)
+    #print("space_sample", space_samples.shape)
     space_data,_ = handle.prepare_samples(space_tag, space_samples)
     print("space data after prepare samples", space_data['samples_local'].shape)
-    exit()
+    #exit()
 
     space_full_sdf = meshlab_SDF_eval(mesh_file, space_data['samples']).astype(np.float32)
     space_base_sdf = meshlab_SDF_eval(mesh_base_file, space_data['samples']).astype(np.float32)
@@ -439,7 +439,7 @@ def get_full_base_residual_samples(
     print("space_sample", space_samples.shape)
     space_data,_ = handle.prepare_samples(space_tag, space_samples)
     print("space data after prepare samples", space_data['samples_local'].shape)
-    exit()
+    #exit()
 
     space_full_sdf = meshlab_SDF_eval(mesh_file, space_data['samples']).astype(np.float32)
     space_base_sdf = meshlab_SDF_eval(mesh_base_file, space_data['samples']).astype(np.float32)
@@ -462,7 +462,7 @@ def ngc_dataset(arg):
     n_keypoints = arg['n_keypoints']
 
     # items = os.listdir(root_path)
-    items = np.loadtxt(op.join(root_path, data_path), dtype=str).tolist()
+    items = np.atleast_1d(np.loadtxt(op.join(root_path, data_path), dtype=str)).tolist()
 
     with tqdm(total=len(items)) as pbar:
         for name in items:

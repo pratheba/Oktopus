@@ -4,7 +4,7 @@ pre='preprocess'
 infolder='input'
 output='output'
 post='postprocess'
-meshname='oktopus_unitbb_300k'
+meshname='devil_unitbb'
 
 python3 preprocess.py \
   --skel_file "${pre}/${infolder}/skel/${meshname}_skel-poly.polylines.txt" \

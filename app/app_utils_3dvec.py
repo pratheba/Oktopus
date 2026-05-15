@@ -73,6 +73,7 @@ def create_grid_like(mc_grid, res=None):
     new_grid = MCGrid({
         'level': mc_grid.grid_config['level'],
         'reso': mc_grid.reso,
+        'size': mc_grid.size
     })
     return new_grid
 
