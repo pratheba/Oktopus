@@ -697,7 +697,12 @@ class NGCNetGrid(nn.Module):
             sdf = sdf_detail
         else:
             sdf = sdf_base + gate * sdf_detail
-        return {'sdf': sdf, 'sdf_base': sdf_base, 'code': enc['curve_code']}
+        return {
+            'sdf': sdf,
+            'sdf_base': sdf_base,
+            'sdf_detail': sdf_detail,
+            'code': enc['curve_code'],
+        }
 
     def forward(self, model_input, curr_epoch=0):
         return self.forwardsimple(model_input, curr_epoch)

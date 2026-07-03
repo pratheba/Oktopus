@@ -652,9 +652,33 @@ class Agent():
         shapes = os.listdir(data_root)
         # max number of query points for Marching Cubes
         batch_size = 16**3
+
+
+        output_folder = arg['output_folder']
+        exp_name = arg['exp_name']
+        mc_grid = arg['mc_grid']
+        shape_name = arg['shape']
+        #config = utils.load_yaml_file(arg['adapt_file'])
+
+        data_root = arg['data_root']
+        handle = self.load_shape_handle(data_root, shape_name, 'avatar')
+        out_name = f'{shape_name}_{exp_name}'
+        os.makedirs(output_folder, exist_ok=True)
+
+        batch_size = 64**3
+        #mc_grid.clear_grid(val=10.0)
+        mc_grid.clear_grid()
+
+        adapted_support_cache = {}
+        all_acc_grids = []
+        blend_groups = {}
+        cc = 0
+
+
         with tqdm(total=num_shapes) as pbar:
             for shape_name,handle in self.handles.items():
                 if shape_name not in shapes:
+                    print("shape_name")
                     pbar.update(1)
                     continue
 
@@ -2351,7 +2375,6 @@ class Agent():
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
-
 
 
     @torch.no_grad()

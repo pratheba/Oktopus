@@ -6,7 +6,7 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import PchipInterpolator
 from handle_utils import CylindersMesh
-from scipy.ndimage import gaussian_filter1d, binary_dilation
+from scipy.ndimage import gaussian_filter1d
 from curve_utils.visualize_util import *
 from curve_utils.curve_utils import *
 from curve_functions._interpolate import interpolate_occ_profile1, interpolate_wrap_radius1
@@ -941,28 +941,13 @@ class PWLACurve():
         print("[valid wrap interval]", self.name, self.valid_s0, self.valid_s1)
 
         # Optional saved surface info, useful for debugging only
+        # Optional saved surface info
         self.surface_points_owned = arg.get("surface_points_owned", None)
         self.surface_points_all = arg.get("surface_points_all", None)
+        self.surface_points_base = arg.get("surface_points_base", None)
         self.point_s = arg.get("point_s", None)
         self.point_key_ids = arg.get("point_key_ids", None)
 
-        # Owned-volume voxel gate: a dilated occupancy mask built once from
-        # surface_points_owned, used as a fast bounding-volume test inside
-        # localize_samples to suppress arm/hand mesh points whose foot of
-        # perpendicular projects to the body curve.
-        # Defaults sized for the perturbation pipeline in process_data_3dvec.py
-        # where sigma_max = 5e-3 (world units).
-        self._owned_gate_cell = float(arg.get("owned_gate_cell", 1e-2))
-        self._owned_gate_dilation = int(arg.get("owned_gate_dilation", 4))
-        self._owned_gate_enabled = bool(arg.get("owned_gate_enabled", True))
-        self._owned_voxel_mask = None
-        self._owned_voxel_origin = None
-        self._owned_voxel_dims = None
-        if self._owned_gate_enabled:
-            self._build_owned_voxel_mask(
-                cell=self._owned_gate_cell,
-                dilation_voxels=self._owned_gate_dilation,
-            )
 
         self.update_coords()
 
@@ -1726,91 +1711,15 @@ class PWLACurve():
         #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
 
 
-    def _build_owned_voxel_mask(self, cell=5e-3, dilation_voxels=3):
-        """Build a dilated occupancy voxel mask from surface_points_owned in
-        the world frame. Used by localize_samples as a per-curve bounding
-        volume to reject mesh points outside the curve's true ownership shell
-        (e.g., arm/hand points that the cylinder bound would otherwise admit
-        to the body curve).
-
-        Parameters
-        ----------
-        cell : float
-            Voxel edge length in world units. Default 5e-3 matches sigma_max
-            from process_data_3dvec.py's perturbation.
-        dilation_voxels : int
-            Number of binary-dilation iterations on the occupancy grid.
-            Total inflation = dilation_voxels * cell (default ~1.5e-2).
-        """
-        pts = self.surface_points_owned
-        if pts is None or len(pts) == 0:
-            self._owned_voxel_mask = None
-            self._owned_voxel_origin = None
-            self._owned_voxel_dims = None
-            return
-        pts = np.asarray(pts, dtype=np.float64)
-        # Pad bbox so the dilation has room to grow into.
-        pad = (dilation_voxels + 1) * cell
-        lo = pts.min(axis=0) - pad
-        hi = pts.max(axis=0) + pad
-        dims = np.ceil((hi - lo) / cell).astype(np.int64) + 1
-        # Build occupancy.
-        idx = np.floor((pts - lo) / cell).astype(np.int64)
-        # Clip to bounds (should already be safe due to pad).
-        idx[:, 0] = np.clip(idx[:, 0], 0, dims[0] - 1)
-        idx[:, 1] = np.clip(idx[:, 1], 0, dims[1] - 1)
-        idx[:, 2] = np.clip(idx[:, 2], 0, dims[2] - 1)
-        mask = np.zeros(tuple(dims), dtype=bool)
-        mask[idx[:, 0], idx[:, 1], idx[:, 2]] = True
-        # Dilate. 3x3x3 structuring element gives a roughly isotropic +1-voxel
-        # growth per iteration.
-        if dilation_voxels > 0:
-            struct = np.ones((3, 3, 3), dtype=bool)
-            mask = binary_dilation(mask, structure=struct, iterations=int(dilation_voxels))
-        self._owned_voxel_mask = mask
-        self._owned_voxel_origin = lo
-        self._owned_voxel_dims = np.asarray(mask.shape, dtype=np.int64)
-
-    def _is_in_owned_volume(self, samples):
-        """Boolean mask of which `samples` lie inside the dilated owned
-        voxel mask. Returns all-True (passthrough) if the mask isn't built."""
-        if self._owned_voxel_mask is None:
-            return np.ones(len(samples), dtype=bool)
-        samples = np.asarray(samples, dtype=np.float64)
-        idx = np.floor((samples - self._owned_voxel_origin) / self._owned_gate_cell).astype(np.int64)
-        d = self._owned_voxel_dims
-        in_bounds = (
-            (idx[:, 0] >= 0) & (idx[:, 0] < d[0]) &
-            (idx[:, 1] >= 0) & (idx[:, 1] < d[1]) &
-            (idx[:, 2] >= 0) & (idx[:, 2] < d[2])
-        )
-        inside = np.zeros(len(samples), dtype=bool)
-        if np.any(in_bounds):
-            ic = idx[in_bounds]
-            inside[in_bounds] = self._owned_voxel_mask[ic[:, 0], ic[:, 1], ic[:, 2]]
-        return inside
-
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', use_owned_gate=True, runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0):
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
-        if use_owned_gate and self._owned_voxel_mask is not None:
-            gate_keep = self._is_in_owned_volume(pointcloudsamples)
-            if not np.all(gate_keep):
-                gate_indices = np.where(gate_keep)[0]
-                pointcloudsamples = pointcloudsamples[gate_keep]
-            else:
-                gate_indices = None
-        else:
-            gate_indices = None
 
         sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
-        if gate_indices is None:
-            sample_index = np.arange(pointcloudsamples.shape[0])
-        else:
-            sample_index = gate_indices.copy()
+        sample_index = np.arange(pointcloudsamples.shape[0])
 
         ### Keep only the points that fall within the rane of 0 and 1
         if update_curve:
@@ -2899,7 +2808,6 @@ class PWLACurve():
             vs,
             norm=float(adapt_arg.get("adapt_localize_norm", 1.0)),
             outside=False,
-            use_owned_gate=bool(adapt_arg.get("adapt_use_owned_gate", False)),
             runtime_cylinder_radius_scale=float(adapt_arg.get("avatar_cylinder_radius_scale", 1.0)),
             runtime_cylinder_radius_add=float(adapt_arg.get("avatar_cylinder_radius_add", 0.0)),
         )
@@ -3751,8 +3659,11 @@ class PWLACurve():
             curve_len, _ = accessory_curve_handle.core.calc_curve_length()
             anchor_s = float(anchor_s)
             end_s = float(end_s)
+            print("anchor_s ", anchor_s)
+            print("anchor_s ", end_s)
 
             direction = np.sign(end_s - anchor_s)
+            print("direction = ", direction, flush=True)
             if abs(direction) < 1e-12:
                 return local_coord
 
@@ -3778,7 +3689,9 @@ class PWLACurve():
         if tilt_v is not None:
             tilt_v_anchor = adapt_arg.get("tilt_v_anchor", tgt_1)
             tilt_v_end = adapt_arg.get("tilt_v_end", tgt_0)
+            #print(v_acc)
             v_acc = _apply_one_sided_tilt(v_acc, tilt_v, tilt_v_anchor, tilt_v_end)
+            #print(v_acc, flush=True)
 
 
 

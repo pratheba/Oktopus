@@ -85,6 +85,30 @@ class Handle():
             res.append(curve_data)
 
         return res
+
+
+    def get_surface_samples_by_curve(self, source="full"):
+        """
+        source:
+            'full' -> surface_points_all
+            'base' -> surface_points_base
+        """
+        out = {}
+
+        for curve in self.curves:
+            if source == "base":
+                pts = getattr(curve.core, "surface_points_base", None)
+            else:
+                pts = getattr(curve.core, "surface_points_all", None)
+
+            if pts is None:
+                raise ValueError(
+                    f"Missing {source} surface samples for curve '{curve.name}'"
+                )
+
+            out[curve.name] = np.asarray(pts, dtype=np.float64)
+
+        return out
     
     def prepare_samples(self, name, samples):
         # samples to train data
@@ -156,6 +180,61 @@ class Handle():
             'rho': rho,
             'rho_n': rho_n,
             'radius': radius
+        }, meta_data
+
+    def prepare_samples_by_curve(self, name, samples_by_curve):
+        samples_glob = []
+        samples_local = []
+        coords = []
+        angles = []
+        radius = []
+        rho = []
+        rho_n = []
+        cids = []
+
+        meta_data = {
+            "inside_by_curve": {}
+        }
+
+        for cid, curve in enumerate(self.curves):
+            part_samples = np.asarray(
+                samples_by_curve.get(curve.name, np.zeros((0, 3))),
+                dtype=np.float64,
+            )
+
+            if len(part_samples) == 0:
+                meta_data["inside_by_curve"][curve.name] = np.zeros((0,), dtype=np.int64)
+                continue
+
+            curve_data, inside = curve.localize_samples(
+                part_samples,
+                update_curve=False,
+                update_radius=False,
+                name=name + "_" + str(cid),
+            )
+
+            meta_data["inside_by_curve"][curve.name] = inside
+
+            num_inside = len(inside)
+
+            samples_glob.append(curve_data["samples"])
+            samples_local.append(curve_data["samples_local"])
+            coords.append(curve_data["coords"])
+            angles.append(curve_data["angles"])
+            radius.append(curve_data["radius"])
+            rho.append(curve_data["rho"])
+            rho_n.append(curve_data["rho_n"])
+            cids.append(np.full(num_inside, cid, dtype=int))
+
+        return {
+            "samples": np.concatenate(samples_glob, axis=0),
+            "samples_local": np.concatenate(samples_local, axis=0),
+            "coords": np.concatenate(coords, axis=0),
+            "curve_idx": np.concatenate(cids, axis=0),
+            "angles": np.concatenate(angles, axis=0),
+            "rho": np.concatenate(rho, axis=0),
+            "rho_n": np.concatenate(rho_n, axis=0),
+            "radius": np.concatenate(radius, axis=0),
         }, meta_data
 
     
@@ -398,6 +477,7 @@ class Handle():
             # Optional global runtime cylinder inflation defaults.
             # These are consumed by PWLACurve.set_curve().
             shape_type_l = str(shape_type).lower()
+            print(shape_type_l)
 
             if shape_type_l == "avatar":
                 # Do NOT use 3.0 by default. It creates the giant ring support.
@@ -407,11 +487,10 @@ class Handle():
             elif shape_type_l in ["acc", "accessory"]:
                 # Keep source/accessory support close to training support.
                 curve_data.setdefault("inference_cylinder_radius_scale", 1.0)
-                curve_data.setdefault("inference_cylinder_radius_add", 0.00)
-
-            else:
-                curve_data.setdefault("inference_cylinder_radius_scale", 1.2)
                 curve_data.setdefault("inference_cylinder_radius_add", 0.02)
+            else:
+                curve_data.setdefault("inference_cylinder_radius_scale", 1.0)
+                curve_data.setdefault("inference_cylinder_radius_add", 0.0)
             curve = CurveHandle()
             curve.load_data(curve_data)
             self.curve_dict[curve.name] = curve

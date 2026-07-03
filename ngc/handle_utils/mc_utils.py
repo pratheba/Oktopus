@@ -4,13 +4,14 @@ import trimesh
 import skimage
 import os.path as op
 
-size = 1.2
 
 class MCGrid():
     """docstring for MCGrid."""
     def __init__(self, arg):
         N = arg['reso']
         self.reso = N
+        size = arg['size']
+        self.size = arg['size']
         N1 = N + 1
         origin = np.asarray([-size, -size, -size]) #np.asarray([-1., -1., -1.])
         #step = 2. / N
@@ -80,6 +81,7 @@ class MCGrid():
     def get_plane(arg):
         N = arg['reso']
         N1 = N + 1
+        size = arg['size']
         #origin = np.asarray([-1., -1.])
         origin = np.asarray([-size, -size])
         step = 2*size / N
