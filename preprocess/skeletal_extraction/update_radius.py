@@ -923,8 +923,8 @@ def compute_directional_wrap_radius(
 def update_segment_radius(seg, args, full_alloc, base_alloc):
     seg = deepcopy(seg)
 
-    key = np.asarray(seg["keypoints"], dtype=np.float64)
-
+    key_original = np.asarray(seg["keypoints"], dtype=np.float64).copy()
+    key = key_original.copy()
 
 #    # Use owned points if present. This is the important part.
 #    if args.use_owned and "surface_points_owned" in seg:
