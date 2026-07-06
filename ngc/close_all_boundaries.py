@@ -289,6 +289,336 @@ def triangulate_boundary_loop(
     return np.asarray(cap_faces, dtype=np.int64)
 
 
+
+def _undirected_edge_counts(faces: np.ndarray) -> dict[tuple[int, int], int]:
+    """Count how many triangles use each undirected edge."""
+    faces = np.asarray(faces, dtype=np.int64)
+    edges = np.sort(
+        np.concatenate(
+            [
+                faces[:, [0, 1]],
+                faces[:, [1, 2]],
+                faces[:, [2, 0]],
+            ],
+            axis=0,
+        ),
+        axis=1,
+    )
+    unique, counts = np.unique(edges, axis=0, return_counts=True)
+    return {
+        (int(edge[0]), int(edge[1])): int(count)
+        for edge, count in zip(unique, counts)
+    }
+
+
+def _validate_cap_against_source(
+    source_faces: np.ndarray,
+    loop: np.ndarray,
+    cap_faces: np.ndarray,
+) -> list[str]:
+    """
+    Validate one cap before adding it to the source mesh.
+
+    A valid cap must:
+      - contain no face already present in the source,
+      - use every source boundary-loop edge exactly once,
+      - use every new internal cap edge exactly twice,
+      - never reuse a source interior edge.
+    """
+    source_faces = np.asarray(source_faces, dtype=np.int64)
+    cap_faces = np.asarray(cap_faces, dtype=np.int64)
+    loop = np.asarray(loop, dtype=np.int64)
+
+    errors: list[str] = []
+
+    source_face_keys = {
+        tuple(sorted(map(int, face)))
+        for face in source_faces
+    }
+    duplicate_faces = [
+        tuple(map(int, face))
+        for face in cap_faces
+        if tuple(sorted(map(int, face))) in source_face_keys
+    ]
+    if duplicate_faces:
+        errors.append(
+            "cap duplicates source faces "
+            f"{duplicate_faces[:10]}"
+        )
+
+    source_edge_counts = _undirected_edge_counts(source_faces)
+    cap_edge_counts = _undirected_edge_counts(cap_faces)
+
+    loop_edges = np.sort(
+        np.column_stack([loop, np.roll(loop, -1)]),
+        axis=1,
+    )
+    loop_edge_set = {
+        (int(edge[0]), int(edge[1]))
+        for edge in loop_edges
+    }
+
+    bad_loop_edges = []
+    for edge in sorted(loop_edge_set):
+        source_count = source_edge_counts.get(edge, 0)
+        cap_count = cap_edge_counts.get(edge, 0)
+        if source_count != 1 or cap_count != 1:
+            bad_loop_edges.append(
+                (edge, source_count, cap_count)
+            )
+    if bad_loop_edges:
+        errors.append(
+            "loop edges must have source_count=1 and cap_count=1: "
+            f"{bad_loop_edges[:10]}"
+        )
+
+    bad_cap_edges = []
+    for edge, cap_count in cap_edge_counts.items():
+        source_count = source_edge_counts.get(edge, 0)
+
+        if edge in loop_edge_set:
+            continue
+
+        # A cap-internal diagonal must be new and shared by two cap faces.
+        if source_count != 0 or cap_count != 2:
+            bad_cap_edges.append(
+                (edge, source_count, cap_count)
+            )
+
+    if bad_cap_edges:
+        errors.append(
+            "cap internal edges must be new and used by exactly two "
+            f"cap faces: {bad_cap_edges[:10]}"
+        )
+
+    return errors
+
+
+def _cross2(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Signed twice-area of the 2D triangle (a,b,c)."""
+    ab = b - a
+    ac = c - a
+    return float(ab[0] * ac[1] - ab[1] * ac[0])
+
+
+def _point_in_or_on_ccw_triangle(
+    point: np.ndarray,
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    tolerance: float,
+) -> bool:
+    """Return True when point lies inside or on a CCW triangle."""
+    c1 = _cross2(a, b, point)
+    c2 = _cross2(b, c, point)
+    c3 = _cross2(c, a, point)
+    return (
+        c1 >= -tolerance
+        and c2 >= -tolerance
+        and c3 >= -tolerance
+    )
+
+
+def triangulate_boundary_loop_ear_clip(
+    vertices: np.ndarray,
+    loop: np.ndarray,
+    source_faces: np.ndarray,
+) -> np.ndarray:
+    """
+    Constrained ear-clipping fallback with backtracking.
+
+    A greedy ear clip can choose an individually valid ear and later leave a
+    polygon for which every remaining diagonal conflicts with source topology.
+    This implementation explores alternate valid ears and returns the first
+    complete triangulation that satisfies all constraints.
+
+    Constraints:
+      - no cap face may duplicate a source face,
+      - no cap-internal diagonal may reuse a source edge,
+      - no ear may contain another active boundary vertex,
+      - all triangles preserve the projected CCW orientation.
+    """
+    loop = np.asarray(loop, dtype=np.int64)
+    points_3d = np.asarray(vertices, dtype=np.float64)[loop]
+    points_2d, _, _, _ = project_loop_to_best_fit_plane(points_3d)
+
+    polygon = Polygon(points_2d)
+    if polygon.is_empty or polygon.area <= 1e-16:
+        raise BoundaryError("Projected boundary polygon has zero area.")
+    if not polygon.is_valid:
+        raise BoundaryError(
+            "Projected boundary loop is invalid; constrained ear clipping "
+            "is unsafe."
+        )
+
+    source_edge_counts = _undirected_edge_counts(source_faces)
+    source_edges = set(source_edge_counts)
+    source_face_keys = {
+        tuple(sorted(map(int, face)))
+        for face in np.asarray(source_faces, dtype=np.int64)
+    }
+
+    loop_edges = np.sort(
+        np.column_stack([loop, np.roll(loop, -1)]),
+        axis=1,
+    )
+    loop_edge_set = {
+        (int(edge[0]), int(edge[1]))
+        for edge in loop_edges
+    }
+
+    bbox_diag = float(np.linalg.norm(np.ptp(points_2d, axis=0)))
+    area_tolerance = max(
+        1e-16,
+        1e-14 * max(bbox_diag * bbox_diag, 1.0),
+    )
+
+    failed_states: set[tuple[int, ...]] = set()
+    visited_states = 0
+    max_states = max(10000, 500 * len(loop) * len(loop))
+
+    def triangle_is_allowed(
+        a_local: int,
+        b_local: int,
+        c_local: int,
+        active: tuple[int, ...],
+        check_other_vertices: bool,
+    ) -> bool:
+        a = points_2d[a_local]
+        b = points_2d[b_local]
+        c = points_2d[c_local]
+
+        if _cross2(a, b, c) <= area_tolerance:
+            return False
+
+        a_vertex = int(loop[a_local])
+        b_vertex = int(loop[b_local])
+        c_vertex = int(loop[c_local])
+
+        face_key = tuple(sorted((a_vertex, b_vertex, c_vertex)))
+        if face_key in source_face_keys:
+            return False
+
+        # All triangle edges that are not original loop edges become cap
+        # diagonals. They must not already exist in the source mesh.
+        for u, v in (
+            (a_vertex, b_vertex),
+            (b_vertex, c_vertex),
+            (c_vertex, a_vertex),
+        ):
+            edge = tuple(sorted((u, v)))
+            if edge in source_edges and edge not in loop_edge_set:
+                return False
+
+        if check_other_vertices:
+            for other_local in active:
+                if other_local in (a_local, b_local, c_local):
+                    continue
+                if _point_in_or_on_ccw_triangle(
+                    points_2d[other_local],
+                    a,
+                    b,
+                    c,
+                    area_tolerance,
+                ):
+                    return False
+
+        return True
+
+    def solve(active: tuple[int, ...]) -> list[list[int]] | None:
+        nonlocal visited_states
+
+        if active in failed_states:
+            return None
+
+        visited_states += 1
+        if visited_states > max_states:
+            raise BoundaryError(
+                "Constrained ear-clipping backtracking exceeded its search "
+                f"limit ({max_states} states) for a {len(loop)}-vertex loop."
+            )
+
+        if len(active) == 3:
+            a_local, b_local, c_local = active
+            if not triangle_is_allowed(
+                a_local,
+                b_local,
+                c_local,
+                active,
+                check_other_vertices=False,
+            ):
+                failed_states.add(active)
+                return None
+
+            return [[
+                int(loop[a_local]),
+                int(loop[b_local]),
+                int(loop[c_local]),
+            ]]
+
+        candidates: list[tuple[float, int, list[int]]] = []
+
+        for position in range(len(active)):
+            prev_local = active[(position - 1) % len(active)]
+            curr_local = active[position]
+            next_local = active[(position + 1) % len(active)]
+
+            if not triangle_is_allowed(
+                prev_local,
+                curr_local,
+                next_local,
+                active,
+                check_other_vertices=True,
+            ):
+                continue
+
+            area2 = _cross2(
+                points_2d[prev_local],
+                points_2d[curr_local],
+                points_2d[next_local],
+            )
+            face = [
+                int(loop[prev_local]),
+                int(loop[curr_local]),
+                int(loop[next_local]),
+            ]
+            candidates.append((area2, position, face))
+
+        # Smaller ears first tends to preserve larger unconstrained regions,
+        # but unlike the previous implementation every alternative can be
+        # revisited if the first choice reaches a dead end.
+        candidates.sort(key=lambda item: item[0])
+
+        for _, position, face in candidates:
+            next_active = active[:position] + active[position + 1:]
+            remainder = solve(next_active)
+            if remainder is not None:
+                return [face] + remainder
+
+        failed_states.add(active)
+        return None
+
+    result_list = solve(tuple(range(len(loop))))
+
+    if result_list is None:
+        raise BoundaryError(
+            "No complete constrained triangulation exists using only the "
+            "current boundary vertices without duplicating source faces or "
+            "reusing source interior edges. "
+            f"Loop vertices: {[int(v) for v in loop.tolist()]}"
+        )
+
+    result = np.asarray(result_list, dtype=np.int64)
+
+    if len(result) != len(loop) - 2:
+        raise BoundaryError(
+            f"Expected {len(loop) - 2} constrained cap triangles but "
+            f"produced {len(result)}."
+        )
+
+    return result
+
+
 def describe_boundaries(mesh: trimesh.Trimesh):
     boundary, directed, nonmanifold = edge_topology(mesh.faces)
     components = connected_boundary_components(boundary)
@@ -315,7 +645,56 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
     for component_id, edge_ids in enumerate(components):
         component_edges = boundary[edge_ids]
         loop = order_simple_loop(component_edges, directed_set)
-        cap_faces = triangulate_boundary_loop(mesh.vertices, loop)
+
+        delaunay_failure = None
+        try:
+            cap_faces = triangulate_boundary_loop(mesh.vertices, loop)
+            cap_errors = _validate_cap_against_source(
+                mesh.faces,
+                loop,
+                cap_faces,
+            )
+        except BoundaryError as exc:
+            # Delaunay can fail even when a valid cap exists, for example when
+            # Shapely returns fewer than n-2 triangles after filtering. Treat
+            # any Delaunay failure as a reason to try the constrained fallback.
+            delaunay_failure = str(exc)
+            cap_errors = []
+
+        if delaunay_failure is not None or cap_errors:
+            if delaunay_failure is not None:
+                print(
+                    f"  boundary {component_id:02d}: "
+                    "Delaunay triangulation failed; "
+                    "using constrained ear clipping"
+                )
+                print(f"    {delaunay_failure}")
+            else:
+                print(
+                    f"  boundary {component_id:02d}: "
+                    "Delaunay cap conflicts with source topology; "
+                    "using constrained ear clipping"
+                )
+                for error in cap_errors:
+                    print(f"    {error}")
+
+            cap_faces = triangulate_boundary_loop_ear_clip(
+                mesh.vertices,
+                loop,
+                mesh.faces,
+            )
+            cap_errors = _validate_cap_against_source(
+                mesh.faces,
+                loop,
+                cap_faces,
+            )
+
+            if cap_errors:
+                raise BoundaryError(
+                    "Constrained cap failed topology validation: "
+                    + "; ".join(cap_errors)
+                )
+
         loops.append(loop)
         all_cap_faces.append(cap_faces)
         print(
@@ -326,13 +705,30 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
     cap_faces_all = np.vstack(all_cap_faces)
     closed = trimesh.Trimesh(
         vertices=np.asarray(mesh.vertices).copy(),
-        faces=np.vstack((np.asarray(mesh.faces), cap_faces_all)),
+        faces=np.vstack(
+            (
+                np.asarray(mesh.faces, dtype=np.int64),
+                np.asarray(cap_faces_all, dtype=np.int64),
+            )
+        ),
         process=False,
     )
 
-    closed.update_faces(closed.nondegenerate_faces())
-    closed.update_faces(closed.unique_faces())
-    closed.remove_unreferenced_vertices()
+    # Do not silently delete cap faces after insertion. The source was already
+    # cleaned in load_triangle_mesh(), and every cap was validated above.
+    boundary_after, _, nonmanifold_after, _, _ = describe_boundaries(closed)
+
+    if len(boundary_after) != 0:
+        raise BoundaryError(
+            "Validated cap insertion still left "
+            f"{len(boundary_after)} boundary edges."
+        )
+    if len(nonmanifold_after) != 0:
+        raise BoundaryError(
+            "Validated cap insertion produced "
+            f"{len(nonmanifold_after)} non-manifold edges."
+        )
+
     trimesh.repair.fix_winding(closed)
     trimesh.repair.fix_normals(closed, multibody=True)
 
