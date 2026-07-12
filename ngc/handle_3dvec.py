@@ -481,8 +481,8 @@ class Handle():
 
             if shape_type_l == "avatar":
                 # Do NOT use 3.0 by default. It creates the giant ring support.
-                curve_data.setdefault("inference_cylinder_radius_scale", 1.0)
-                curve_data.setdefault("inference_cylinder_radius_add", 0.0)
+                curve_data.setdefault("inference_cylinder_radius_scale", 1.8)
+                curve_data.setdefault("inference_cylinder_radius_add", 0.02)
 
             elif shape_type_l in ["acc", "accessory"]:
                 # Keep source/accessory support close to training support.

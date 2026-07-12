@@ -177,6 +177,84 @@ class PWLACurve():
         trimesh.points.PointCloud(P, colors=colors).export(out_path)
         print("[debug wrap control ply]", out_path)
 
+    def export_adapt_control_rings_ply(
+        self,
+        out_path,
+        coords_query,
+        n_control=6,
+        smooth_points_sigma=2.0,
+        smooth_radius_sigma=2.0,
+        rebuild_frames=True,
+        preserve_endpoints=True,
+        radius_type="train",
+        n_theta=96,
+        stride=1,
+    ):
+        """
+        Export the actual smoothed control-field rings.
+
+        This shows what build_adapt_control_field() is producing:
+            points + frames + radius
+
+        Use radius_type="train" to see the model/rigid radius.
+        Use radius_type="cylinder" to see the support/cylinder radius.
+        """
+        coords_query = np.asarray(coords_query, dtype=np.float64).reshape(-1)
+
+        ctrl = self.build_adapt_control_field(
+            coords_query,
+            n_control=int(n_control),
+            smooth_points_sigma=float(smooth_points_sigma),
+            smooth_radius_sigma=float(smooth_radius_sigma),
+            rebuild_frames=bool(rebuild_frames),
+            preserve_endpoints=bool(preserve_endpoints),
+            radius_type=radius_type,
+        )
+
+        theta = np.linspace(0.0, 2.0 * np.pi, int(n_theta), endpoint=False)
+
+        pts_all = []
+        for i in range(0, len(coords_query), max(1, int(stride))):
+            C = ctrl["points"][i]
+            F = ctrl["frame"][i]
+            ry, rz = ctrl["radius"][i]
+
+            U = F[1]
+            V = F[2]
+
+            ring = (
+                C[None, :]
+                + (ry * np.cos(theta))[:, None] * U[None, :]
+                + (rz * np.sin(theta))[:, None] * V[None, :]
+            )
+            pts_all.append(ring)
+
+        P = np.vstack(pts_all)
+        P = P[np.isfinite(P).all(axis=1)]
+
+        colors = np.tile(
+            np.array([0, 180, 255, 255], dtype=np.uint8),
+            (P.shape[0], 1),
+        )
+
+        trimesh.points.PointCloud(P, colors=colors).export(out_path)
+
+        print(
+            "[export_adapt_control_rings]",
+            out_path,
+            "radius_type=", radius_type,
+            "n_control=", int(n_control),
+            "smooth_points_sigma=", float(smooth_points_sigma),
+            "smooth_radius_sigma=", float(smooth_radius_sigma),
+            "points=", P.shape[0],
+            "radius min/mean/max=",
+            float(np.min(ctrl["radius"])),
+            float(np.mean(ctrl["radius"])),
+            float(np.max(ctrl["radius"])),
+        )
+
+        return ctrl
+
 
 
     def export_wrap_field_ply(self, wrap, s_bins, theta_bins, out_path, stride=1):
@@ -2863,6 +2941,8 @@ class PWLACurve():
             avatar_world_frames = avatar_ctrl["frame"]
             avatar_radius = avatar_ctrl["radius"]
             tangent_avatar = avatar_ctrl["x_radius"]
+
+
         else:
             # Legacy path: use the dense interpolated avatar curve/frame.
             avatar_world_points = self.interpolate(
@@ -2878,6 +2958,8 @@ class PWLACurve():
             else:
                 avatar_radius = avatar_data["radius"]
             tangent_avatar = self.calc_x_radius(avatar_coords)
+
+
 
         # Recompute physical avatar local coords from the chosen avatar frame.
         # This is the part that fixes frame/theta staircase: theta below now
@@ -2913,6 +2995,56 @@ class PWLACurve():
         acc_coords = self.map_coords_to_by_arclen(
             avatar_coords, accessory_curve_handle.core, src_0, src_1, tgt_0, tgt_1
         )
+
+
+        if adapt_arg.get("debug_export_adapt_control_rings", False):
+            self.export_adapt_control_rings_ply(
+                "DEBUG_avatar_TRAIN_control_rings.ply",
+                avatar_coords,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 6)),
+                smooth_points_sigma=float(adapt_arg.get("avatar_control_smooth_points_sigma", 2.0)),
+                smooth_radius_sigma=float(adapt_arg.get("avatar_control_smooth_radius_sigma", 2.0)),
+                rebuild_frames=bool(adapt_arg.get("avatar_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="train",
+                stride=int(adapt_arg.get("debug_ring_stride", 2)),
+            )
+
+            self.export_adapt_control_rings_ply(
+                "DEBUG_avatar_CYLINDER_control_rings.ply",
+                avatar_coords,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 6)),
+                smooth_points_sigma=float(adapt_arg.get("avatar_control_smooth_points_sigma", 2.0)),
+                smooth_radius_sigma=float(adapt_arg.get("avatar_control_smooth_radius_sigma", 2.0)),
+                rebuild_frames=bool(adapt_arg.get("avatar_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="cylinder",
+                stride=int(adapt_arg.get("debug_ring_stride", 2)),
+            )
+            accessory_curve_handle.core.export_adapt_control_rings_ply(
+                "DEBUG_accessory_TRAIN_control_rings.ply",
+                acc_coords,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 6)),
+                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 2.0)),
+                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 2.0)),
+                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="train",
+                stride=int(adapt_arg.get("debug_ring_stride", 2)),
+            )
+
+            accessory_curve_handle.core.export_adapt_control_rings_ply(
+                "DEBUG_accessory_CYLINDER_control_rings.ply",
+                acc_coords,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 6)),
+                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 2.0)),
+                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 2.0)),
+                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="cylinder",
+                stride=int(adapt_arg.get("debug_ring_stride", 2)),
+            )
+
 
         # ------------------------------------------------------------
         # 5) Optional source/target UV-center correction.
@@ -3047,25 +3179,25 @@ class PWLACurve():
         # ------------------------------------------------------------
         # 6) Accessory points/frame/radius actually used for model coords.
         # ------------------------------------------------------------
-        if use_adapt_control:
-            acc_ctrl = accessory_curve_handle.core.build_adapt_control_field(
-                acc_coords,
-                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
-                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 1.0)),
-                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 1.0)),
-                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
-                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
-                radius_type="train",
-            )
-            acc_intpl = {
-                "points": acc_ctrl["points"],
-                "frame": acc_ctrl["frame"],
-                "radius": acc_ctrl["radius"],
-            }
-            tangent_acc = acc_ctrl["x_radius"]
-        else:
-            acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
-            tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
+#        if use_adapt_control:
+#            acc_ctrl = accessory_curve_handle.core.build_adapt_control_field(
+#                acc_coords,
+#                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
+#                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 1.0)),
+#                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 1.0)),
+#                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
+#                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+#                radius_type="train",
+#            )
+#            acc_intpl = {
+#                "points": acc_ctrl["points"],
+#                "frame": acc_ctrl["frame"],
+#                "radius": acc_ctrl["radius"],
+#            }
+#            tangent_acc = acc_ctrl["x_radius"]
+#        else:
+        acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
+        tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
 
         if use_tgt_center:
             tgt_center_field = adapt_arg.get("_tgt_uv_center_field", None)
@@ -3582,9 +3714,50 @@ class PWLACurve():
                 )
 
         elif adapt_arg.get("rigid_radius", False):
-            scale_rho = np.full_like(rho_avatar, global_scale)
+            #scale_rho = np.full_like(rho_avatar, global_scale)
+            rigid_radial_scale = float(adapt_arg.get("rigid_radial_scale", 5.0))
+            scale_rho = np.full_like(rho_avatar, rigid_radial_scale)
             rho_acc = rho_avatar * scale_rho
             theta_tgt = theta_avatar + delta_theta
+            if adapt_arg.get("debug_rigid_coords", False):
+                print(
+                    "[rigid coords]",
+                    "rho_avatar min/mean/max=",
+                    float(np.min(rho_avatar)),
+                    float(np.mean(rho_avatar)),
+                    float(np.max(rho_avatar)),
+                    "rho_acc min/mean/max=",
+                    float(np.min(rho_acc)),
+                    float(np.mean(rho_acc)),
+                    float(np.max(rho_acc)),
+                    "acc_radius min/mean/max=",
+                    float(np.min(acc_radius)),
+                    float(np.mean(acc_radius)),
+                    float(np.max(acc_radius)),
+                    "global_scale=",
+                    float(global_scale),
+                )
+            if adapt_arg.get("rigid_radius_rho_cap", False):
+                max_rho_n = float(adapt_arg.get("rigid_radius_max_rho_n", 1.35))
+
+                acc_radius_theta = np.sqrt(
+                    (acc_radius_y * np.cos(theta_tgt)) ** 2
+                    + (acc_radius_z * np.sin(theta_tgt)) ** 2
+                )
+
+                rho_cap = max_rho_n * acc_radius_theta
+                rho_acc = np.minimum(rho_acc, rho_cap)
+
+                if adapt_arg.get("rigid_radius_cap_debug", False):
+                    print(
+                        "[rigid rho cap]",
+                        "max_rho_n=", max_rho_n,
+                        "rho_acc max=", float(np.max(rho_acc)),
+                        "rho_cap min/mean/max=",
+                        float(np.min(rho_cap)),
+                        float(np.mean(rho_cap)),
+                        float(np.max(rho_cap)),
+                    )
 
         else:
             # Fallback non-wrap mapping. Use centered rho/theta and average radius scale.

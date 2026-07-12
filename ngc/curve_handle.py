@@ -283,35 +283,140 @@ class CurveHandle():
         return accessory_data, avatar_data, kidx, inside
 
     def filter_grid_adapt(self, mc_grid, adapt_arg):
-        if bool(adapt_arg.get("use_adapt_control_filter_grid", False)):
+        """
+        Adaptation grid filtering.
+
+        This is the FIRST support gate:
+            MC grid -> candidate samples
+
+        If this gate is too tight, bulky details/puffs are cut before
+        localize_samples_adapt() and the neural SDF ever see them.
+
+        Runtime knobs:
+            avatar_filter_radius_scale/add/norm  : first gate
+            avatar_cylinder_radius_scale/add     : fallback for first gate + second gate
+            adapt_localize_norm                  : second gate in PWLA localize_samples_adapt
+        """
+
+        filter_radius_scale = float(
+            adapt_arg.get(
+                "avatar_filter_radius_scale",
+                adapt_arg.get("avatar_cylinder_radius_scale", 1.0),
+            )
+        )
+
+        filter_radius_add = float(
+            adapt_arg.get(
+                "avatar_filter_radius_add",
+                adapt_arg.get("avatar_cylinder_radius_add", 0.0),
+            )
+        )
+
+        filter_norm = float(
+            adapt_arg.get(
+                "avatar_filter_norm",
+                adapt_arg.get("infer_scale", 1.0),
+            )
+        )
+
+        use_control_filter = bool(
+            adapt_arg.get("use_adapt_control_filter_grid", False)
+        )
+
+        if use_control_filter:
             s = np.linspace(0.0, 1.0, n_sample_curve)
+
             ctrl = self.core.build_adapt_control_field(
                 s,
                 n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
-                smooth_points_sigma=float(adapt_arg.get("avatar_control_smooth_points_sigma", 8.0)),
-                smooth_radius_sigma=float(adapt_arg.get("avatar_control_smooth_radius_sigma", 0.0)),
-                rebuild_frames=bool(adapt_arg.get("avatar_control_rebuild_frames", True)),
-                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                smooth_points_sigma=float(
+                    adapt_arg.get("avatar_control_smooth_points_sigma", 8.0)
+                ),
+                smooth_radius_sigma=float(
+                    adapt_arg.get("avatar_control_smooth_radius_sigma", 0.0)
+                ),
+                rebuild_frames=bool(
+                    adapt_arg.get("avatar_control_rebuild_frames", True)
+                ),
+                preserve_endpoints=bool(
+                    adapt_arg.get("adapt_control_preserve_endpoints", True)
+                ),
                 radius_type="cylinder",
             )
+
+            radius = np.asarray(ctrl["radius"], dtype=np.float64)
+            radius = radius * filter_radius_scale + filter_radius_add
+            radius = radius * filter_norm
+
             intpl = {
                 "points": ctrl["points"],
                 "frame": ctrl["frame"],
-                "radius": ctrl["radius"],
-                "thetas": (2.0 * np.pi) * np.linspace(0, 1, n_sample_circle, endpoint=False),
+                "radius": radius,
+                "thetas": (2.0 * np.pi)
+                * np.linspace(0, 1, n_sample_circle, endpoint=False),
             }
+
             cyl_mesh = self.__gen_cyl_mesh(intpl)
             samples, kidx = cyl_mesh.filter_grid(mc_grid)
+
         else:
-            samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
+            needs_runtime_filter = (
+                abs(filter_radius_scale - 1.0) > 1e-12
+                or abs(filter_radius_add) > 1e-12
+                or abs(filter_norm - 1.0) > 1e-12
+            )
+
+            if needs_runtime_filter:
+                s = np.linspace(0.0, 1.0, n_sample_curve)
+
+                intpl = self.core.interpolate(
+                    s,
+                    radius_type="cylinder",
+                    radius=True,
+                    frame=True,
+                )
+
+                radius = np.asarray(intpl["radius"], dtype=np.float64)
+                radius = radius * filter_radius_scale + filter_radius_add
+                radius = radius * filter_norm
+
+                intpl["radius"] = radius
+                intpl["thetas"] = (2.0 * np.pi) * np.linspace(
+                    0,
+                    1,
+                    n_sample_circle,
+                    endpoint=False,
+                )
+
+                cyl_mesh = self.__gen_cyl_mesh(intpl)
+                samples, kidx = cyl_mesh.filter_grid(mc_grid)
+
+            else:
+                samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
 
         mode = adapt_arg.get("mode", "direct")
+
         if mode == "direct":
-            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(samples, adapt_arg)
+            accessory_data, avatar_data, inside = self.core.localize_samples_adapt(
+                samples,
+                adapt_arg,
+            )
         else:
             raise ValueError(f"Unknown adapt mode: {mode}")
 
         kidx = kidx[inside]
+
+        if adapt_arg.get("adapt_debug_counts", True):
+            print(
+                "[filter_grid_adapt]",
+                "use_control_filter=", use_control_filter,
+                "filter_radius_scale=", filter_radius_scale,
+                "filter_radius_add=", filter_radius_add,
+                "filter_norm=", filter_norm,
+                "candidate_samples=", len(samples),
+                "after_localize=", len(inside),
+            )
+
         return accessory_data, avatar_data, kidx, inside
 
     def filter_grid_adapt_test(self, mc_grid, adapt_arg):
