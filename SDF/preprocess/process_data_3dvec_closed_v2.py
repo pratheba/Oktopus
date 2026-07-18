@@ -1,17 +1,23 @@
+# --- project path bootstrap (restructure) ---
+import os as _os, sys as _sys
+_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..', '..'))
+_sys.path.insert(0, _os.path.join(_ROOT, 'src'))
+# --- end bootstrap ---
 import os, pickle
 import numpy as np
 import trimesh
 import copy
 import os.path as op
+from pathlib import Path
 import pymeshlab as ml
 from time import time
 from tqdm.autonotebook import tqdm
 #from ngc.handle import Handle
-from handle_3dvec import Handle
+from ngc import Handle
 
-from udf_open_mesh_utils import (
-    PerCurveOpenUDFEvaluator,
-    prepare_open_meshes,
+from sdf_closure_utils_v2 import (
+    PerCurveClosedSDFEvaluator,
+    prepare_closed_meshes,
 )
 
 import argparse
@@ -203,6 +209,140 @@ def get_surface_samples_by_curve(handle, source="full"):
     return out
 
 
+
+def _load_mesh_only(path):
+    loaded = trimesh.load(str(path), force="mesh", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [
+            geometry
+            for geometry in loaded.geometry.values()
+            if isinstance(geometry, trimesh.Trimesh)
+            and len(geometry.faces) > 0
+        ]
+        if not meshes:
+            raise ValueError(f"No triangle mesh found in {path}")
+        loaded = trimesh.util.concatenate(meshes)
+
+    if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
+        raise ValueError(f"No triangle mesh found in {path}")
+
+    return loaded
+
+
+def sample_cap_surfaces_by_curve(
+    assets_by_curve,
+    original_surface_by_curve,
+    density_scale=2.0,
+    min_samples=2048,
+    max_samples_per_curve=50000,
+):
+    """
+    Sample artificial cap-only meshes at approximately the same spatial density
+    as the existing original-surface points, multiplied by density_scale.
+
+    Returns one world-space point cloud per curve. Curves with no artificial
+    cap receive an empty array.
+    """
+    result = {}
+
+    for curve_name, asset in assets_by_curve.items():
+        cap_count = int(getattr(asset, "cap_face_count", 0))
+        cap_path = getattr(asset, "cap_path", None)
+
+        if cap_count <= 0 or not cap_path:
+            result[curve_name] = np.zeros((0, 3), dtype=np.float64)
+            print(f"[cap sampling] curve={curve_name} no artificial cap")
+            continue
+
+        cap_path = Path(cap_path)
+        if not cap_path.exists():
+            raise FileNotFoundError(
+                f"Cap-only mesh missing for curve={curve_name}: {cap_path}. "
+                "Rerun preprocessing with --reclose_meshes."
+            )
+
+        source_mesh = _load_mesh_only(asset.source_path)
+        cap_mesh = _load_mesh_only(cap_path)
+
+        source_area = float(source_mesh.area)
+        cap_area = float(cap_mesh.area)
+        original_count = int(len(original_surface_by_curve[curve_name]))
+
+        if source_area <= 0.0 or cap_area <= 0.0:
+            raise RuntimeError(
+                f"Invalid surface area for curve={curve_name}: "
+                f"source_area={source_area}, cap_area={cap_area}"
+            )
+
+        samples_per_area = original_count / source_area
+        requested = int(np.ceil(
+            samples_per_area * cap_area * float(density_scale)
+        ))
+        requested = max(int(min_samples), requested)
+
+        if int(max_samples_per_curve) > 0:
+            requested = min(requested, int(max_samples_per_curve))
+
+        cap_points, _ = trimesh.sample.sample_surface(
+            cap_mesh,
+            count=requested,
+        )
+        cap_points = np.asarray(cap_points, dtype=np.float64)
+
+        result[curve_name] = cap_points
+
+        print(
+            f"[cap sampling] curve={curve_name} "
+            f"source_points={original_count} "
+            f"source_area={source_area:.8g} "
+            f"cap_area={cap_area:.8g} "
+            f"cap_points={len(cap_points)}"
+        )
+
+    return result
+
+
+def merge_original_and_cap_samples(original_by_curve, cap_by_curve):
+    """
+    Merge original desired-surface samples with artificial-cap samples.
+
+    Returns
+    -------
+    merged_by_curve : dict[str, (N,3)]
+    is_cap_by_curve : dict[str, (N,)] uint8
+        0 = original desired surface
+        1 = artificial closure cap
+    """
+    merged_by_curve = {}
+    is_cap_by_curve = {}
+
+    for curve_name, original in original_by_curve.items():
+        original = np.asarray(original, dtype=np.float64)
+        cap = np.asarray(
+            cap_by_curve.get(curve_name, np.zeros((0, 3))),
+            dtype=np.float64,
+        )
+
+        if len(cap) > 0:
+            merged = np.concatenate([original, cap], axis=0)
+        else:
+            merged = original.copy()
+
+        labels = np.concatenate([
+            np.zeros(len(original), dtype=np.uint8),
+            np.ones(len(cap), dtype=np.uint8),
+        ])
+
+        merged_by_curve[curve_name] = merged
+        is_cap_by_curve[curve_name] = labels
+
+        print(
+            f"[surface merge] curve={curve_name} "
+            f"original={len(original)} cap={len(cap)} total={len(merged)}"
+        )
+
+    return merged_by_curve, is_cap_by_curve
+
 def prepare_samples_by_curve(handle, name, samples_by_curve):
     """
     Localize each curve only on the samples that belong to that curve.
@@ -357,62 +497,70 @@ def adaptive_surface_perturbation_by_curve(
     sigma_min=1e-4,
     sigma_max=5e-3,
     max_total_perturbed=None,
+    is_cap_by_curve=None,
 ):
     """
-    Per-curve version of adaptive_surface_perturbation.
-
-    Critical difference:
-        - each curve perturbs only its own NPZ surface samples
-        - perturbed points remain assigned to the same curve
+    Per-curve adaptive perturbation that preserves whether every source point
+    came from the original desired surface or from an artificial cap.
     """
-
     localized_by_curve = {}
     counts = []
 
-    # ------------------------------------------------------------
-    # 1. Localize each curve's own on-surface samples
-    # ------------------------------------------------------------
     for cid, curve in enumerate(handle.curves):
+        curve_name = curve.name
         pts = np.asarray(
-            surface_samples_by_curve.get(curve.name, np.zeros((0, 3))),
+            surface_samples_by_curve.get(curve_name, np.zeros((0, 3))),
             dtype=np.float64,
         )
 
+        labels_in = np.zeros(len(pts), dtype=np.uint8)
+        if is_cap_by_curve is not None:
+            labels_in = np.asarray(
+                is_cap_by_curve.get(curve_name, labels_in),
+                dtype=np.uint8,
+            )
+            if len(labels_in) != len(pts):
+                raise ValueError(
+                    f"is_cap length mismatch for curve={curve_name}: "
+                    f"points={len(pts)} labels={len(labels_in)}"
+                )
+
         if len(pts) == 0:
-            localized_by_curve[curve.name] = (
+            localized_by_curve[curve_name] = (
                 np.zeros((0, 3), dtype=np.float32),
                 np.zeros((0,), dtype=np.float32),
+                np.zeros((0,), dtype=np.uint8),
             )
             counts.append(0)
             continue
 
-        local_data, _ = curve.localize_samples(
+        local_data, inside = curve.localize_samples(
             pts,
             update_curve=False,
             update_radius=False,
             name=f"{tag}_{cid}",
         )
 
+        inside = np.asarray(inside, dtype=np.int64)
         base_xyz = np.asarray(local_data["samples"], dtype=np.float32)
         rho = np.asarray(local_data["rho"], dtype=np.float32).squeeze()
+        labels = labels_in[inside]
 
         if rho.ndim != 1:
             raise ValueError(
-                f"Expected rho to be 1D for curve={curve.name}, got {rho.shape}"
+                f"Expected rho to be 1D for curve={curve_name}, got {rho.shape}"
             )
 
-        if base_xyz.shape[0] != rho.shape[0]:
+        if not (base_xyz.shape[0] == rho.shape[0] == labels.shape[0]):
             raise ValueError(
-                f"Mismatch for curve={curve.name}: "
-                f"base_xyz={base_xyz.shape[0]}, rho={rho.shape[0]}"
+                f"Mismatch for curve={curve_name}: "
+                f"base_xyz={base_xyz.shape[0]}, rho={rho.shape[0]}, "
+                f"labels={labels.shape[0]}"
             )
 
-        localized_by_curve[curve.name] = (base_xyz, rho)
+        localized_by_curve[curve_name] = (base_xyz, rho, labels)
         counts.append(len(base_xyz))
 
-    # ------------------------------------------------------------
-    # 2. Optional global cap on number of base points perturbed
-    # ------------------------------------------------------------
     if max_total_perturbed is not None:
         max_base_points = max(
             1,
@@ -423,23 +571,21 @@ def adaptive_surface_perturbation_by_curve(
 
     keep_counts = _allocate_keep_counts(counts, max_base_points)
 
-    # ------------------------------------------------------------
-    # 3. Perturb each curve independently
-    # ------------------------------------------------------------
     perturbed_by_curve = {}
     sigma_by_curve = {}
     band_by_curve = {}
+    cap_label_by_curve = {}
 
     for curve_idx, curve in enumerate(handle.curves):
         curve_name = curve.name
-        base_xyz, rho = localized_by_curve[curve_name]
-
+        base_xyz, rho, labels = localized_by_curve[curve_name]
         n_keep = int(keep_counts[curve_idx])
 
         if n_keep < len(base_xyz):
             ids = np.random.choice(len(base_xyz), n_keep, replace=False)
             base_xyz = base_xyz[ids]
             rho = rho[ids]
+            labels = labels[ids]
 
         rho = np.maximum(rho, 1e-8)
 
@@ -447,11 +593,13 @@ def adaptive_surface_perturbation_by_curve(
             perturbed_by_curve[curve_name] = np.zeros((0, 3), dtype=np.float32)
             sigma_by_curve[curve_name] = np.zeros((0,), dtype=np.float32)
             band_by_curve[curve_name] = np.zeros((0,), dtype=np.int32)
+            cap_label_by_curve[curve_name] = np.zeros((0,), dtype=np.uint8)
             continue
 
         perturbed_all = []
         sigma_all = []
         band_all = []
+        cap_all = []
 
         for band_idx, alpha in enumerate(alpha_scales):
             sigma = np.clip(alpha * rho, sigma_min, sigma_max).astype(np.float32)
@@ -461,7 +609,6 @@ def adaptive_surface_perturbation_by_curve(
                 1.0,
                 size=base_xyz.shape,
             ).astype(np.float32)
-
             noise_dir /= (
                 np.linalg.norm(noise_dir, axis=1, keepdims=True) + 1e-12
             )
@@ -472,25 +619,31 @@ def adaptive_surface_perturbation_by_curve(
                 size=base_xyz.shape[0],
             ).astype(np.float32)
 
-            perturbed = base_xyz + signed_mag[:, None] * noise_dir
-
-            perturbed_all.append(perturbed)
+            perturbed_all.append(base_xyz + signed_mag[:, None] * noise_dir)
             sigma_all.append(sigma)
             band_all.append(
                 np.full(base_xyz.shape[0], band_idx, dtype=np.int32)
             )
+            cap_all.append(labels.copy())
 
         perturbed_by_curve[curve_name] = np.concatenate(perturbed_all, axis=0)
         sigma_by_curve[curve_name] = np.concatenate(sigma_all, axis=0)
         band_by_curve[curve_name] = np.concatenate(band_all, axis=0)
+        cap_label_by_curve[curve_name] = np.concatenate(cap_all, axis=0)
 
         print(
             f"[perturb_by_curve] {tag} curve={curve_name} "
-            f"base={len(base_xyz)} perturbed={len(perturbed_by_curve[curve_name])}"
+            f"base={len(base_xyz)} "
+            f"cap_base={int(np.sum(labels))} "
+            f"perturbed={len(perturbed_by_curve[curve_name])}"
         )
 
-    return perturbed_by_curve, sigma_by_curve, band_by_curve
-
+    return (
+        perturbed_by_curve,
+        sigma_by_curve,
+        band_by_curve,
+        cap_label_by_curve,
+    )
 
 def filter_curve_field_after_prepare(handle, field_by_curve, prepare_meta):
     """
@@ -551,49 +704,48 @@ def split_train_test(num_surface, num_space, num_on_surface):
 def get_full_base_residual_samples(
     handle,
     handle_mesh_file,
-    full_open_assets_by_curve,
-    base_open_assets_by_curve,
+    full_closed_assets_by_curve,
+    base_closed_assets_by_curve,
     n_surface_samples,
     n_space_samples,
     noise_scales=[0.02, 0.04, 0.06],
     name_prefix="",
     sigma_min=1e-4,
     sigma_max=5e-3,
-    udf_chunk_size=50000,
-    udf_truncation=0.1,
-    udf_surface_tolerance=1e-6,
+    sdf_chunk_size=200000,
+    surface_tolerance=1.0e-6,
+    cap_density_scale=2.0,
+    cap_min_samples=2048,
+    cap_max_samples_per_curve=50000,
 ):
     """
     Surface locations:
-        - unchanged from std_handle.npz
-        - full samples come from surface_points_all
-        - base samples come from surface_points_base
+        - original full/base points come from std_handle.npz
+        - artificial cap points are sampled from cached cap-only meshes
+        - every point carries is_cap=0/1
 
     Perturbation:
-        - unchanged
-        - generated only from existing NPZ surface points
-        - no artificial cap points are added
+        - generated from both original and cap surface points
+        - every perturbed point keeps the is_cap label of its source point
 
     Volumetric locations:
         - unchanged
         - sampled from handle/std_mesh.ply
 
-    UDF targets:
-        - evaluated ONLY against the corresponding original OPEN part meshes
-        - curve_idx selects the full/base open part oracle
+    SDF targets:
+        - evaluated ONLY against the corresponding CLOSED part meshes
+        - curve_idx selects the full/base closed part oracle
     """
 
     curve_names = [curve.name for curve in handle.curves]
 
-    full_udf_evaluator = PerCurveOpenUDFEvaluator(
-        full_open_assets_by_curve,
-        surface_tolerance=udf_surface_tolerance,
-        truncation=udf_truncation,
+    full_sdf_evaluator = PerCurveClosedSDFEvaluator(
+        full_closed_assets_by_curve,
+        surface_tolerance=surface_tolerance,
     )
-    base_udf_evaluator = PerCurveOpenUDFEvaluator(
-        base_open_assets_by_curve,
-        surface_tolerance=udf_surface_tolerance,
-        truncation=udf_truncation,
+    base_sdf_evaluator = PerCurveClosedSDFEvaluator(
+        base_closed_assets_by_curve,
+        surface_tolerance=surface_tolerance,
     )
 
     # ------------------------------------------------------------
@@ -604,9 +756,41 @@ def get_full_base_residual_samples(
         source="full",
     )
 
-    on_surface_base_by_curve = get_surface_samples_by_curve(
+    on_surface_base_original_by_curve = get_surface_samples_by_curve(
         handle,
         source="base",
+    )
+
+    on_surface_full_original_by_curve = on_surface_full_by_curve
+
+    cap_full_by_curve = sample_cap_surfaces_by_curve(
+        full_closed_assets_by_curve,
+        on_surface_full_original_by_curve,
+        density_scale=cap_density_scale,
+        min_samples=cap_min_samples,
+        max_samples_per_curve=cap_max_samples_per_curve,
+    )
+    cap_base_by_curve = sample_cap_surfaces_by_curve(
+        base_closed_assets_by_curve,
+        on_surface_base_original_by_curve,
+        density_scale=cap_density_scale,
+        min_samples=cap_min_samples,
+        max_samples_per_curve=cap_max_samples_per_curve,
+    )
+
+    (
+        on_surface_full_by_curve,
+        on_surface_full_is_cap_by_curve,
+    ) = merge_original_and_cap_samples(
+        on_surface_full_original_by_curve,
+        cap_full_by_curve,
+    )
+    (
+        on_surface_base_by_curve,
+        on_surface_base_is_cap_by_curve,
+    ) = merge_original_and_cap_samples(
+        on_surface_base_original_by_curve,
+        cap_base_by_curve,
     )
 
     n_full_surface_total = sum(len(v) for v in on_surface_full_by_curve.values())
@@ -637,6 +821,7 @@ def get_full_base_residual_samples(
         surface_full_by_curve,
         full_sigma_by_curve,
         full_band_by_curve,
+        pert_full_is_cap_by_curve,
     ) = adaptive_surface_perturbation_by_curve(
         handle,
         on_surface_full_by_curve,
@@ -645,12 +830,14 @@ def get_full_base_residual_samples(
         sigma_min=sigma_min,
         sigma_max=sigma_max,
         max_total_perturbed=target_perturbed_full,
+        is_cap_by_curve=on_surface_full_is_cap_by_curve,
     )
 
     (
         surface_base_by_curve,
         base_sigma_by_curve,
         base_band_by_curve,
+        pert_base_is_cap_by_curve,
     ) = adaptive_surface_perturbation_by_curve(
         handle,
         on_surface_base_by_curve,
@@ -659,17 +846,11 @@ def get_full_base_residual_samples(
         sigma_min=sigma_min,
         sigma_max=sigma_max,
         max_total_perturbed=target_perturbed_base,
+        is_cap_by_curve=on_surface_base_is_cap_by_curve,
     )
 
     # ------------------------------------------------------------
-    # 3. Volumetric samples stay global and KEEP the existing NGC
-    #    support-cylinder sampling path.
-    #
-    # `handle_mesh_file` is handle/std_mesh.ply: the closed cylinder
-    # support generated from the curve handles.  It is intentionally
-    # watertight because it defines the model support / pruning volume.
-    # This geometry is NOT the target full/base surface and must not be
-    # confused with the artificial caps previously added to those meshes.
+    # 3. Volumetric samples stay global
     # ------------------------------------------------------------
     space_samples = meshlab_volumetric_sampling(
         handle_mesh_file,
@@ -701,34 +882,61 @@ def get_full_base_residual_samples(
         on_base_data,
     )
 
+    on_full_is_cap_used = filter_curve_field_after_prepare(
+        handle,
+        on_surface_full_is_cap_by_curve,
+        on_full_meta,
+    ).astype(np.uint8)
+    on_base_is_cap_used = filter_curve_field_after_prepare(
+        handle,
+        on_surface_base_is_cap_by_curve,
+        on_base_meta,
+    ).astype(np.uint8)
+    on_surface_data["is_cap"] = np.concatenate(
+        [on_full_is_cap_used, on_base_is_cap_used],
+        axis=0,
+    ).astype(np.uint8)
+
     if "rho" in on_surface_data:
         on_surface_data["surface_rho"] = np.asarray(
             on_surface_data["rho"],
             dtype=np.float32,
         )
 
-    # Query points remain unchanged. Only the UDF oracle changes.
-    on_surface_full_udf = full_udf_evaluator.evaluate(
+    # Query points remain unchanged. Only the SDF oracle changes.
+    on_surface_full_sdf = full_sdf_evaluator.evaluate(
         on_surface_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
-    on_surface_base_udf = base_udf_evaluator.evaluate(
+    on_surface_base_sdf = base_sdf_evaluator.evaluate(
         on_surface_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
 
-    on_surface_data["udf"] = on_surface_full_udf.astype(np.float32)
-    on_surface_data["udf_base"] = on_surface_base_udf.astype(np.float32)
-    on_surface_data["udf_res"] = (
-        on_surface_data["udf"] - on_surface_data["udf_base"]
+    on_surface_data["sdf"] = on_surface_full_sdf.astype(np.float32)
+    on_surface_data["sdf_base"] = on_surface_base_sdf.astype(np.float32)
+    on_surface_data["sdf_res"] = (
+        on_surface_data["sdf"] - on_surface_data["sdf_base"]
     ).astype(np.float32)
 
     on_surface_data["sample_origin"] = np.concatenate([
         np.zeros(len(on_full_data["samples"]), dtype=np.int32),   # 0 = full surface
         np.ones(len(on_base_data["samples"]), dtype=np.int32),    # 1 = base surface
     ], axis=0)
+
+    # 0=original full, 1=original base, 2=cap full, 3=cap base
+    on_surface_data["surface_role"] = (
+        on_surface_data["sample_origin"]
+        + 2 * on_surface_data["is_cap"].astype(np.int32)
+    )
+
+    print(
+        "[on-surface cap supervision]",
+        f"total={len(on_surface_data['samples'])}",
+        f"cap={int(np.sum(on_surface_data['is_cap']))}",
+    )
 
     on_surface_inferencedata = {
         "full": on_full_meta,
@@ -796,27 +1004,53 @@ def get_full_base_residual_samples(
     pert_surface_data["perturb_sigma"] = pert_surface_sigma
     pert_surface_data["perturb_band"] = pert_surface_band
 
-    pert_surface_full_udf = full_udf_evaluator.evaluate(
+    pert_full_is_cap_used = filter_curve_field_after_prepare(
+        handle,
+        pert_full_is_cap_by_curve,
+        pert_full_meta,
+    ).astype(np.uint8)
+    pert_base_is_cap_used = filter_curve_field_after_prepare(
+        handle,
+        pert_base_is_cap_by_curve,
+        pert_base_meta,
+    ).astype(np.uint8)
+    pert_surface_data["is_cap"] = np.concatenate(
+        [pert_full_is_cap_used, pert_base_is_cap_used],
+        axis=0,
+    ).astype(np.uint8)
+
+    pert_surface_full_sdf = full_sdf_evaluator.evaluate(
         pert_surface_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
-    pert_surface_base_udf = base_udf_evaluator.evaluate(
+    pert_surface_base_sdf = base_sdf_evaluator.evaluate(
         pert_surface_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
 
-    pert_surface_data["udf"] = pert_surface_full_udf.astype(np.float32)
-    pert_surface_data["udf_base"] = pert_surface_base_udf.astype(np.float32)
-    pert_surface_data["udf_res"] = (
-        pert_surface_data["udf"] - pert_surface_data["udf_base"]
+    pert_surface_data["sdf"] = pert_surface_full_sdf.astype(np.float32)
+    pert_surface_data["sdf_base"] = pert_surface_base_sdf.astype(np.float32)
+    pert_surface_data["sdf_res"] = (
+        pert_surface_data["sdf"] - pert_surface_data["sdf_base"]
     ).astype(np.float32)
 
     pert_surface_data["sample_origin"] = np.concatenate([
         np.zeros(len(pert_full_data["samples"]), dtype=np.int32),  # 0 = full perturb
         np.ones(len(pert_base_data["samples"]), dtype=np.int32),   # 1 = base perturb
     ], axis=0)
+
+    pert_surface_data["surface_role"] = (
+        pert_surface_data["sample_origin"]
+        + 2 * pert_surface_data["is_cap"].astype(np.int32)
+    )
+
+    print(
+        "[perturbed cap supervision]",
+        f"total={len(pert_surface_data['samples'])}",
+        f"cap_source={int(np.sum(pert_surface_data['is_cap']))}",
+    )
 
     # ------------------------------------------------------------
     # 6. SPACE / volumetric samples stay as before
@@ -827,21 +1061,21 @@ def get_full_base_residual_samples(
     space_data, _ = handle.prepare_samples(space_tag, space_samples)
     print("space data after prepare samples", space_data["samples_local"].shape)
 
-    space_full_udf = full_udf_evaluator.evaluate(
+    space_full_sdf = full_sdf_evaluator.evaluate(
         space_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
-    space_base_udf = base_udf_evaluator.evaluate(
+    space_base_sdf = base_sdf_evaluator.evaluate(
         space_data,
         curve_names=curve_names,
-        chunk_size=udf_chunk_size,
+        chunk_size=sdf_chunk_size,
     )
 
-    space_data["udf"] = space_full_udf.astype(np.float32)
-    space_data["udf_base"] = space_base_udf.astype(np.float32)
-    space_data["udf_res"] = (
-        space_data["udf"] - space_data["udf_base"]
+    space_data["sdf"] = space_full_sdf.astype(np.float32)
+    space_data["sdf_base"] = space_base_sdf.astype(np.float32)
+    space_data["sdf_res"] = (
+        space_data["sdf"] - space_data["sdf_base"]
     ).astype(np.float32)
 
     return (
@@ -868,13 +1102,15 @@ def ngc_dataset(arg):
     base_parts_dir_spec = arg['base_parts_dir']
     full_part_pattern = arg['full_part_pattern']
     base_part_pattern = arg['base_part_pattern']
-    udf_chunk_size = int(arg.get('udf_chunk_size', 50000))
-    udf_truncation = arg.get('udf_truncation', 0.1)
-    if udf_truncation is not None:
-        udf_truncation = float(udf_truncation)
-        if udf_truncation <= 0.0:
-            udf_truncation = None
-    udf_surface_tolerance = float(arg.get('udf_surface_tolerance', 1.0e-6))
+    closed_mesh_dir_spec = arg['closed_mesh_dir']
+    reclose_meshes = bool(arg.get('reclose_meshes', False))
+    sdf_chunk_size = int(arg.get('sdf_chunk_size', 200000))
+    surface_tolerance = float(arg.get('surface_tolerance', 1.0e-6))
+    cap_density_scale = float(arg.get('cap_density_scale', 2.0))
+    cap_min_samples = int(arg.get('cap_min_samples', 2048))
+    cap_max_samples_per_curve = int(
+        arg.get('cap_max_samples_per_curve', 50000)
+    )
 
     # items = os.listdir(root_path)
     items = np.atleast_1d(np.loadtxt(op.join(root_path, data_path), dtype=str)).tolist()
@@ -913,23 +1149,23 @@ def ngc_dataset(arg):
             handle.load(handle_file, shape_type, n_keypoints)
 
             # --------------------------------------------------------
-            # Open-mesh UDF stage.
+            # Mandatory closure stage.
             #
-            # Resolve and validate without closing:
+            # Close and cache:
             #   1. global full mesh
             #   2. global base mesh
             #   3. every full part mesh
             #   4. every base part mesh
             #
-            # All UDF values are evaluated against the original open
-            # per-part triangles. No caps are constructed or supervised.
+            # All SDF values are evaluated against closed per-part meshes.
+            # Cap-only meshes are also cached and explicitly sampled below.
             # --------------------------------------------------------
             (
-                global_full_open,
-                global_base_open,
-                full_open_assets_by_curve,
-                base_open_assets_by_curve,
-            ) = prepare_open_meshes(
+                global_full_closed,
+                global_base_closed,
+                full_closed_assets_by_curve,
+                base_closed_assets_by_curve,
+            ) = prepare_closed_meshes(
                 item_path=item_path,
                 item_name=name,
                 handle=handle,
@@ -939,11 +1175,17 @@ def ngc_dataset(arg):
                 base_parts_dir_spec=base_parts_dir_spec,
                 full_part_pattern=full_part_pattern,
                 base_part_pattern=base_part_pattern,
+                closed_mesh_dir_spec=closed_mesh_dir_spec,
+                reclose=reclose_meshes,
             )
 
-            print("[open global full]", global_full_open.source_path)
-            print("[open global base]", global_base_open.source_path)
-            print("full_open_assets_by_curve", full_open_assets_by_curve)
+            print(
+                "[closed global full]", global_full_closed.closed_path
+            )
+            print(
+                "[closed global base]", global_base_closed.closed_path
+            )
+            print("full_closed_assets_by_curve", full_closed_assets_by_curve)
             #exit()
 
             #if not op.exists(handle_mesh_file):
@@ -954,15 +1196,17 @@ def ngc_dataset(arg):
                 get_full_base_residual_samples(
                     handle=handle,
                     handle_mesh_file=handle_mesh_file,
-                    full_open_assets_by_curve=full_open_assets_by_curve,
-                    base_open_assets_by_curve=base_open_assets_by_curve,
+                    full_closed_assets_by_curve=full_closed_assets_by_curve,
+                    base_closed_assets_by_curve=base_closed_assets_by_curve,
                     n_surface_samples=n_surface_samples,
                     n_space_samples=n_space_samples,
                     noise_scales=noise_scales,
                     name_prefix=name,
-                    udf_chunk_size=udf_chunk_size,
-                    udf_truncation=udf_truncation,
-                    udf_surface_tolerance=udf_surface_tolerance,
+                    sdf_chunk_size=sdf_chunk_size,
+                    surface_tolerance=surface_tolerance,
+                    cap_density_scale=cap_density_scale,
+                    cap_min_samples=cap_min_samples,
+                    cap_max_samples_per_curve=cap_max_samples_per_curve,
                 )
             )
 
@@ -971,13 +1215,13 @@ def ngc_dataset(arg):
                 'pert_surface': pert_surface_data,
                 'space': space_data,
 
-                'base_on_surface_udf': on_surface_data['udf_base'],
-                'base_pert_surface_udf': pert_surface_data['udf_base'],
-                'base_space_udf': space_data['udf_base'],
+                'base_on_surface_sdf': on_surface_data['sdf_base'],
+                'base_pert_surface_sdf': pert_surface_data['sdf_base'],
+                'base_space_sdf': space_data['sdf_base'],
 
-                'residual_on_surface_udf': on_surface_data['udf_res'],
-                'residual_pert_surface_udf': pert_surface_data['udf_res'],
-                'residual_space_udf': space_data['udf_res']
+                'residual_on_surface_sdf': on_surface_data['sdf_res'],
+                'residual_pert_surface_sdf': pert_surface_data['sdf_res'],
+                'residual_space_sdf': space_data['sdf_res']
             }
 
             with open(output_all_file, 'wb') as f:
@@ -1051,25 +1295,58 @@ if __name__ == "__main__":
         ),
     )
     p.add_argument(
-        '--udf_chunk_size',
-        type=int,
-        default=50000,
-        help='Maximum number of points in one open-mesh UDF query.',
-    )
-    p.add_argument(
-        '--udf_truncation',
-        type=float,
-        default=0.1,
+        '--closed_mesh_dir',
+        default='closed_sdf_meshes',
         help=(
-            'Clamp UDF targets to this distance in mesh-coordinate units. '
-            'Use a value <= 0 to disable truncation.'
+            'Output/cache directory for closed global and part meshes. '
+            'Absolute, relative to each item, or template using '
+            '{item_path} and {name}.'
         ),
     )
     p.add_argument(
-        '--udf_surface_tolerance',
+        '--reclose_meshes',
+        action='store_true',
+        help='Ignore cached closed meshes and close all source meshes again.',
+    )
+    p.add_argument(
+        '--sdf_chunk_size',
+        type=int,
+        default=200000,
+        help='Maximum number of points in one closed-mesh SDF query.',
+    )
+
+    p.add_argument(
+        '--surface_tolerance',
         type=float,
         default=1.0e-6,
-        help='Distances at or below this value are stored as exactly zero.',
+        help=(
+            'Absolute SDF magnitude written as exactly zero. '
+            'Units are the same as the mesh coordinates.'
+        ),
+    )
+    p.add_argument(
+        '--cap_density_scale',
+        type=float,
+        default=2.0,
+        help=(
+            'Cap point density relative to the existing original-surface '
+            'point density. 2.0 gives the artificial closure twice the '
+            'on-surface density of the original mesh.'
+        ),
+    )
+    p.add_argument(
+        '--cap_min_samples',
+        type=int,
+        default=2048,
+        help='Minimum cap samples for every curve that has a non-empty cap.',
+    )
+    p.add_argument(
+        '--cap_max_samples_per_curve',
+        type=int,
+        default=50000,
+        help=(
+            'Maximum cap samples per curve; use 0 for no maximum.'
+        ),
     )
 
     args = p.parse_args()
@@ -1078,7 +1355,7 @@ if __name__ == "__main__":
         'data_path': args.data_path,
         'overwrite': args.overwrite,
         'n_keypoints': args.n_keypoints,
-        'file_name': 'udf_samples.pkl',
+        'file_name': 'sdf_samples.pkl',
         'n_surface_samples' : args.n_surface_samples,
         'n_space_samples' : args.n_space_samples,
         'noise_scales': args.noise_scales,
@@ -1088,8 +1365,12 @@ if __name__ == "__main__":
         'base_parts_dir': args.base_parts_dir,
         'full_part_pattern': args.full_part_pattern,
         'base_part_pattern': args.base_part_pattern,
-        'udf_chunk_size': args.udf_chunk_size,
-        'udf_truncation': args.udf_truncation,
-        'udf_surface_tolerance': args.udf_surface_tolerance,
+        'closed_mesh_dir': args.closed_mesh_dir,
+        'reclose_meshes': args.reclose_meshes,
+        'sdf_chunk_size': args.sdf_chunk_size,
+        'surface_tolerance': args.surface_tolerance,
+        'cap_density_scale': args.cap_density_scale,
+        'cap_min_samples': args.cap_min_samples,
+        'cap_max_samples_per_curve': args.cap_max_samples_per_curve,
     }
     ngc_dataset(arg)

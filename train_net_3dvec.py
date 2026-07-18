@@ -1,3 +1,9 @@
+# --- project path bootstrap (restructure: src/, SDF/, UDF/) ---
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.abspath(__file__))
+for _p in ('src', 'SDF', 'UDF'):
+    _sys.path.insert(0, _os.path.join(_ROOT, _p))
+# --- end bootstrap ---
 import os, argparse
 import os.path as op
 import numpy as np
