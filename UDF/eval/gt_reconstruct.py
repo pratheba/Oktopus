@@ -2,26 +2,30 @@
 """
 Ground-truth UDF -> mesh reconstruction test (DualMeshUDF).
 
-Purpose
--------
-Validate the surface-extraction path (DualMeshUDF) INDEPENDENTLY of any trained
-network: build an *analytic* unsigned-distance field directly from a known
-input mesh, run DualMeshUDF's ``extract_mesh`` on it, and compare the
-reconstruction back to the input.  If this looks good, the extraction pipeline
-is sound and any later problems are the network's, not the extractor's.
+Validates the surface-extraction path INDEPENDENTLY of any trained network:
+build an analytic unsigned-distance field directly from a known input mesh, run
+DualMeshUDF's extract_mesh on it, and compare the reconstruction to the input.
+
+Two modes:
+  1. Whole mesh:   --mesh <mesh.ply>            -> one reconstruction
+  2. Per-curve:    --parts_dir <full_parts/>    -> one reconstruction per part
+     (recommended for this pipeline: the model is per-curve, so reconstructing
+      each open part mesh on its own is the decisive check.)
 
 The UDF and its gradient come from libigl's exact point-to-mesh distance:
     d(p)      = || p - closest_point_on_mesh(p) ||
     grad d(p) = (p - closest_point) / d          (unit, points away from surface)
 
-DualMeshUDF extracts inside the cube [-1, 1]^3, so the input mesh is normalized
-into that cube first (and the result is mapped back for comparison/report).
+DualMeshUDF extracts inside the cube [-1, 1]^3, so each mesh is normalized into
+that cube first and the result is mapped back for comparison.
 
 Usage
 -----
-    python UDF/eval/gt_reconstruct.py --mesh /path/to/mesh.ply \
-        --out   /path/to/recon.ply \
-        --max_depth 7                 # 7 -> ~128^3
+    # per-curve (each part in the directory reconstructed separately):
+    python UDF/eval/gt_reconstruct.py --parts_dir <item>/full_parts --out_dir recon_parts --max_depth 7
+
+    # whole mesh:
+    python UDF/eval/gt_reconstruct.py --mesh <item>/mesh.ply --out recon.ply --max_depth 7
 
 Requires: DualMeshUDF (pip install the vendored copy), libigl, trimesh, numpy.
 """
@@ -29,6 +33,8 @@ Requires: DualMeshUDF (pip install the vendored copy), libigl, trimesh, numpy.
 from __future__ import annotations
 
 import argparse
+import glob
+import os
 from pathlib import Path
 
 import numpy as np
@@ -94,57 +100,89 @@ def make_udf_funcs(V: np.ndarray, F: np.ndarray):
     return udf_func, udf_grad_func
 
 
+def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
+                    pad=0.9, no_normalize=False, label=""):
+    """Reconstruct a single mesh's GT UDF via DualMeshUDF. Returns recon-to-input
+    distance stats (mean, p95, max) in original units, or None on failure."""
+    tag = f"[{label}] " if label else ""
+    mesh = load_mesh(mesh_path)
+    V = np.asarray(mesh.vertices, dtype=np.float64)
+    F = np.asarray(mesh.faces, dtype=np.int64)
+    if len(F) == 0:
+        print(f"{tag}SKIP (no faces): {mesh_path}")
+        return None
+    print(f"{tag}input V={V.shape} F={F.shape} watertight={mesh.is_watertight}")
+
+    if no_normalize:
+        Vn, center, scale = V, np.zeros(3), 1.0
+    else:
+        Vn, center, scale = normalize_to_cube(V, pad=pad)
+
+    udf_func, udf_grad_func = make_udf_funcs(Vn, F)
+
+    v, f = extract_mesh(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
+    v = np.asarray(v, dtype=np.float64)
+    f = np.asarray(f, dtype=np.int64)
+    if len(v) == 0 or len(f) == 0:
+        print(f"{tag}WARNING: extraction produced an empty mesh")
+        return None
+
+    v_orig = (v / scale + center) if not no_normalize else v
+    recon = trimesh.Trimesh(vertices=v_orig, faces=f, process=False)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    recon.export(out_path)
+
+    sqr_d, _, _ = igl.point_mesh_squared_distance(v_orig, V, F)
+    d = np.sqrt(np.maximum(sqr_d, 0.0))
+    stats = (float(d.mean()), float(np.quantile(d, 0.95)), float(d.max()))
+    print(f"{tag}recon V={v.shape} F={f.shape} -> {out_path}")
+    print(f"{tag}recon->input surface  mean={stats[0]:.6g} p95={stats[1]:.6g} max={stats[2]:.6g}")
+    return stats
+
+
 def main():
     ap = argparse.ArgumentParser(description="GT UDF -> DualMeshUDF reconstruction test")
-    ap.add_argument("--mesh", required=True, help="input mesh (open or closed)")
-    ap.add_argument("--out", default="udf_gt_recon.ply", help="output reconstructed mesh")
+    ap.add_argument("--mesh", default=None, help="single input mesh (whole-mesh mode)")
+    ap.add_argument("--out", default="udf_gt_recon.ply", help="output for --mesh mode")
+    ap.add_argument("--parts_dir", default=None,
+                    help="directory of per-part meshes (per-curve mode)")
+    ap.add_argument("--pattern", default="*.ply", help="glob for --parts_dir")
+    ap.add_argument("--out_dir", default="udf_gt_recon_parts",
+                    help="output directory for per-curve mode")
     ap.add_argument("--max_depth", type=int, default=7, help="octree depth (7 ~= 128^3)")
     ap.add_argument("--batch_size", type=int, default=150000)
-    ap.add_argument("--pad", type=float, default=0.9, help="fit mesh into [-pad,pad]^3")
+    ap.add_argument("--pad", type=float, default=0.9, help="fit each mesh into [-pad,pad]^3")
     ap.add_argument("--no_normalize", action="store_true",
                     help="assume mesh already lives in [-1,1]^3")
     args = ap.parse_args()
 
-    mesh = load_mesh(args.mesh)
-    V = np.asarray(mesh.vertices, dtype=np.float64)
-    F = np.asarray(mesh.faces, dtype=np.int64)
-    print(f"[input] V={V.shape} F={F.shape} watertight={mesh.is_watertight}")
+    if not args.parts_dir and not args.mesh:
+        raise SystemExit("Provide either --parts_dir (per-curve) or --mesh (whole).")
 
-    if args.no_normalize:
-        Vn, center, scale = V, np.zeros(3), 1.0
+    if args.parts_dir:
+        part_paths = sorted(glob.glob(os.path.join(args.parts_dir, args.pattern)))
+        if not part_paths:
+            raise SystemExit(f"No meshes matched {args.pattern} in {args.parts_dir}")
+        print(f"[per-curve] {len(part_paths)} part meshes from {args.parts_dir}\n")
+        summary = []
+        for p in part_paths:
+            stem = Path(p).stem
+            out_path = os.path.join(args.out_dir, f"recon_{stem}.ply")
+            stats = reconstruct_one(
+                p, out_path, max_depth=args.max_depth, batch_size=args.batch_size,
+                pad=args.pad, no_normalize=args.no_normalize, label=stem)
+            summary.append((stem, stats))
+            print()
+        print("==== per-curve summary (recon->input surface distance) ====")
+        for stem, stats in summary:
+            if stats is None:
+                print(f"  {stem:40s}  FAILED/empty")
+            else:
+                print(f"  {stem:40s}  mean={stats[0]:.6g}  p95={stats[1]:.6g}  max={stats[2]:.6g}")
     else:
-        Vn, center, scale = normalize_to_cube(V, pad=args.pad)
-        print(f"[normalize] center={center} scale={scale:.6g} -> [-{args.pad},{args.pad}]^3")
-
-    udf_func, udf_grad_func = make_udf_funcs(Vn, F)
-
-    print(f"[extract] running DualMeshUDF (max_depth={args.max_depth}) ...")
-    v, f = extract_mesh(udf_func, udf_grad_func,
-                        batch_size=args.batch_size, max_depth=args.max_depth)
-    print(f"[recon] V={np.asarray(v).shape} F={np.asarray(f).shape}")
-
-    v = np.asarray(v, dtype=np.float64)
-    f = np.asarray(f, dtype=np.int64)
-
-    # map reconstruction back to the ORIGINAL mesh frame for fair comparison
-    if not args.no_normalize:
-        v_orig = v / scale + center
-    else:
-        v_orig = v
-
-    recon = trimesh.Trimesh(vertices=v_orig, faces=f, process=False)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    recon.export(args.out)
-    print(f"[saved] {args.out}")
-
-    # simple one-sided chamfer (recon vertices -> input surface) in original units
-    try:
-        sqr_d, _, _ = igl.point_mesh_squared_distance(v_orig, V, F)
-        d = np.sqrt(np.maximum(sqr_d, 0.0))
-        print(f"[recon->input surface] mean={d.mean():.6g} p95={np.quantile(d,0.95):.6g} "
-              f"max={d.max():.6g}")
-    except Exception as exc:
-        print("[chamfer] skipped:", exc)
+        reconstruct_one(
+            args.mesh, args.out, max_depth=args.max_depth, batch_size=args.batch_size,
+            pad=args.pad, no_normalize=args.no_normalize)
 
 
 if __name__ == "__main__":
