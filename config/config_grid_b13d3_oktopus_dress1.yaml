@@ -1,0 +1,180 @@
+experiment_name: train
+description: overfitting 3 shapes - split base into base1 + base2, plus detail
+logging_root: results_grid_b13d3_oktopus_dress1
+num_samples: 4M
+
+training:
+  num_epochs: 16000
+  val_type: None
+  epochs_til_ckpt: 3000
+  epochs_til_showval: 50
+  steps_til_summary: 100
+  clip_grad: false
+  resume: false
+
+  resume_data:
+    checkpoint: 'train'
+
+  phase_schedule:
+    base1_epoch: 1000 
+    base2_epoch: 1000
+    base_epoch: 4000
+    detail_epoch: 6000
+    final_epoch: 16000
+
+  optim_base1:
+    type: AdamW
+    lr: 0.001
+    beta1: 0.9
+    beta2: 0.999
+    amsgrad: false
+    lr_scheduler: ROP
+    factor: 0.99
+    patience: 20
+    weight_decay: 0.0001
+
+  optim_base2:
+    type: AdamW
+    lr: 0.001
+    beta1: 0.9
+    beta2: 0.999
+    amsgrad: false
+    lr_scheduler: ROP
+    factor: 0.99
+    patience: 20
+    weight_decay: 0.0001
+
+  optim_detail:
+    type: AdamW
+    lr: 0.001
+    beta1: 0.9
+    beta2: 0.999
+    amsgrad: false
+    lr_scheduler: ROP
+    factor: 0.99
+    patience: 20
+    weight_decay: 0.0001
+
+
+dataset:
+  root: /fast/pselvaraju/Oktopus_now/Pack3MDataset
+  type: NGCDataset
+  num_batch: 80
+  file_name: sdf_samples.pkl
+  n_sample: 10000
+  mode: 'all'
+  data_path: 'data_oktopus_dress1.txt'
+
+model:
+  type: NGCNetGrid
+  device: 'cuda'
+  # n_curve must be >= total curve count in the dataset
+  n_curve: 300
+  dim_code: 256
+  dim_type_base: 256
+  dim_curve_feat: 256
+  dim_curve_feat_detail: 256
+
+  # grid-wide toggles
+  rho_grid: True
+  details_level: 2   # 0 = base only, 1 = detail only, 2 = base + gate*detail
+
+  # curve positional encoding
+  num_pos_encoding: 24
+  num_y_pos_encoding: 24
+  num_z_pos_encoding: 24
+  num_period_encoding: 24
+  use_posenc: False
+
+  # ------------- BASE (base1 + base2) -------------
+  base:
+    # base1
+    base1_reduce_channel: True
+    base1_grid_levels: 1
+    base1_grid_dim: 32
+    base1_grid_hw: (32, 32)
+    dim_base1_feat: 256
+    num_base1_hidden_layers: 1
+    decoder_base1:
+      size: [256, 256, 256, 256, 256, 1]
+      activation_type: silu
+
+    # base2 (gated residual on top of base1)
+    base2_reduce_channel: True
+    base2_grid_levels: 3
+    base2_grid_dim: 16
+    base2_grid_hw: (64, 64)
+    dim_base2_feat: 256
+    num_base2_hidden_layers: 2
+    decoder_base2:
+      size: [256, 256, 256, 256, 256, 1]
+      activation_type: silu
+
+    # how base2 combines with base1
+    combine:
+      sigma: 0.01
+      alpha_warmup: 100   # epochs of phase-2 over which alpha ramps 0->1
+      gate_warmup: 20     # reserved (kept for future use)
+
+
+  detail:
+    detail_reduce_channel: False
+    detail_grid_levels: 3
+    detail_grid_dim: 256
+    detail_grid_hw: (128, 128)
+    dim_type_detail: 256
+    dim_detail_feat: 256
+    num_detail_hidden_layers: 2
+    decoder_detail:
+      size: [256, 256, 256, 256, 256, 1]
+      activation_type: silu
+
+    # how detail combines with sdf_base
+    combine:
+      sigma: 0.01
+      alpha_warmup: 50   # epochs of phase-4 over which alpha ramps 0->1
+      gate_warmup: 20
+
+  # shared curve encoder (consumed by FeatCurveEncoder in model_withgrid.py)
+  encoder_curve:
+    size: [256, 256, 256, 256]
+    activation_type: silu
+
+loss:
+  sdf_loss:
+    enable: true
+    metric: L1
+    factor: 1.0
+    clamp: 0.03
+
+  sdf_base_loss:
+    enable: false
+    metric: L1
+    factor: 1.0
+    clamp: 0.1
+
+  code_loss:
+    enable: true
+    metric: L2
+    factor: 0.0001
+
+  tv_grid_ctloss:
+    enable: True
+    factor: !!float 1e-6
+    metric: L1
+
+  tv_grid_crloss:
+    enable: True
+    factor: !!float 1e-6
+    metric: L1
+
+  tv_l2_grid_ctloss:
+    enable: True
+    factor: !!float 1e-8
+    metric: L2
+
+  tv_l2_grid_crloss:
+    enable: True
+    factor: !!float 1e-8
+    metric: L2
+

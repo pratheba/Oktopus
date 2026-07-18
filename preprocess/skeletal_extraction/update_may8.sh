@@ -1,12 +1,12 @@
 #!/bin/bash
 post='postprocess'
-meshname='trex_unitbb'
+meshname='cone_unitbb'
 input='input'
 output='output'
-postseg=9
+postseg=1
 version=1
 
-python3 update_radius.py \
+python3 update_radius_may8.py \
   --in_npz "postprocess/output/npz/patched_${meshname}_${postseg}_postprocess_segments_v${version}.npz" \
   --out_npz "postprocess/output/handle_npz/${meshname}_${postseg}_postprocess_segments_v${version}.npz" \
   --out_dir "postprocess/output/handle_npz/${meshname}_${postseg}" \

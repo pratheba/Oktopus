@@ -38,5 +38,12 @@
       "center_smooth_win": 1,
       "center_iters": 4
     }
- ]
+ ],
+  "rename_final": [
+    { 
+      "old_id": 21,
+      "new_id": 0,
+      "new_name": "hat"
+    }
+  ]
 }

@@ -34,23 +34,24 @@
   accessory_key: puffer_3_v1|l_arm
   mode: direct
   cache_as: puffer_3_v1|l_arm
-  src_0: 0.55
+  src_0: 0.65
   src_1: 0.0
   tgt_0: 0.3
   tgt_1: 0.9
-  scale: 1.8
+  scale: 1.5
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
+  loop_projection_candidates: 1
 
-  use_accessory_support_clamp: true
-  support_rho_limit: 1.00
+  use_accessory_support_clamp: false
+  support_rho_limit: 1.50
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
 
 
-  avatar_cylinder_radius_scale: 1.8
+  avatar_cylinder_radius_scale: 1.2
   #avatar_cylinder_radius_add: 0.02
   #adapt_localize_norm: 1.8
   use_adapt_control_filter_grid: true
@@ -114,7 +115,7 @@
   src_1: 0.5
   tgt_0: 0.0
   tgt_1: 1.0
-  scale: 1.5
+  scale: 1.0
   rot_deg: 0.0
   wrap_radius: true
   rigid_radius: false

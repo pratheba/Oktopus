@@ -1,10 +1,10 @@
 #!/bin/bash
 #!/bin/bash
 post='postprocess'
-meshname='puffer_unitbb'
+meshname='long_puffer_unitbb'
 input='input'
 output='output'
-postseg=4
+postseg=6
 version=1
 
 python3 postprocess.py \

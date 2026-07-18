@@ -87,5 +87,17 @@
       "center_smooth_win": 100,
       "center_iters": 4
     }
- ]
+ ],
+  "rename_final": [
+    { 
+      "old_id": 0,
+      "new_id": 0,
+      "new_name": "top"
+    },
+    {
+      "old_id": 5,
+      "new_id": 1,
+      "new_name": "bottom"
+    }
+  ]
 }

@@ -12,7 +12,56 @@ import app_utils_3dvec as utils
 class Agent():
     """docstring for Agent."""
     def __init__(self):
-        pass
+        # TEMPORARY compatibility for the currently trained checkpoint.
+        #
+        # That checkpoint was trained with Trimesh's convention:
+        #     positive = inside
+        #     negative = outside
+        #
+        # The rest of this inference/adaptation pipeline expects:
+        #     negative = inside
+        #     positive = outside
+        #
+        # Keep this True only for the current checkpoint. Set it to False
+        # after regenerating the training SDFs with the corrected sign and
+        # retraining the model.
+        self.invert_trained_sdf_sign = False #True
+
+    def _convert_sdf_pair_sign(self, vals, vals_base):
+        """Convert normal inference outputs to the pipeline SDF convention."""
+        if not self.invert_trained_sdf_sign:
+            return vals, vals_base
+
+        return -np.asarray(vals), -np.asarray(vals_base)
+
+    def _convert_full_output_sign(self, out):
+        """
+        Convert inference_full outputs to the pipeline SDF convention.
+
+        sdf_detail is also sign-dependent because it is a signed residual:
+
+            sdf_detail = sdf - sdf_base
+
+        Negating both sdf and sdf_base therefore also negates sdf_detail.
+        """
+        if not self.invert_trained_sdf_sign:
+            return out
+
+        result = dict(out)
+        sign_dependent_keys = {
+            'sdf',
+            'sdf_base',
+            'sdf_detail',
+            'sdf_res',
+            'residual_sdf',
+        }
+
+        for key in sign_dependent_keys:
+            value = result.get(key, None)
+            if value is not None:
+                result[key] = -np.asarray(value)
+
+        return result
 
     def __call__(self, name, arg):
         method_name = f'action_{name}'
@@ -522,7 +571,9 @@ class Agent():
                 vals.append(vals_batch.detach().cpu().numpy())
                 vals_base.append(vals_base_batch.detach().cpu().numpy())
             
-            return np.concatenate(vals), np.concatenate(vals_base)
+            vals = np.concatenate(vals)
+            vals_base = np.concatenate(vals_base)
+            return self._convert_sdf_pair_sign(vals, vals_base)
 
         curve_data['device'] = self.device
         curve_data['curve_idx'] = self.feat_dict[key]
@@ -533,7 +584,7 @@ class Agent():
             vals_base = vals_base.squeeze()
             vals = vals.detach().cpu().numpy()
             vals_base = vals_base.detach().cpu().numpy()
-        return vals, vals_base
+        return self._convert_sdf_pair_sign(vals, vals_base)
 
 
     def __inference_full_vals(self, curve_data, key, batch_size=None, transform=None):
@@ -566,7 +617,8 @@ class Agent():
                         continue
                     chunks.setdefault(k, []).append(v)
 
-            return {k: np.concatenate(vs) for k, vs in chunks.items()}
+            result = {k: np.concatenate(vs) for k, vs in chunks.items()}
+            return self._convert_full_output_sign(result)
 
         curve_data['device'] = self.device
         curve_data['curve_idx'] = self.feat_dict[key]
@@ -574,7 +626,8 @@ class Agent():
         with torch.no_grad():
             out = self.model.inference_full(curve_data, transform=transform)
 
-        return _to_numpy_dict(out)
+        result = _to_numpy_dict(out)
+        return self._convert_full_output_sign(result)
     
     def __mix_inference(self, curve_data, mix_arg, batch_size=None):
         num_samples = curve_data['samples'].shape[0]
@@ -634,6 +687,397 @@ class Agent():
             arg['exp_name'], arg['config_name']
         ))
 
+    @staticmethod
+    def _normalize_surface_extraction_method(method):
+        """Normalize user-facing names for the surface extractor."""
+        method = str(method).strip().lower().replace('-', '_').replace(' ', '_')
+        print(method)
+
+        if method in {
+            'mc',
+            'marching_cube',
+            'marching_cubes',
+            'marchingcubes',
+        }:
+            return 'marching_cubes'
+
+        if method in {
+            'rfta',
+            'reach_for_arc',
+            'reach_for_arcs',
+            'reach_for_the_arc',
+            'reach_for_the_arcs',
+        }:
+            return 'reach_for_the_arcs'
+
+        return method
+
+    @staticmethod
+    def _subsample_rfta_rows(sdf_values, max_samples, near_surface_fraction, rng_seed):
+        """
+        Select SDF rows for Reach for the Arcs.
+
+        Most rows are chosen by smallest |SDF| so thin/high-frequency surface
+        features survive. The remaining budget is sampled from the full active
+        support, which still gives the method larger-radius inside/outside
+        spheres. Selection is deterministic for a fixed seed.
+        """
+        sdf_values = np.asarray(sdf_values).reshape(-1)
+        n = int(sdf_values.shape[0])
+
+        if max_samples is None or int(max_samples) <= 0 or n <= int(max_samples):
+            return np.arange(n, dtype=np.int64)
+
+        max_samples = max(2, min(int(max_samples), n))
+        near_surface_fraction = float(np.clip(near_surface_fraction, 0.0, 1.0))
+        near_count = int(round(max_samples * near_surface_fraction))
+        near_count = min(max(2, near_count), max_samples)
+
+        abs_sdf = np.abs(sdf_values)
+        if near_count == n:
+            near_rows = np.arange(n, dtype=np.int64)
+        else:
+            near_rows = np.argpartition(abs_sdf, near_count - 1)[:near_count]
+
+        selected = np.zeros(n, dtype=bool)
+        selected[near_rows] = True
+
+        remaining_count = max_samples - int(np.sum(selected))
+        if remaining_count > 0:
+            remaining_rows = np.flatnonzero(~selected)
+            rng = np.random.default_rng(int(rng_seed))
+            random_rows = rng.choice(
+                remaining_rows,
+                size=min(remaining_count, remaining_rows.shape[0]),
+                replace=False,
+            )
+            selected[random_rows] = True
+
+        rows = np.flatnonzero(selected)
+
+        # Reach for the Arcs should see both sides of the zero set. If the
+        # near-surface/random selection accidentally omitted one sign, replace
+        # a farthest selected row with the closest available row of that sign.
+        for want_positive in (False, True):
+            sign_all = sdf_values > 0.0 if want_positive else sdf_values < 0.0
+            sign_selected = sign_all[rows]
+            if np.any(sign_all) and not np.any(sign_selected):
+                missing_candidates = np.flatnonzero(sign_all)
+                missing_row = missing_candidates[
+                    np.argmin(abs_sdf[missing_candidates])
+                ]
+                replace_pos = int(np.argmax(abs_sdf[rows]))
+                rows[replace_pos] = missing_row
+
+        return np.unique(rows).astype(np.int64, copy=False)
+
+    def _extract_mesh_reach_for_the_arcs(self, sdf_grid, config, options):
+        """Extract a triangle mesh from active grid SDF samples using RFTA."""
+        try:
+            from gpytoolbox import reach_for_the_arcs
+        except ImportError as exc:
+            raise ImportError(
+                "Reach for the Arcs requires gpytoolbox. Install it with "
+                "`uv add gpytoolbox` (or `python -m pip install gpytoolbox`)."
+            ) from exc
+
+        values_full = np.asarray(sdf_grid.val_grid).reshape(-1)
+
+        if hasattr(sdf_grid, 'empty_marks'):
+            empty_marks = np.asarray(sdf_grid.empty_marks).reshape(-1)
+            if empty_marks.shape[0] != values_full.shape[0]:
+                raise ValueError(
+                    "grid empty_marks and val_grid have different sizes: "
+                    f"{empty_marks.shape[0]} vs {values_full.shape[0]}"
+                )
+            active = ~empty_marks
+        else:
+            active = np.ones(values_full.shape[0], dtype=bool)
+
+        active &= np.isfinite(values_full)
+        grid_rows = np.flatnonzero(active)
+
+        min_samples = int(options.get('min_samples', 128))
+        if grid_rows.shape[0] < min_samples:
+            raise RuntimeError(
+                "Too few active finite SDF samples for Reach for the Arcs: "
+                f"{grid_rows.shape[0]} < {min_samples}"
+            )
+
+        level = float(options.get('level', 0.0))
+        sdf_scale = float(options.get('sdf_scale', 1.0))
+        if not np.isfinite(sdf_scale) or sdf_scale <= 0.0:
+            raise ValueError(
+                f"rfta sdf_scale must be finite and positive, got {sdf_scale}"
+            )
+
+        # Reach for the Arcs interprets |S| as a geometric sphere radius, so
+        # S must use the same spatial units as idx2pts(). Use sdf_scale when
+        # the network predicts normalized rather than world-unit distances.
+        sdf_values = (
+            values_full[grid_rows].astype(np.float64, copy=False) - level
+        ) * sdf_scale
+
+        # Optional metric-band filtering for RFTA. This is important for this
+        # pipeline because support clamping may write artificial outside values
+        # such as +1.0. Marching Cubes can treat those as generic outside
+        # markers, but RFTA would interpret |1.0| as a real sphere radius.
+        max_abs_sdf = options.get('max_abs_sdf', np.inf)
+        if max_abs_sdf is None:
+            max_abs_sdf = np.inf
+        max_abs_sdf = float(max_abs_sdf)
+        if np.isfinite(max_abs_sdf):
+            if max_abs_sdf <= 0.0:
+                raise ValueError(
+                    f"rfta max_abs_sdf must be positive, got {max_abs_sdf}"
+                )
+            metric_keep = np.abs(sdf_values) <= max_abs_sdf
+            removed_metric = int(np.sum(~metric_keep))
+            grid_rows = grid_rows[metric_keep]
+            sdf_values = sdf_values[metric_keep]
+        else:
+            removed_metric = 0
+
+        if grid_rows.shape[0] < min_samples:
+            raise RuntimeError(
+                "Too few RFTA samples remain after max_abs_sdf filtering: "
+                f"{grid_rows.shape[0]} < {min_samples}; "
+                f"max_abs_sdf={max_abs_sdf}"
+            )
+
+        has_negative = bool(np.any(sdf_values < 0.0))
+        has_positive = bool(np.any(sdf_values > 0.0))
+        if not (has_negative and has_positive):
+            raise RuntimeError(
+                "Reach for the Arcs needs active SDF samples on both sides of "
+                f"the extraction level {level}. "
+                f"negative={has_negative}, positive={has_positive}"
+            )
+
+        rng_seed = int(options.get('rng_seed', 3452))
+        sample_rows = self._subsample_rfta_rows(
+            sdf_values=sdf_values,
+            max_samples=options.get('max_samples', 150000),
+            near_surface_fraction=options.get('near_surface_fraction', 0.75),
+            rng_seed=rng_seed,
+        )
+
+        selected_grid_rows = grid_rows[sample_rows]
+        selected_sdf = sdf_values[sample_rows]
+        sample_points = np.asarray(
+            sdf_grid.idx2pts(selected_grid_rows),
+            dtype=np.float64,
+        )
+
+        if sample_points.ndim != 2 or sample_points.shape[1] != 3:
+            raise ValueError(
+                "idx2pts must return an (N, 3) array for 3D extraction, got "
+                f"{sample_points.shape}"
+            )
+        if sample_points.shape[0] != selected_sdf.shape[0]:
+            raise ValueError(
+                "idx2pts and selected SDF lengths differ: "
+                f"{sample_points.shape[0]} vs {selected_sdf.shape[0]}"
+            )
+
+        clamp_value = options.get('clamp_value', np.inf)
+        if clamp_value is None:
+            clamp_value = np.inf
+        clamp_value = float(clamp_value)
+        if np.isfinite(clamp_value) and clamp_value <= 0.0:
+            raise ValueError(
+                f"rfta clamp_value must be positive, got {clamp_value}"
+            )
+
+        rasterization_resolution = options.get('rasterization_resolution', None)
+        if rasterization_resolution is not None:
+            rasterization_resolution = int(rasterization_resolution)
+
+        n_local_searches = options.get('n_local_searches', None)
+        if n_local_searches is not None:
+            n_local_searches = int(n_local_searches)
+
+        verbose = bool(options.get('verbose', True))
+        if verbose:
+            bbox_extent = np.ptp(sample_points, axis=0)
+            abs_selected = np.abs(selected_sdf)
+            pct = np.percentile(abs_selected, [0, 25, 50, 75, 90, 95, 99, 100])
+            print(
+                "[surface_extraction:rfta]",
+                f"active_after_filter={grid_rows.shape[0]}",
+                f"removed_by_max_abs_sdf={removed_metric}",
+                f"used={selected_grid_rows.shape[0]}",
+                f"negative={int(np.sum(selected_sdf < 0.0))}",
+                f"positive={int(np.sum(selected_sdf > 0.0))}",
+                f"sdf=[{selected_sdf.min():.6g}, {selected_sdf.max():.6g}]",
+                f"max_abs_sdf={max_abs_sdf}",
+                f"level={level:.6g}",
+                f"sdf_scale={sdf_scale:.6g}",
+                f"clamp={clamp_value}",
+            )
+            print(
+                "[surface_extraction:rfta]",
+                "bbox_extent=", bbox_extent.tolist(),
+                "|sdf| percentiles[0,25,50,75,90,95,99,100]=",
+                pct.tolist(),
+            )
+
+        result = reach_for_the_arcs(
+            sample_points,
+            selected_sdf,
+            rng_seed=rng_seed,
+            return_point_cloud=False,
+            fine_tune_iters=int(options.get('fine_tune_iters', 3)),
+            batch_size=int(options.get('batch_size', 10000)),
+            num_rasterization_spheres=int(
+                options.get('num_rasterization_spheres', 0)
+            ),
+            screening_weight=float(options.get('screening_weight', 10.0)),
+            rasterization_resolution=rasterization_resolution,
+            max_points_per_sphere=int(options.get('max_points_per_sphere', 3)),
+            n_local_searches=n_local_searches,
+            local_search_iters=int(options.get('local_search_iters', 20)),
+            local_search_t=float(options.get('local_search_t', 0.01)),
+            tol=float(options.get('tol', 1e-4)),
+            clamp_value=clamp_value,
+            force_cpu=bool(options.get('force_cpu', False)),
+            parallel=bool(options.get('parallel', False)),
+            verbose=verbose,
+        )
+
+        vertices, faces = result[:2]
+        if vertices is None or faces is None:
+            raise RuntimeError(
+                "Reach for the Arcs returned no mesh (vertices/faces is None)."
+            )
+
+        vertices = np.asarray(vertices, dtype=np.float64)
+        faces = np.asarray(faces, dtype=np.int64)
+        if vertices.size == 0 or faces.size == 0:
+            raise RuntimeError(
+                "Reach for the Arcs returned an empty mesh."
+            )
+
+        mesh = trimesh.Trimesh(
+            vertices=vertices,
+            faces=faces,
+            process=bool(options.get('process_mesh', False)),
+        )
+
+        if bool(options.get('fix_normals', False)):
+            mesh.fix_normals()
+
+        return mesh
+
+    def extract_surface_mesh(
+        self,
+        sdf_grid,
+        config=None,
+        mc_method='extract_mesh',
+        context='',
+    ):
+        """
+        Extract a mesh using Marching Cubes or Reach for the Arcs.
+
+        Backward-compatible flat configuration::
+
+            surface_extraction: reach_for_the_arcs
+            rfta_max_samples: 150000
+            rfta_sdf_scale: 1.0
+            rfta_clamp_value: 0.05
+
+        Equivalent nested configuration::
+
+            surface_extraction:
+              method: reach_for_the_arcs
+              max_samples: 150000
+              sdf_scale: 1.0
+              clamp_value: 0.05
+
+        Marching Cubes remains the default. If RFTA raises and
+        fallback_to_marching_cubes is true (default), extraction continues with
+        the original grid extractor.
+        """
+        config = {} if config is None else config
+        spec = config.get(
+            'surface_extraction',
+            config.get('mesh_extractor', 'marching_cubes'),
+        )
+
+        nested_options = {}
+        if isinstance(spec, dict):
+            nested_options = dict(spec)
+            method = nested_options.pop(
+                'method',
+                nested_options.pop('backend', 'marching_cubes'),
+            )
+        else:
+            method = spec
+
+        method = self._normalize_surface_extraction_method(method)
+
+        if method == 'marching_cubes':
+            return getattr(sdf_grid, mc_method)()
+
+        if method != 'reach_for_the_arcs':
+            raise ValueError(
+                f"Unknown surface extraction method: {method!r}. "
+                "Expected 'marching_cubes' or 'reach_for_the_arcs'."
+            )
+
+        option_defaults = {
+            'max_samples': 150000,
+            'near_surface_fraction': 0.75,
+            'max_abs_sdf': np.inf,
+            'sdf_scale': 1.0,
+            'rng_seed': 3452,
+            'fine_tune_iters': 3,
+            'batch_size': 10000,
+            'num_rasterization_spheres': 0,
+            'screening_weight': 10.0,
+            'rasterization_resolution': None,
+            'max_points_per_sphere': 3,
+            'n_local_searches': None,
+            'local_search_iters': 20,
+            'local_search_t': 0.01,
+            'tol': 1e-4,
+            'clamp_value': np.inf,
+            'force_cpu': False,
+            'parallel': False,
+            'verbose': True,
+            'process_mesh': False,
+            'fix_normals': False,
+            'min_samples': 128,
+            'level': 0.0,
+        }
+
+        options = {}
+        for name, default in option_defaults.items():
+            options[name] = nested_options.get(
+                name,
+                config.get(f'rfta_{name}', default),
+            )
+
+        fallback = nested_options.get(
+            'fallback_to_marching_cubes',
+            config.get('rfta_fallback_to_marching_cubes', True),
+        )
+
+        try:
+            return self._extract_mesh_reach_for_the_arcs(
+                sdf_grid=sdf_grid,
+                config=config,
+                options=options,
+            )
+        except Exception as exc:
+            label = f" ({context})" if context else ''
+            if not bool(fallback):
+                raise
+            print(
+                f"[surface_extraction:rfta]{label} failed: {exc}. "
+                f"Falling back to {mc_method}()."
+            )
+            return getattr(sdf_grid, mc_method)()
 
 
 
@@ -662,6 +1106,7 @@ class Agent():
 
         data_root = arg['data_root']
         handle = self.load_shape_handle(data_root, shape_name, 'avatar')
+
         out_name = f'{shape_name}_{exp_name}'
         os.makedirs(output_folder, exist_ok=True)
 
@@ -731,7 +1176,9 @@ class Agent():
                     temp_grid.update_grid(vals, kidx, mode='minimum')
                     temp_grid_base.update_grid(vals_base, kidx, mode='minimum')
                 
-                mesh = temp_grid.extract_mesh()
+                mesh = self.extract_surface_mesh(
+                    temp_grid, arg, context=f"ngcnet:{shape_name}"
+                )
                 mesh_file = op.join(output_folder, shape_name, f'{shape_name}_{checkpoint}_mesh{reso}.ply')
                 os.makedirs(op.dirname(mesh_file), exist_ok=True)
                 mesh.export(mesh_file)
@@ -779,7 +1226,9 @@ class Agent():
                     vals = vals.detach().cpu().numpy()
                     temp_grid.update_grid(vals, kidx)
                 
-                mesh = temp_grid.extract_mesh()
+                mesh = self.extract_surface_mesh(
+                    temp_grid, arg, context=f"deepsdf:{shape_name}"
+                )
                 mesh_file = op.join(output_folder, shape_name, f'mesh.ply')
                 os.makedirs(op.dirname(mesh_file), exist_ok=True)
                 mesh.export(mesh_file)
@@ -814,7 +1263,7 @@ class Agent():
             vals = self.__inference_vals(curve_data, key, batch_size)
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         mesh.export(mesh_file)
 
@@ -888,7 +1337,9 @@ class Agent():
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
         print(mc_grid.grid_config)
-        mesh = mc_grid.extract_mesh1()
+        mesh = self.extract_surface_mesh(
+            mc_grid, arg, mc_method="extract_mesh1", context="shape_stretch"
+        )
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
@@ -1725,10 +2176,160 @@ class Agent():
         exp_name = arg['exp_name']
         mc_grid = arg['mc_grid']
         shape_name = arg['shape']
-        config = utils.load_yaml_file(arg['adapt_file'])
+
+        # The adaptation YAML may be either:
+        #
+        #   1. Legacy list-only format:
+        #        - target_key: ...
+        #
+        #   2. Top-level mapping format:
+        #        surface_extraction: ...
+        #        adaptations: [...]
+        #
+        # Accept the singular ``adaptation`` key too because some existing
+        # experiment files use that spelling.
+        raw_config = utils.load_yaml_file(arg['adapt_file'])
+
+        extraction_config = dict(arg)
+        if isinstance(raw_config, list):
+            adaptation_items = raw_config
+        elif isinstance(raw_config, dict):
+            if 'surface_extraction' in raw_config:
+                extraction_config['surface_extraction'] = raw_config[
+                    'surface_extraction'
+                ]
+            if 'mesh_extractor' in raw_config:
+                extraction_config['mesh_extractor'] = raw_config[
+                    'mesh_extractor'
+                ]
+
+            # Also allow flat rfta_* settings at YAML top level.
+            for config_key, config_value in raw_config.items():
+                if str(config_key).startswith('rfta_'):
+                    extraction_config[config_key] = config_value
+
+            adaptation_items = raw_config.get(
+                'adaptations',
+                raw_config.get('adaptation', None),
+            )
+            if adaptation_items is None:
+                raise ValueError(
+                    "Adaptation YAML mapping must contain 'adaptations:' "
+                    "(preferred) or 'adaptation:'."
+                )
+        else:
+            raise TypeError(
+                "Adaptation YAML must load as a list or mapping, got "
+                f"{type(raw_config).__name__}."
+            )
+
+        if not isinstance(adaptation_items, list):
+            raise TypeError(
+                "'adaptations'/'adaptation' must be a YAML list, got "
+                f"{type(adaptation_items).__name__}."
+            )
+
+        # Expand every YAML entry into one concrete run per target key.
+        # Existing files with a scalar ``target_key`` remain unchanged.
+        # A shared configuration can now use:
+        #
+        #   target_keys:
+        #     - shape|curve_a
+        #     - shape|curve_b
+        #
+        # Duplicate target keys in separate YAML entries are intentionally
+        # preserved: they are separate adaptations and must both execute.
+        expanded_adaptation_items = []
+        for yaml_index, item in enumerate(adaptation_items):
+            if not isinstance(item, dict):
+                raise TypeError(
+                    f"adaptation entry {yaml_index} must be a mapping, got "
+                    f"{type(item).__name__}."
+                )
+
+            if not bool(item.get('enabled', True)):
+                print(f"[part_adapt] skipping disabled YAML entry {yaml_index}")
+                continue
+
+            target_spec = item.get('target_keys', item.get('target_key', None))
+            if target_spec is None:
+                raise KeyError(
+                    f"adaptation entry {yaml_index} needs 'target_key' or "
+                    "'target_keys'."
+                )
+
+            if isinstance(target_spec, str):
+                target_keys = [target_spec]
+            elif isinstance(target_spec, (list, tuple)):
+                target_keys = list(target_spec)
+            else:
+                raise TypeError(
+                    f"target_key(s) in adaptation entry {yaml_index} must be "
+                    f"a string or list, got {type(target_spec).__name__}."
+                )
+
+            if len(target_keys) == 0:
+                raise ValueError(
+                    f"adaptation entry {yaml_index} has an empty target_keys list."
+                )
+
+            for target_index, target_key in enumerate(target_keys):
+                expanded = dict(item)
+                expanded.pop('target_keys', None)
+                expanded['target_key'] = str(target_key)
+                expanded['_yaml_index'] = int(yaml_index)
+                expanded['_target_index'] = int(target_index)
+                expanded_adaptation_items.append(expanded)
+
+        adaptation_items = expanded_adaptation_items
+        if len(adaptation_items) == 0:
+            raise RuntimeError("No enabled adaptation entries were found.")
+
+        extraction_spec = extraction_config.get(
+            'surface_extraction',
+            extraction_config.get('mesh_extractor', 'marching_cubes'),
+        )
+        if isinstance(extraction_spec, dict):
+            requested_extractor = extraction_spec.get(
+                'method',
+                extraction_spec.get('backend', 'marching_cubes'),
+            )
+        else:
+            requested_extractor = extraction_spec
+        requested_extractor = self._normalize_surface_extraction_method(
+            requested_extractor
+        )
+        combine_adaptations = bool(
+            extraction_config.get("combine_adaptations", False)
+        )
+        print(
+            "[part_adapt] adaptations=",
+            len(adaptation_items),
+            "surface_extraction=",
+            requested_extractor,
+            "combine_adaptations=",
+            combine_adaptations,
+        )
 
         data_root = arg['data_root']
         handle = self.load_shape_handle(data_root, shape_name, 'avatar')
+
+        available_target_keys = {
+            self.encode_key(shape_name, curve.name): curve
+            for curve in handle.curves
+        }
+        missing_target_keys = sorted({
+            item['target_key']
+            for item in adaptation_items
+            if item['target_key'] not in available_target_keys
+        })
+        if missing_target_keys:
+            raise KeyError(
+                "The following adaptation target_key values were not found: "
+                f"{missing_target_keys}. Available targets: "
+                f"{sorted(available_target_keys.keys())}"
+            )
+
         out_name = f'{shape_name}_{exp_name}'
         os.makedirs(output_folder, exist_ok=True)
 
@@ -1739,21 +2340,35 @@ class Agent():
         adapted_support_cache = {}
         all_acc_grids = []
         blend_groups = {}
-        cc = 0
-
-        for item in config:
+        for item_index, item in enumerate(adaptation_items):
             target_key = item['target_key']
             accessory_key = item['accessory_key']
             mode = item.get('mode', 'direct')
-            print(target_key)
+            run_name = str(
+                item.get(
+                    'name',
+                    item.get('run_name', f'adaptation_{item_index:02d}'),
+                )
+            )
+            print(
+                f"[part_adapt {item_index + 1}/{len(adaptation_items)}]",
+                f"name={run_name}",
+                f"target={target_key}",
+                f"accessory={accessory_key}",
+                f"yaml_entry={item.get('_yaml_index')}",
+                f"target_index={item.get('_target_index')}",
+            )
 
+            matched_target = False
             for curve in handle.curves:
                 key = self.encode_key(shape_name, curve.name)
                 if key != target_key:
-                    print(key)
                     continue
-                print("success")
-                print(key)
+                matched_target = True
+                print(
+                    f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
+                    f"matched {key}"
+                )
 
                 curve_grid = utils.create_grid_like(mc_grid)
                 #curve_grid.clear_grid(val=10.0)
@@ -2288,12 +2903,31 @@ class Agent():
                 acc_grid_base.update_grid(acc_vals_base, kidx, mark=True, mode="overwrite")
 
 
-                mesh_acc = acc_grid.extract_mesh()
+                # Extract and save this adaptation independently.
+                # The output prefix is the concrete adaptation order:
+                #   first run -> 0_..., second run -> 1_..., etc.
+                # This is independent of any later union/blending task.
+                mesh_acc = self.extract_surface_mesh(
+                    acc_grid,
+                    extraction_config,
+                    context=(
+                        f"part_adapt[{item_index}] "
+                        f"target={target_key} accessory={accessory_key}"
+                    ),
+                )
                 if len(mesh_acc.faces) > 0:
                     parts = mesh_acc.split(only_watertight=False)
                     if len(parts) > 0:
                         mesh_acc = max(parts, key=lambda m: len(m.faces))
-                    mesh_acc.export(op.join(output_folder, f"{cc}_{mode}_{accessory_key.replace('|','_')}.ply"))
+                    individual_mesh_file = op.join(
+                        output_folder,
+                        f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+                    )
+                    mesh_acc.export(individual_mesh_file)
+                    print(
+                        f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
+                        f"saved individual mesh: {individual_mesh_file}"
+                    )
 
 #                mesh_acc_base = acc_grid_base.extract_mesh()
 #                if len(mesh_acc_base.faces) > 0:
@@ -2302,36 +2936,54 @@ class Agent():
 #                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
 #                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
-                cc += 1
-                #mc_grid.update_grid(acc_vals - delta, kidx, mode='minimum')
-                #mc_grid.update_grid(acc_vals, kidx, mode='minimum')
-                # 4) Merge all accessories by hard union
-                blend_group = str(adapt_arg.get("blend_group", "none"))
+                # Combined reconstruction is a separate, explicit task.
+                # Only collect grids when the top-level YAML enables it with:
+                #     combine_adaptations: true
+                if combine_adaptations:
+                    blend_group = str(adapt_arg.get("blend_group", "none"))
 
-                if blend_group not in ["none", "", "false"]:
-                    blend_groups.setdefault(blend_group, []).append({
-                        "val_grid": acc_grid.val_grid.copy(),
-                        "empty_marks": acc_grid.empty_marks.copy(),
-                        "adapt_arg": dict(adapt_arg),
-                    })
-                    #blend_groups.setdefault(blend_group, []).append({
-                    #    "vals": vals_final.copy(),
-                    #    "kidx": kidx.copy(),
-                    #    "adapt_arg": dict(adapt_arg),
-                    #})
-                else:
-                    pass
-                    #valid_acc = ~acc_grid.empty_marks
+                    if blend_group not in ["none", "", "false"]:
+                        blend_groups.setdefault(blend_group, []).append({
+                            "val_grid": acc_grid.val_grid.copy(),
+                            "empty_marks": acc_grid.empty_marks.copy(),
+                            "adapt_arg": dict(adapt_arg),
+                        })
+                    else:
+                        all_acc_grids.append({
+                            "val_grid": acc_grid.val_grid.copy(),
+                            "empty_marks": acc_grid.empty_marks.copy(),
+                        })
 
-                    #mc_grid.val_grid[valid_acc] = np.minimum(
-                    #    mc_grid.val_grid[valid_acc],
-                    #    acc_grid.val_grid[valid_acc],
-                    #)
+                # target_key is unique within this loaded avatar handle. Once
+                # matched, this concrete adaptation run is complete.
+                break
 
-                    #mc_grid.empty_marks[valid_acc] = False
-                    #mc_grid.update_grid(vals_final, kidx, mode="minimum", mark=True)
+            if not matched_target:
+                # This should already be caught by the validation above, but
+                # keep a local guard so future handle changes fail loudly.
+                raise KeyError(
+                    f"Adaptation target did not run: {target_key!r}. "
+                    f"Available targets: {sorted(available_target_keys.keys())}"
+                )
+
+        if not combine_adaptations:
+            print(
+                "[part_adapt] individual adaptations saved; "
+                "combined union/extraction skipped "
+                "(combine_adaptations=false)."
+            )
+            return
 
         mc_grid.clear_grid()
+
+        # Explicit combined task: hard-union all ungrouped accessories.
+        for it in all_acc_grids:
+            valid_i = ~it["empty_marks"]
+            mc_grid.val_grid[valid_i] = np.minimum(
+                mc_grid.val_grid[valid_i],
+                it["val_grid"][valid_i],
+            )
+            mc_grid.empty_marks[valid_i] = False
 
         for group_name, items in blend_groups.items():
 
@@ -2371,7 +3023,18 @@ class Agent():
             mc_grid.empty_marks[valid_group] = False
 
 
-        mesh = mc_grid.extract_mesh()
+        valid_final = int(np.sum(~mc_grid.empty_marks))
+        if valid_final == 0:
+            raise RuntimeError(
+                "Final adaptation SDF grid is empty. No accessory samples were "
+                "merged, so surface extraction cannot run."
+            )
+
+        mesh = self.extract_surface_mesh(
+            mc_grid,
+            extraction_config,
+            context="part_adapt final combined mesh",
+        )
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
         mesh.export(mesh_file)
@@ -2423,7 +3086,7 @@ class Agent():
 
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         os.makedirs(output_folder, exist_ok=True)
         mesh_file = op.join(output_folder, f'{out_name}.ply')
         #os.makedirs(op.dirname(mesh_file), exist_ok=True)
@@ -2494,7 +3157,7 @@ class Agent():
             mc_grid.update_grid(vals, kidx, mode='minimum')
 
         t0 = time()
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         print('MC time cost: ', time()-t0)
         mesh_file = op.join(output_folder, f'{exp_name}_{shape_name}.ply')
         os.makedirs(op.dirname(mesh_file), exist_ok=True)
@@ -2600,7 +3263,7 @@ class Agent():
         mc_grid.update_grid(new_vals, new_kidx, mode='minimum')
         mc_grid.update_grid(vals_area, area_kidx, mode='overwrite')
 
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         output_path = op.join(arg['output_path'], arg['config_name'])
         os.makedirs(output_path, exist_ok=True)
         out_name = '{}_{}|{}_{}.ply'.format(
@@ -2668,7 +3331,7 @@ class Agent():
 
             new_grid.clear_grid()
 
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         output_path = op.join(arg['output_path'], arg['config_name'])
         os.makedirs(output_path, exist_ok=True)
         out_name = '{}_{}.ply'.format(
@@ -2758,7 +3421,7 @@ class Agent():
 
         mc_grid.update_grid(new_vals, new_kidx, mode='minimum')
         mc_grid.update_grid(area_vals, area_kidx, mode='overwrite')
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         out_name = '{}_{}|{}_{}.ply'.format(
             shape_name, new_shape_name, new_part_name, arg['exp_name']
         )
@@ -2832,7 +3495,7 @@ class Agent():
 
         mc_grid.update_grid(new_vals, new_kidx, mode='minimum')
         mc_grid.update_grid(area_vals, area_kidx, mode='overwrite')
-        mesh = mc_grid.extract_mesh()
+        mesh = self.extract_surface_mesh(mc_grid, arg)
         out_name = '{}|{}_{}.ply'.format(
             shape_name, part_name, arg['exp_name']
         )

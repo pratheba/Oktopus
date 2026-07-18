@@ -33,8 +33,8 @@
   "recenter": [
     {
       "id": 0,
-      "center_shift_scale": 0.7,
-      "center_max_shift_frac": 0.7,
+      "center_shift_scale": 0.2,
+      "center_max_shift_frac": 0.2,
       "center_smooth_win": 100,
       "center_iters": 2
     }
