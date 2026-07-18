@@ -100,8 +100,25 @@ def make_udf_funcs(V: np.ndarray, F: np.ndarray):
     return udf_func, udf_grad_func
 
 
+def clean_mesh(mesh):
+    """Merge near-duplicate vertices and drop degenerate/duplicate faces.
+    Returns (faces_before, faces_after). Version-tolerant across trimesh."""
+    before = len(mesh.faces)
+    for step in (
+        lambda: mesh.merge_vertices(),
+        lambda: mesh.update_faces(mesh.nondegenerate_faces(height=1e-8)),
+        lambda: mesh.update_faces(mesh.unique_faces()),
+        lambda: mesh.remove_unreferenced_vertices(),
+    ):
+        try:
+            step()
+        except Exception:
+            pass
+    return before, len(mesh.faces)
+
+
 def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
-                    pad=0.9, no_normalize=False, label=""):
+                    pad=0.9, no_normalize=False, label="", clean=False):
     """Reconstruct a single mesh's GT UDF via DualMeshUDF. Returns recon-to-input
     distance stats (mean, p95, max) in original units, or None on failure."""
     tag = f"[{label}] " if label else ""
@@ -129,6 +146,9 @@ def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
 
     v_orig = (v / scale + center) if not no_normalize else v
     recon = trimesh.Trimesh(vertices=v_orig, faces=f, process=False)
+    if clean:
+        nb, na = clean_mesh(recon)
+        print(f"{tag}cleaned faces {nb} -> {na} ({nb - na} degenerate/duplicate removed)")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     recon.export(out_path)
 
@@ -154,6 +174,8 @@ def main():
     ap.add_argument("--pad", type=float, default=0.9, help="fit each mesh into [-pad,pad]^3")
     ap.add_argument("--no_normalize", action="store_true",
                     help="assume mesh already lives in [-1,1]^3")
+    ap.add_argument("--clean", action="store_true",
+                    help="merge close vertices + drop degenerate/duplicate faces before export")
     args = ap.parse_args()
 
     if not args.parts_dir and not args.mesh:
@@ -170,7 +192,7 @@ def main():
             out_path = os.path.join(args.out_dir, f"recon_{stem}.ply")
             stats = reconstruct_one(
                 p, out_path, max_depth=args.max_depth, batch_size=args.batch_size,
-                pad=args.pad, no_normalize=args.no_normalize, label=stem)
+                pad=args.pad, no_normalize=args.no_normalize, label=stem, clean=args.clean)
             summary.append((stem, stats))
             print()
         print("==== per-curve summary (recon->input surface distance) ====")
@@ -182,7 +204,7 @@ def main():
     else:
         reconstruct_one(
             args.mesh, args.out, max_depth=args.max_depth, batch_size=args.batch_size,
-            pad=args.pad, no_normalize=args.no_normalize)
+            pad=args.pad, no_normalize=args.no_normalize, clean=args.clean)
 
 
 if __name__ == "__main__":
