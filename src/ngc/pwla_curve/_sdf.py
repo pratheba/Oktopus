@@ -44,18 +44,23 @@ class _SDFMixin:
         ts = t0 + ((t1 - t0)/length)* proj_len
         return inside_flag, ts
 
-    def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
+    def _projection_skeleton(self, N_discrete):
+        """Build the (non-uniform) polyline skeleton + KDTree used for projection."""
         uniform_linear_points = np.linspace(0., 1., N_discrete, endpoint=False)
         ii = np.searchsorted(uniform_linear_points, self.key_ts)
         non_uniform_linear_points = np.insert(uniform_linear_points, ii, self.key_ts)
         non_uniform_linear_points = np.unique(non_uniform_linear_points)
-
         skeletal_verts = self.interpolate(non_uniform_linear_points, radius=False, frame=False)['points']
         tree = KDTree(skeletal_verts)
-        # not accurate for radius-varying skeleton
-        _, vidx = tree.query(samples)
-        samples3D_to_skeleton = -1*np.ones(samples.shape[0])
-        # basically project samples onto the piecewise linear curve
+        return non_uniform_linear_points, skeletal_verts, tree
+
+    def _assign_ts(self, samples, vidx, non_uniform_linear_points, skeletal_verts, outside):
+        """Refine one arc-length param per sample given an assigned skeleton vertex id.
+
+        This is exactly the per-vertex edge-projection logic that curve_projection
+        used inline; factored out so it can be reused per candidate column.
+        """
+        samples3D_to_skeleton = -1 * np.ones(samples.shape[0])
         num_vert = skeletal_verts.shape[0]
         for vid in range(num_vert):
             sample_index = np.argwhere(vidx == vid).flatten()
@@ -66,17 +71,16 @@ class _SDFMixin:
 
             if 0 < vid < num_vert - 1:
                 # middle part
-                ## The samples which belong to the sample_index is mapped to the nearest keypoints through their index 
                 samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
 
                 in1, px1 = self.is_points_in_edge(
-                    samples_v, 
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    samples_v,
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
                     (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 in2, px2 = self.is_points_in_edge(
-                    samples_v, 
-                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
+                    samples_v,
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]),
                     (skeletal_verts[vid], non_uniform_linear_points[vid])
                 )
                 in_p = np.logical_xor(in1, in2)
@@ -84,46 +88,75 @@ class _SDFMixin:
                 samples3D_to_skeleton[sample_index[in_p]] = px
 
             elif vid == 0:
+                if num_vert == 1:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+                    continue
                 in1, px1 = self.is_points_in_edge(
-                    samples_v, 
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    samples_v,
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
                     (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
                 )
                 if outside:
                     samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-
-                # consider halfball+ cylinder
-                # left side of cylinder remain valid
-                #if self.start_ball_x is not None or outside:
-                #    samples3D_to_skeleton[sample_index] = 0.
-
                 samples3D_to_skeleton[sample_index[in1]] = px1[in1]
 
             else:
                 in2, px2 = self.is_points_in_edge(
-                    samples_v, 
-                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]), 
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]), 
+                    samples_v,
+                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]),
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
                 )
                 if outside:
                     samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-
-                #if self.end_ball_x is not None or outside:
-                #    samples3D_to_skeleton[sample_index] = 1.
-
                 samples3D_to_skeleton[sample_index[in2]] = px2[in2]
 
-        #import pdb; pdb.set_trace();
         return samples3D_to_skeleton
 
-    def curve_projection_interval(
-        self,
-        samples,
-        s0,
-        s1,
-        N_discrete=n_sample_curve,
-        outside=False,
-    ):
+    def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
+        non_uniform_linear_points, skeletal_verts, tree = self._projection_skeleton(N_discrete)
+        # not accurate for radius-varying skeleton
+        _, vidx = tree.query(samples)
+        # basically project samples onto the piecewise linear curve
+        return self._assign_ts(samples, vidx, non_uniform_linear_points, skeletal_verts, outside)
+
+    def curve_projection_candidates(self, samples, K, N_discrete=n_sample_curve, outside=False):
+        """Return (N, K) candidate arc-length params: the refined projection onto
+        each of the K nearest skeleton vertices.  For a looping / self-close curve
+        these candidates land on DIFFERENT arms, letting the caller pick the arm a
+        point actually belongs to (see localize_samples' k_project path).
+        K == 1 reproduces curve_projection exactly.
+        """
+        non_uniform_linear_points, skeletal_verts, tree = self._projection_skeleton(N_discrete)
+        K = int(max(1, min(K, skeletal_verts.shape[0])))
+        _, vidx_k = tree.query(samples, k=K)
+        if vidx_k.ndim == 1:
+            vidx_k = vidx_k[:, None]
+        cols = [
+            self._assign_ts(samples, vidx_k[:, j], non_uniform_linear_points, skeletal_verts, outside)
+            for j in range(vidx_k.shape[1])
+        ]
+        return np.stack(cols, axis=1)
+
+    def _projection_skeleton_interval(self, s0, s1, N_discrete):
+        """Build the polyline skeleton + KDTree restricted to [s0, s1]."""
+        s_min = max(0.0, min(float(s0), float(s1)))
+        s_max = min(1.0, max(float(s0), float(s1)))
+        if abs(s_max - s_min) < 1e-12:
+            return None, None, None, s_min, s_max
+        uniform_linear_points = np.linspace(s_min, s_max, int(N_discrete), endpoint=True)
+        key_inside = self.key_ts[(self.key_ts >= s_min) & (self.key_ts <= s_max)]
+        non_uniform_linear_points = np.unique(np.concatenate([
+            np.array([s_min, s_max], dtype=np.float64),
+            uniform_linear_points,
+            key_inside,
+        ]))
+        skeletal_verts = self.interpolate(
+            non_uniform_linear_points, radius=False, frame=False
+        )["points"]
+        tree = KDTree(skeletal_verts)
+        return non_uniform_linear_points, skeletal_verts, tree, s_min, s_max
+
+    def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -131,109 +164,37 @@ class _SDFMixin:
         full avatar curve before the src_0/src_1 crop.
         """
         samples = np.asarray(samples, dtype=np.float64)
-        s0 = float(s0)
-        s1 = float(s1)
-
-        s_min = max(0.0, min(s0, s1))
-        s_max = min(1.0, max(s0, s1))
-
-        if abs(s_max - s_min) < 1e-12:
+        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(s0, s1, N_discrete)
+        if tree is None:
             return np.full(samples.shape[0], s_min, dtype=np.float64)
-
-        # Candidate projection curve ONLY inside the requested interval.
-        uniform_linear_points = np.linspace(
-            s_min,
-            s_max,
-            int(N_discrete),
-            endpoint=True,
-        )
-
-        key_inside = self.key_ts[
-            (self.key_ts >= s_min) & (self.key_ts <= s_max)
-        ]
-
-        non_uniform_linear_points = np.unique(
-            np.concatenate([
-                np.array([s_min, s_max], dtype=np.float64),
-                uniform_linear_points,
-                key_inside,
-            ])
-        )
-
-        skeletal_verts = self.interpolate(
-            non_uniform_linear_points,
-            radius=False,
-            frame=False,
-        )["points"]
-
-        tree = KDTree(skeletal_verts)
         _, vidx = tree.query(samples)
+        ts = self._assign_ts(samples, vidx, pts, verts, outside)
+        good = ts >= 0.0
+        ts[good] = np.clip(ts[good], s_min, s_max)
+        return ts
 
-        samples3D_to_skeleton = -1.0 * np.ones(samples.shape[0], dtype=np.float64)
-        num_vert = skeletal_verts.shape[0]
+    def curve_projection_interval_candidates(self, samples, s0, s1, K, N_discrete=n_sample_curve, outside=False):
+        """(N, K) candidate arc-length params restricted to [s0, s1] -- the
+        loop-aware companion to curve_projection_interval. For a curve that loops
+        WITHIN the interval, the K nearest skeleton candidates land on different
+        arms, letting localize_samples' k_project path pick the correct one.
+        K == 1 reproduces curve_projection_interval exactly."""
+        samples = np.asarray(samples, dtype=np.float64)
+        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(s0, s1, N_discrete)
+        if tree is None:
+            return np.full((samples.shape[0], 1), s_min, dtype=np.float64)
+        K = int(max(1, min(K, verts.shape[0])))
+        _, vidx_k = tree.query(samples, k=K)
+        if vidx_k.ndim == 1:
+            vidx_k = vidx_k[:, None]
+        cols = []
+        for j in range(vidx_k.shape[1]):
+            ts = self._assign_ts(samples, vidx_k[:, j], pts, verts, outside)
+            good = ts >= 0.0
+            ts[good] = np.clip(ts[good], s_min, s_max)
+            cols.append(ts)
+        return np.stack(cols, axis=1)
 
-        for vid in range(num_vert):
-            sample_index = np.argwhere(vidx == vid).flatten()
-            if len(sample_index) == 0:
-                continue
-
-            samples_v = samples[sample_index]
-
-            if 0 < vid < num_vert - 1:
-                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-
-                in1, px1 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                    (skeletal_verts[vid + 1], non_uniform_linear_points[vid + 1]),
-                )
-                in2, px2 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid - 1], non_uniform_linear_points[vid - 1]),
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                )
-
-                in_p = np.logical_xor(in1, in2)
-                px = (in1 * px1 + in2 * px2)[in_p]
-                samples3D_to_skeleton[sample_index[in_p]] = px
-
-            elif vid == 0:
-                if num_vert == 1:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-                    continue
-
-                in1, px1 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                    (skeletal_verts[vid + 1], non_uniform_linear_points[vid + 1]),
-                )
-
-                if outside:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-
-                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
-
-            else:
-                in2, px2 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid - 1], non_uniform_linear_points[vid - 1]),
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                )
-
-                if outside:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-
-                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
-
-        good = samples3D_to_skeleton >= 0.0
-        samples3D_to_skeleton[good] = np.clip(
-            samples3D_to_skeleton[good],
-            s_min,
-            s_max,
-        )
-
-        return samples3D_to_skeleton
-    
     def calc_cylinder_SDF(self, vs):
         ts = self.curve_projection(vs, outside=True)
 

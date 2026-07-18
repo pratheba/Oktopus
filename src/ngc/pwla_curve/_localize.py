@@ -79,18 +79,74 @@ class _LocalizeMixin:
         #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
 
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None):
+    def _select_projection_candidate(self, samples, ts_cand, radius_type,
+                                     runtime_cylinder_radius_scale=1.0,
+                                     runtime_cylinder_radius_add=0.0):
+        """Given (N,K) candidate arc-length params, pick per sample the candidate
+        with the smallest cylinder-normalized radial distance -- i.e. the curve arm
+        the point actually belongs to.  This mirrors the inside_cyl gate exactly, so
+        a surface point on a looped arm stops snapping to the opposite arm."""
+        samples = np.asarray(samples, dtype=np.float64)
+        N = samples.shape[0]
+        K = ts_cand.shape[1]
+        best_norm = np.full(N, np.inf)
+        best_t = ts_cand[:, 0].astype(np.float64).copy()
+        for j in range(K):
+            t = ts_cand[:, j].astype(np.float64)
+            valid = (t >= 0.0) & (t <= 1.0)
+            if not np.any(valid):
+                continue
+            tv = np.clip(t, 0.0, 1.0)
+            intpl = self.interpolate(tv, radius_type="cylinder", radius=True, frame=True)
+            proj = np.asarray(intpl['points'], dtype=np.float64)
+            frame = np.asarray(intpl['frame'], dtype=np.float64)
+            r_cyl = np.asarray(intpl['radius'], dtype=np.float64)
+            r_cyl = r_cyl * float(runtime_cylinder_radius_scale) + float(runtime_cylinder_radius_add)
+            x_radius = self.calc_x_radius(tv)
+            radius_cyl = np.concatenate([x_radius[:, None], r_cyl], axis=1)
+            local = np.einsum('nij,nj->ni', frame, (samples - proj))
+            local_cyl = local / (radius_cyl + 1e-12)
+            norms = np.linalg.norm(local_cyl, axis=1)
+            norms[~valid] = np.inf
+            take = norms < best_norm
+            best_norm[take] = norms[take]
+            best_t[take] = t[take]
+        return best_t
+
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None, k_project=1):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
 
         if projection_s0 is not None and projection_s1 is not None:
-            sample_keypoint_map = self.curve_projection_interval(
-                pointcloudsamples,
-                projection_s0,
-                projection_s1,
-                outside=outside,
+            if k_project is not None and int(k_project) > 1:
+                # Loop-aware interval projection: pick, per sample, the in-interval
+                # arm with the smallest cylinder-normalized radius.
+                ts_cand = self.curve_projection_interval_candidates(
+                    pointcloudsamples, projection_s0, projection_s1,
+                    int(k_project), outside=outside,
+                )
+                sample_keypoint_map = self._select_projection_candidate(
+                    pointcloudsamples, ts_cand, radius_type,
+                    runtime_cylinder_radius_scale, runtime_cylinder_radius_add,
+                )
+            else:
+                sample_keypoint_map = self.curve_projection_interval(
+                    pointcloudsamples,
+                    projection_s0,
+                    projection_s1,
+                    outside=outside,
+                )
+        elif k_project is not None and int(k_project) > 1:
+            # Loop-aware projection: evaluate the K nearest skeleton candidates and
+            # keep, per sample, the arm with the smallest cylinder-normalized radius.
+            ts_cand = self.curve_projection_candidates(
+                pointcloudsamples, int(k_project), outside=outside
+            )
+            sample_keypoint_map = self._select_projection_candidate(
+                pointcloudsamples, ts_cand, radius_type,
+                runtime_cylinder_radius_scale, runtime_cylinder_radius_add,
             )
         else:
             sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
@@ -917,6 +973,7 @@ class _LocalizeMixin:
             runtime_cylinder_radius_add=float(adapt_arg.get("avatar_cylinder_radius_add", 0.0)),
             projection_s0=src_0 if use_interval_projection else None,
             projection_s1=src_1 if use_interval_projection else None,
+            k_project=int(adapt_arg.get("loop_projection_candidates", 1)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

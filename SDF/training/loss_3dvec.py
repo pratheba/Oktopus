@@ -182,6 +182,111 @@ class LossHandler():
         gt_sdf = gt['sdf'].view_as(out_sdf)
         return metric_fn(out_sdf, gt_sdf)
 
+    def udf_base_loss(
+        self, output, gt, metric_fn, clamp=0.1, epoch=0,
+        E0=1000, E1=1500, E2=2000, E3=2500,
+        lambda_b1=0.05, lambda_b2=0.05, mode='base_train'
+    ):
+        # UDF analogue of sdf_base_loss. Targets are unsigned (>=0); the
+        # residual/curriculum structure is identical.
+        out_base  = output['udf_base']
+        out_base1 = output['udf_base1']
+        gt_base   = gt['udf_base'].view_as(out_base)
+
+        pred_base2_res = out_base - out_base1.detach()
+        gt_base2_res   = gt_base - out_base1.detach()
+        base_mask = torch.abs(out_base1.detach()) < clamp
+
+        if mode == 'detail_train_from_base_ckpt':
+            return metric_fn(out_base, gt_base)
+
+        if mode == 'joint_finetune':
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
+
+        if epoch < E0:
+            return metric_fn(out_base1, gt_base)
+        elif epoch < E1:
+            return self._safe_masked_metric(pred_base2_res, gt_base2_res, base_mask, metric_fn)
+        else:
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
+
+    def udf_loss(
+        self, output, gt, metric_fn, clamp=0.1, epoch=0,
+        E0=1000, E1=1500, E2=2000, E3=2500,
+        lambda_b1=0.05, lambda_b2=0.05, lambda_d=0.05,
+        mode='base_train'
+    ):
+        # UDF analogue of sdf_loss. Same base1/base2/detail decomposition and
+        # curriculum; only the sign convention differs (targets are unsigned).
+        out_udf       = output['udf']
+        out_base      = output['udf_base']
+        out_base1     = output['udf_base1']
+        out_base2     = output['udf_base2']
+        out_detail    = output['udf_detail']
+        gate_base2    = output['gate_base2']
+        gate_detail   = output['gate_detail']
+
+        gt_udf  = gt['udf'].view_as(out_udf)
+        gt_base = gt['udf_base'].view_as(out_base)
+        gt_res  = gt['udf_res'].view_as(out_udf)
+
+        pred_base2_res = out_base - out_base1.detach()
+        gt_base2_res   = gt_base - out_base1.detach()
+        pred_detail_res = gate_detail * out_detail
+
+        base_mask   = torch.abs(out_base1.detach()) < clamp
+        detail_mask = torch.abs(out_base.detach()) < clamp
+
+        if mode == 'detail_train_from_base_ckpt':
+            return metric_fn(out_udf, gt_udf)
+
+        if mode == 'joint_finetune':
+            return (metric_fn(out_udf, gt_udf)
+                + lambda_b1 * metric_fn(out_base, gt_base))
+
+        if epoch < E0:
+            return metric_fn(out_base1, gt_base)
+        elif epoch < E1:
+            return self._safe_masked_metric(pred_base2_res, gt_base2_res, base_mask, metric_fn)
+        elif epoch < E2:
+            pred_base2_res_joint = out_base - out_base1
+            gt_base2_res_joint   = gt_base - out_base1
+            return (
+                metric_fn(out_base, gt_base)
+                + lambda_b1 * metric_fn(out_base1, gt_base)
+                + lambda_b2 * self._safe_masked_metric(
+                    pred_base2_res_joint, gt_base2_res_joint, base_mask, metric_fn
+                )
+            )
+        else:
+            return (
+                metric_fn(out_udf, gt_udf)
+                + lambda_d * self._safe_masked_metric(
+                    pred_detail_res, gt_res, detail_mask, metric_fn
+                )
+            )
+
+    def udf_query_loss(self, output, gt, metric_fn):
+        out_udf = output['udf']
+        gt_udf = gt['udf'].view_as(out_udf)
+        return metric_fn(out_udf, gt_udf)
+
     def code_loss(self, output, gt, metric_fn, epoch=0, E0=1000, E1=1500):
         code = output['code']
         reg_loss = torch.sum(torch.pow(code, 2), dim=-1)
@@ -266,7 +371,7 @@ class LossHandler():
             if 'tv' in name:
                 loss_term = func(output, loss['factor'])
                 res[name] = loss_term
-            elif 'sdf' in name:
+            elif 'sdf' in name or 'udf' in name:
                 loss_term = func(
                     output, gt, loss['metric_fn'], loss.get('clamp', 0.1),
                     epoch, E0, E1, E2, E3, mode=mode
