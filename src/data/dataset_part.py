@@ -138,9 +138,9 @@ class NGCDataset(Dataset):
             'curve_idx': torch.cat([input1['curve_idx'], input2['curve_idx'], input3['curve_idx']]),
         }
         data_gt = {
-            'sdf': torch.cat([gt1['sdf'], gt2['sdf'], gt3['sdf']]),
-            'sdf_base': torch.cat([gt1['sdf_base'], gt2['sdf_base'], gt3['sdf_base']]),
-            'sdf_res': torch.cat([gt1['sdf_res'], gt2['sdf_res'], gt3['sdf_res']]),
+            'dist': torch.cat([gt1['dist'], gt2['dist'], gt3['dist']]),
+            'dist_base': torch.cat([gt1['dist_base'], gt2['dist_base'], gt3['dist_base']]),
+            'dist_res': torch.cat([gt1['dist_res'], gt2['dist_res'], gt3['dist_res']]),
         }
         #exit()
 
@@ -149,7 +149,7 @@ class NGCDataset(Dataset):
         return data_input, data_gt, info
 
     def get_curve_base_residual_data(self, curve_data,sample_idx):
-        samples_sdf = curve_data['sdf'][sample_idx]
+        samples_sdf = curve_data[self.field][sample_idx]
 
     def get_curve_data(self, curve_data, input_curve_idx, n_samples=1024):
         samples_local = curve_data['samples_local']
@@ -212,9 +212,9 @@ class NGCDataset(Dataset):
             'curve_idx': torch.from_numpy(curve_idx).long(),
         }
         gt = {
-            'sdf': torch.from_numpy(gt_sdf).float(),
-            'sdf_base': torch.from_numpy(gt_base_sdf).float(),
-            'sdf_res': torch.from_numpy(gt_res_sdf).float(),
+            'dist': torch.from_numpy(gt_sdf).float(),
+            'dist_base': torch.from_numpy(gt_base_sdf).float(),
+            'dist_res': torch.from_numpy(gt_res_sdf).float(),
         }
         return model_input, gt, sidx
     

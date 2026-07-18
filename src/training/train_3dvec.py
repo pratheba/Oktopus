@@ -433,7 +433,7 @@ class Trainer:
                     model_input['info'] = info
                     gt['info'] = info
 
-                    batch_size = gt['sdf'].shape[0]
+                    batch_size = gt['dist'].shape[0]
                     #model_output = self.model(model_input, eff_epoch)
                     model_output = self.model(model_input, epoch)
 
@@ -443,11 +443,11 @@ class Trainer:
 #                        print("phase_out:", model_output['phase'])
 #                        print("alpha_detail:", model_output['alpha_detail'])
 #                        print("gate_detail_mean:", model_output['gate_detail'].mean().item())
-#                        print("sdf_detail_abs_mean:", model_output['sdf_detail'].abs().mean().item())
+#                        print("sdf_detail_abs_mean:", model_output['dist_detail'].abs().mean().item())
 #                        print("pred_detail_res_abs_mean:",
-#                              (model_output['gate_detail'] * model_output['sdf_detail']).abs().mean().item())
+#                              (model_output['gate_detail'] * model_output['dist_detail']).abs().mean().item())
 #                        print("final_minus_base_abs_mean:",
-#                              (model_output['sdf'] - model_output['sdf_base']).abs().mean().item(), flush=True)
+#                              (model_output['dist'] - model_output['dist_base']).abs().mean().item(), flush=True)
 
                     losses = self.train_loss_fn(
                         model_output, gt,

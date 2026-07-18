@@ -61,7 +61,7 @@ dataset:
   type: NGCDataset
   num_batch: 80
   file_name: udf_samples.pkl   # was sdf_samples.pkl
-  field: udf                   # NEW: reads udf/udf_base/udf_res into the sdf gt slots
+  field: udf                   # read udf/udf_base/udf_res from the pkl (internally -> neutral 'dist')
   n_sample: 10000
   mode: 'all'
   data_path: 'data_oktopus_boots1.txt'
@@ -142,13 +142,13 @@ model:
     activation_type: silu
 
 loss:
-  sdf_loss:
+  dist_loss:
     enable: true
     metric: L1
     factor: 1.0
     clamp: 0.03
 
-  sdf_base_loss:
+  dist_base_loss:
     enable: false
     metric: L1
     factor: 1.0

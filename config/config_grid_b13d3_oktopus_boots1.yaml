@@ -141,13 +141,13 @@ model:
     activation_type: silu
 
 loss:
-  sdf_loss:
+  dist_loss:
     enable: true
     metric: L1
     factor: 1.0
     clamp: 0.03
 
-  sdf_base_loss:
+  dist_base_loss:
     enable: false
     metric: L1
     factor: 1.0

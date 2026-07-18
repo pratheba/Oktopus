@@ -190,7 +190,7 @@ class NGCNetGridBase1(nn.Module):
         x = _run_film_chain(self.filmenc, feat, curve_feats, type_sample)
         sdf = self.decoder.forward_simple(x).squeeze(-1)
         return {
-            'sdf_base1': sdf,
+            'dist_base1': sdf,
             'base1_grid_ct': self.grid_curvetheta.grids,
             'base1_grid_cr': self.grid_curverho.grids if self.grid_curverho is not None else None,
         }
@@ -261,7 +261,7 @@ class NGCNetGridBase2(nn.Module):
         x = _run_film_chain(self.filmenc, y, curve_feats, type_sample)
         sdf = self.decoder.forward_simple(x).squeeze(-1)
         return {
-            'sdf_base2': sdf,
+            'dist_base2': sdf,
             'base2_grid_ct': self.grid_curvetheta.grids,
         }
 
@@ -328,7 +328,7 @@ class NGCNetGridBase(nn.Module):
             phase if phase in ('base1_only', 'base2_only', 'base_joint') else 'base_joint'
         )
         out1 = self.base1_model(mi, curve_feats, type_sample, istrain=istrain)
-        sdf_base1 = out1['sdf_base1']
+        sdf_base1 = out1['dist_base1']
 
         if base_phase == 'base1_only':
             sdf_base2 = torch.zeros_like(sdf_base1)
@@ -339,14 +339,14 @@ class NGCNetGridBase(nn.Module):
                 mi, curve_feats, type_sample, sample_angle_periodenc,
                 sdf_base1=sdf_base1, istrain=istrain,
             )
-            sdf_base2 = out2['sdf_base2']
+            sdf_base2 = out2['dist_base2']
             out2_grid = out2['base2_grid_ct']
             sdf_base, alpha_base2, gate_base2 = self.combine_base(sdf_base1, sdf_base2, curr_epoch, base_phase)
 
         return {
-            'sdf_base1': sdf_base1,
-            'sdf_base2': sdf_base2,
-            'sdf_base': sdf_base,
+            'dist_base1': sdf_base1,
+            'dist_base2': sdf_base2,
+            'dist_base': sdf_base,
             'alpha_base2': alpha_base2,
             'gate_base2': gate_base2,
             'base1_grid_ct': out1['base1_grid_ct'],
@@ -438,7 +438,7 @@ class NGCNetGridDetail(nn.Module):
         sdf_detail = self.decoder.forward_simple(x).squeeze(-1)
         gate_detail = torch.exp(-(sdf_base.detach() ** 2) / (2.0 * self.sigma ** 2))
         return {
-            'sdf_detail': sdf_detail,
+            'dist_detail': sdf_detail,
             'gate_detail': gate_detail,
             'detail_grid_ct': self.grid_curvetheta.grids,
         }
@@ -609,7 +609,7 @@ class NGCNetGrid(nn.Module):
             istrain=istrain,
             phase=base_phase,
         )
-        sdf_base = base_out['sdf_base']
+        sdf_base = base_out['dist_base']
 
         detail_active = (phase in ('detail_only', 'all_joint')) or (not istrain)
         sdf_detail = torch.zeros_like(sdf_base)
@@ -626,7 +626,7 @@ class NGCNetGrid(nn.Module):
                 sdf_base=sdf_base,
                 istrain=istrain,
             )
-            sdf_detail = det_out['sdf_detail']
+            sdf_detail = det_out['dist_detail']
             gate_detail = det_out['gate_detail']
             detail_grid_ct = det_out['detail_grid_ct']
             if phase == 'detail_only':
@@ -645,11 +645,11 @@ class NGCNetGrid(nn.Module):
                 sdf = sdf_base + gate_detail * sdf_detail
 
         return {
-            'sdf': sdf,
-            'sdf_base': sdf_base,
-            'sdf_base1': base_out['sdf_base1'],
-            'sdf_base2': base_out['sdf_base2'],
-            'sdf_detail': sdf_detail,
+            'dist': sdf,
+            'dist_base': sdf_base,
+            'dist_base1': base_out['dist_base1'],
+            'dist_base2': base_out['dist_base2'],
+            'dist_detail': sdf_detail,
             'alpha_base2': base_out['alpha_base2'],
             'gate_base2': base_out['gate_base2'],
             'alpha_detail': alpha_detail,
@@ -676,7 +676,7 @@ class NGCNetGrid(nn.Module):
             istrain=False,
             phase='base_joint',
         )
-        sdf_base = base_out['sdf_base']
+        sdf_base = base_out['dist_base']
 
         mi_detail = dict(mi)
         mi_detail['coords'] = mi['coords_detail']
@@ -688,7 +688,7 @@ class NGCNetGrid(nn.Module):
             sdf_base=sdf_base,
             istrain=False,
         )
-        sdf_detail = det_out['sdf_detail']
+        sdf_detail = det_out['dist_detail']
         gate = det_out['gate_detail']
         
         if self.details_level == 0:
@@ -698,9 +698,9 @@ class NGCNetGrid(nn.Module):
         else:
             sdf = sdf_base + gate * sdf_detail
         return {
-            'sdf': sdf,
-            'sdf_base': sdf_base,
-            'sdf_detail': sdf_detail,
+            'dist': sdf,
+            'dist_base': sdf_base,
+            'dist_detail': sdf_detail,
             'code': enc['curve_code'],
         }
 
@@ -719,7 +719,7 @@ class NGCNetGrid(nn.Module):
         else:
             curve_input = self.pack_data(model_input)
             out = self.forwardsimple(curve_input, istrain=False)
-        return out['sdf'], out['sdf_base']
+        return out['dist'], out['dist_base']
 
     @torch.no_grad()
     def inference_full(self, model_input, transform=None):
@@ -731,12 +731,12 @@ class NGCNetGrid(nn.Module):
             out = self.forwardsimple(curve_input, istrain=False)
 
         return {
-            "sdf": out["sdf"],
-            "sdf_base": out["sdf_base"],
-            "sdf_detail": out.get("sdf_detail", None),
+            "dist": out["dist"],
+            "dist_base": out["dist_base"],
+            "dist_detail": out.get("dist_detail", None),
             "gate_detail": out.get("gate_detail", None),
-            "sdf_base1": out.get("sdf_base1", None),
-            "sdf_base2": out.get("sdf_base2", None),
+            "dist_base1": out.get("dist_base1", None),
+            "dist_base2": out.get("dist_base2", None),
             "gate_base2": out.get("gate_base2", None),
         }
 
@@ -778,7 +778,7 @@ class NGCNetGrid(nn.Module):
             istrain=False,
             phase='base_joint',
         )
-        sdf_base = base_out['sdf_base']
+        sdf_base = base_out['dist_base']
         det_out = self.detail_model(
             curve_data,
             curve_feats=curve_feats,
@@ -787,7 +787,7 @@ class NGCNetGrid(nn.Module):
             sdf_base=sdf_base,
             istrain=False,
         )
-        sdf = sdf_base + det_out['gate_detail'] * det_out['sdf_detail']
+        sdf = sdf_base + det_out['gate_detail'] * det_out['dist_detail']
         return sdf, sdf_base
 
     def _pack_common(self, mi, extra_keys=()):

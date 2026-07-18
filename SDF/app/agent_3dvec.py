@@ -49,10 +49,10 @@ class Agent():
 
         result = dict(out)
         sign_dependent_keys = {
-            'sdf',
-            'sdf_base',
-            'sdf_detail',
-            'sdf_res',
+            'dist',
+            'dist_base',
+            'dist_detail',
+            'dist_res',
             'residual_sdf',
         }
 
@@ -2448,7 +2448,7 @@ class Agent():
 #                        pre_snug_base_grid = utils.create_grid_like(mc_grid)
 #                        pre_snug_base_grid.clear_grid()
 #                        pre_snug_base_grid.update_grid(
-#                            acc_out0["sdf_base"],
+#                            acc_out0["dist_base"],
 #                            kidx,
 #                            mark=True,
 #                            mode="overwrite",
@@ -2474,8 +2474,8 @@ class Agent():
                         )
 
                         snug_field = self.build_avatar_snug_scale_field(
-                            acc_sdf=acc_out0['sdf_base'],
-                            avatar_sdf=avatar_out0['sdf'],
+                            acc_sdf=acc_out0['dist_base'],
+                            avatar_sdf=avatar_out0['dist'],
                             avatar_coords=avatar_data["coords"],
                             avatar_theta=avatar_data["angles"],
                             n_s=int(adapt_arg.get("snug_field_n_s", 48)),
@@ -2544,9 +2544,9 @@ class Agent():
                         batch_size=batch_size,
                     )
 
-                acc_vals = acc_out["sdf"]
-                acc_vals_base = acc_out["sdf_base"]
-                acc_vals_detail = acc_out["sdf_detail"]
+                acc_vals = acc_out["dist"]
+                acc_vals_base = acc_out["dist_base"]
+                acc_vals_detail = acc_out["dist_detail"]
 
                 if bool(adapt_arg.get("use_accessory_support_clamp", False)):
                     acc_vals, valid_support = self.clamp_pred_sdf_by_support(
@@ -2644,7 +2644,7 @@ class Agent():
                     )
 
                     # Use avatar FINAL as obstacle.
-                    avatar_sdf_for_offset = avatar_out["sdf"]
+                    avatar_sdf_for_offset = avatar_out["dist"]
 
                     if avatar_sdf_for_offset.shape[0] != vals_base_fit.shape[0]:
                         raise ValueError(
