@@ -34,7 +34,11 @@ class NGCDataset(Dataset):
         if 'shape_name' in arg:
             self.data_names = [str(arg['shape_name'])]
 
-        self.file_name = 'sdf_samples.pkl'
+        # SDF or UDF is selected purely by config: file_name + field.
+        # field='udf' reads udf/udf_base/udf_res into the same gt slots,
+        # so the model, loss and training loop are unchanged.
+        self.file_name = arg.get('file_name', 'sdf_samples.pkl')
+        self.field = arg.get('field', 'sdf')
 
         self.handles = self.load_handles()
         self.inputs = self.load_inputs()
@@ -161,9 +165,9 @@ class NGCDataset(Dataset):
         #print("samples_local = ",samples_local.shape)
         #exit()
         
-        samples_sdf = curve_data['sdf']
-        samples_base_sdf = curve_data['sdf_base']
-        samples_res_sdf = curve_data['sdf_res']
+        samples_sdf = curve_data[self.field]
+        samples_base_sdf = curve_data[self.field + '_base']
+        samples_res_sdf = curve_data[self.field + '_res']
         #print(samples_sdf.shape)
         cids = curve_data['curve_idx'].astype(np.int32)
         #print("cids", cids, flush=True)
