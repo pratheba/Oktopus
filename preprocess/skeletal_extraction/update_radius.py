@@ -1008,21 +1008,10 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
 
         seg["keypoints"] = key
 
-    if args.resample_keypoints_by_arclen:
-        n_key = choose_n_keypoints_by_arclength(
-            key,
-            bbox_unit_ref=args.keypoint_arclen_ref,
-            max_keypoints=args.max_keypoints,
-            min_keypoints=args.min_keypoints,
-        )
-
-        key = resample_polyline_by_arclength(key, n_key)
-        seg["keypoints"] = key
 
 
     if args.smooth_keypoints_sigma > 0:
-        key0 = key.copy()
-        key = gaussian_filter1d(
+        key_smoothed = gaussian_filter1d(
             key,
             sigma=float(args.smooth_keypoints_sigma),
             axis=0,
@@ -1030,10 +1019,24 @@ def update_segment_radius(seg, args, full_alloc, base_alloc):
         )
 
         if args.smooth_keypoints_preserve_endpoints:
-            key[0] = key0[0]
-            key[-1] = key0[-1]
+            key_smoothed[0] = key_original[0]
+            key_smoothed[-1] = key_original[-1]
+        key = key_smoothed
 
-        seg["keypoints"] = key
+    if args.resample_keypoints_by_arclen:
+        n_key = choose_n_keypoints_by_arclength(
+            key_original,
+            bbox_unit_ref=args.keypoint_arclen_ref,
+            max_keypoints=args.max_keypoints,
+            min_keypoints=args.min_keypoints,
+        )
+
+        key = resample_polyline_by_arclength(key, n_key)
+
+
+    key[0] = key_original[0]
+    key[-1] = key_original[-1]
+    seg["keypoints"] = key
 
     T, U, V, frames = compute_parallel_transport_frames(key)
     _, point_s, point_key_ids, _ = nearest_polyline_projection(key, pts)

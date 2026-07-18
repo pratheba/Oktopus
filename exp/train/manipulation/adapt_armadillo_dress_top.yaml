@@ -1,22 +1,25 @@
-- target_key: oktopus_9_v1|body
-  accessory_key: puffer_3_v1|body
-  wrap_radius: true 
-  rigid_radius: false
-  mode: direct  
-  src_0: 0.4
-  src_1: 1.0
-  tgt_0: 0.0
-  tgt_1: 1.0
+- target_key: armadillo_13_v1|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.2
+  src_1: 0.55
+
+  tgt_0: 0.2
+  tgt_1: 0.9
+
   rot_deg: 0.0
-  cache_as: puffer_3_v1|body
+  tloc: [0.0, 0.1, 0.0]
 
   avatar_cylinder_radius_scale: 1.0
   avatar_cylinder_radius_add: 0.0
   adapt_localize_norm: 1.0
   adapt_use_owned_gate: false
+
   wrap_radius: true
   rigid_radius: false
-  scale: 1.0
+  scale: 0.7
 
   use_accessory_support_clamp: true
   support_rho_limit: 1.0
@@ -24,16 +27,19 @@
   support_positive_value: 1.0
   support_clamp_verbose: true
 
+  free_mode: wrap 
+  use_attach_to_free_blend: false
+
   adapt_localize_norm: 1.0
   adapt_use_owned_gate: false
 
-  wrap_scale_min: 0.5
-  wrap_scale_max: 2.2
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
 
   auto_avatar_snug_field: true
   use_soft_snug: false
   use_hard_avatar_clamp: false
-  cut_avatar: true 
+  cut_avatar: true
 
   snug_field_n_s: 24
   snug_field_n_theta: 48
@@ -46,10 +52,6 @@
   snug_smooth_s: 3.00
   snug_smooth_theta: 2.00
   snug_debug: true
-
-  attach_blend_debug: false
-  wrap_debug: false
-  adapt_debug_counts: false
 
 
 

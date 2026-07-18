@@ -1,0 +1,31 @@
+- target_key: oktopus_9_v1|body
+  accessory_key: hat_1_v1|hat
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.3
+  tgt_0: 0.25
+  tgt_1: 0.5
+  scale: 4.0
+  rot_deg: 0.0
+  cache_as: hat_1_v1|hat
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true

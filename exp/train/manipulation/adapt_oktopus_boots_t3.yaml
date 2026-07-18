@@ -1,0 +1,33 @@
+- target_key: oktopus_9_v1|t3
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.82
+  scale: 4.0
+  rot_deg: 0.0
+  cache_as: boots_1_v1|2
+  tloc: [0.1, -0.01, -0.06]
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false 

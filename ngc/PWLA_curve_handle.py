@@ -1649,6 +1649,124 @@ class PWLACurve():
         #import pdb; pdb.set_trace();
         return samples3D_to_skeleton
 
+    def curve_projection_interval(
+        self,
+        samples,
+        s0,
+        s1,
+        N_discrete=n_sample_curve,
+        outside=False,
+    ):
+        """
+        Project samples only onto a source interval [s0, s1].
+
+        This avoids adapt samples snapping to a nearby but wrong branch of the
+        full avatar curve before the src_0/src_1 crop.
+        """
+        samples = np.asarray(samples, dtype=np.float64)
+        s0 = float(s0)
+        s1 = float(s1)
+
+        s_min = max(0.0, min(s0, s1))
+        s_max = min(1.0, max(s0, s1))
+
+        if abs(s_max - s_min) < 1e-12:
+            return np.full(samples.shape[0], s_min, dtype=np.float64)
+
+        # Candidate projection curve ONLY inside the requested interval.
+        uniform_linear_points = np.linspace(
+            s_min,
+            s_max,
+            int(N_discrete),
+            endpoint=True,
+        )
+
+        key_inside = self.key_ts[
+            (self.key_ts >= s_min) & (self.key_ts <= s_max)
+        ]
+
+        non_uniform_linear_points = np.unique(
+            np.concatenate([
+                np.array([s_min, s_max], dtype=np.float64),
+                uniform_linear_points,
+                key_inside,
+            ])
+        )
+
+        skeletal_verts = self.interpolate(
+            non_uniform_linear_points,
+            radius=False,
+            frame=False,
+        )["points"]
+
+        tree = KDTree(skeletal_verts)
+        _, vidx = tree.query(samples)
+
+        samples3D_to_skeleton = -1.0 * np.ones(samples.shape[0], dtype=np.float64)
+        num_vert = skeletal_verts.shape[0]
+
+        for vid in range(num_vert):
+            sample_index = np.argwhere(vidx == vid).flatten()
+            if len(sample_index) == 0:
+                continue
+
+            samples_v = samples[sample_index]
+
+            if 0 < vid < num_vert - 1:
+                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+
+                in1, px1 = self.is_points_in_edge(
+                    samples_v,
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
+                    (skeletal_verts[vid + 1], non_uniform_linear_points[vid + 1]),
+                )
+                in2, px2 = self.is_points_in_edge(
+                    samples_v,
+                    (skeletal_verts[vid - 1], non_uniform_linear_points[vid - 1]),
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
+                )
+
+                in_p = np.logical_xor(in1, in2)
+                px = (in1 * px1 + in2 * px2)[in_p]
+                samples3D_to_skeleton[sample_index[in_p]] = px
+
+            elif vid == 0:
+                if num_vert == 1:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+                    continue
+
+                in1, px1 = self.is_points_in_edge(
+                    samples_v,
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
+                    (skeletal_verts[vid + 1], non_uniform_linear_points[vid + 1]),
+                )
+
+                if outside:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+
+                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
+
+            else:
+                in2, px2 = self.is_points_in_edge(
+                    samples_v,
+                    (skeletal_verts[vid - 1], non_uniform_linear_points[vid - 1]),
+                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
+                )
+
+                if outside:
+                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+
+                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
+
+        good = samples3D_to_skeleton >= 0.0
+        samples3D_to_skeleton[good] = np.clip(
+            samples3D_to_skeleton[good],
+            s_min,
+            s_max,
+        )
+
+        return samples3D_to_skeleton
+
     def calc_x_radius(self, ts):
         xrs = np.ones(ts.shape[0])
         #if self.end_ball_x is not None:
@@ -1789,13 +1907,21 @@ class PWLACurve():
         #plot_local_bins_with_drift_clean(stats, bins=[10, 25, 40, 60, 80])
 
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0):
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
 
-        sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
+        if projection_s0 is not None and projection_s1 is not None:
+            sample_keypoint_map = self.curve_projection_interval(
+                pointcloudsamples,
+                projection_s0,
+                projection_s1,
+                outside=outside,
+            )
+        else:
+            sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
@@ -2879,17 +3005,6 @@ class PWLACurve():
           7. pack accessory samples_local for model inference
         """
 
-        # ------------------------------------------------------------
-        # 1) Localize grid/world samples on avatar/source curve
-        # ------------------------------------------------------------
-        avatar_data, inside = self.localize_samples(
-            vs,
-            norm=float(adapt_arg.get("adapt_localize_norm", 1.0)),
-            outside=False,
-            runtime_cylinder_radius_scale=float(adapt_arg.get("avatar_cylinder_radius_scale", 1.0)),
-            runtime_cylinder_radius_add=float(adapt_arg.get("avatar_cylinder_radius_add", 0.0)),
-        )
-
         accessory_curve_handle = adapt_arg["accessory_curve_handle"]
         accessory_curve_handle.core.update_coords()
         accessory_curve_handle.core.update_frame()
@@ -2899,6 +3014,46 @@ class PWLACurve():
         tgt_0 = float(adapt_arg["tgt_0"])
         tgt_1 = float(adapt_arg["tgt_1"])
         delta_theta = np.deg2rad(float(adapt_arg.get("rot_deg", 0.0)))
+
+        use_interval_projection = bool(adapt_arg.get("use_interval_projection", True))
+
+        # ------------------------------------------------------------
+        # 1) Localize grid/world samples on avatar/source curve.
+        #    In adapt mode, restrict projection to src_0/src_1 by default.
+        #    This prevents samples near a crossing/bend from snapping to a
+        #    nearby wrong branch of the full avatar curve and being discarded
+        #    by the later source-interval crop.
+        # ------------------------------------------------------------
+        avatar_data, inside = self.localize_samples(
+            vs,
+            norm=float(adapt_arg.get("adapt_localize_norm", 1.0)),
+            outside=False,
+            runtime_cylinder_radius_scale=float(adapt_arg.get("avatar_cylinder_radius_scale", 1.0)),
+            runtime_cylinder_radius_add=float(adapt_arg.get("avatar_cylinder_radius_add", 0.0)),
+            projection_s0=src_0 if use_interval_projection else None,
+            projection_s1=src_1 if use_interval_projection else None,
+        )
+
+        if adapt_arg.get("debug_interval_projection", False):
+            coords_dbg = avatar_data.get("coords", np.asarray([], dtype=np.float64))
+            if len(coords_dbg) > 0:
+                print(
+                    "[adapt interval projection]",
+                    "enabled=", use_interval_projection,
+                    "src=", src_0, src_1,
+                    "coords min/max=",
+                    float(np.min(coords_dbg)),
+                    float(np.max(coords_dbg)),
+                    "inside=", len(inside),
+                )
+            else:
+                print(
+                    "[adapt interval projection]",
+                    "enabled=", use_interval_projection,
+                    "src=", src_0, src_1,
+                    "inside=", len(inside),
+                    "no coords",
+                )
 
         # ------------------------------------------------------------
         # 2) Crop to source interval
@@ -3179,25 +3334,25 @@ class PWLACurve():
         # ------------------------------------------------------------
         # 6) Accessory points/frame/radius actually used for model coords.
         # ------------------------------------------------------------
-#        if use_adapt_control:
-#            acc_ctrl = accessory_curve_handle.core.build_adapt_control_field(
-#                acc_coords,
-#                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
-#                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 1.0)),
-#                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 1.0)),
-#                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
-#                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
-#                radius_type="train",
-#            )
-#            acc_intpl = {
-#                "points": acc_ctrl["points"],
-#                "frame": acc_ctrl["frame"],
-#                "radius": acc_ctrl["radius"],
-#            }
-#            tangent_acc = acc_ctrl["x_radius"]
-#        else:
-        acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
-        tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
+        if use_adapt_control:
+            acc_ctrl = accessory_curve_handle.core.build_adapt_control_field(
+                acc_coords,
+                n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
+                smooth_points_sigma=float(adapt_arg.get("accessory_control_smooth_points_sigma", 1.0)),
+                smooth_radius_sigma=float(adapt_arg.get("accessory_control_smooth_radius_sigma", 1.0)),
+                rebuild_frames=bool(adapt_arg.get("accessory_control_rebuild_frames", True)),
+                preserve_endpoints=bool(adapt_arg.get("adapt_control_preserve_endpoints", True)),
+                radius_type="cylinder",
+            )
+            acc_intpl = {
+                "points": acc_ctrl["points"],
+                "frame": acc_ctrl["frame"],
+                "radius": acc_ctrl["radius"],
+            }
+            tangent_acc = acc_ctrl["x_radius"]
+        else:
+            acc_intpl = accessory_curve_handle.core.interpolate(acc_coords)
+            tangent_acc = accessory_curve_handle.core.calc_x_radius(acc_coords)
 
         if use_tgt_center:
             tgt_center_field = adapt_arg.get("_tgt_uv_center_field", None)
@@ -3714,9 +3869,9 @@ class PWLACurve():
                 )
 
         elif adapt_arg.get("rigid_radius", False):
-            #scale_rho = np.full_like(rho_avatar, global_scale)
-            rigid_radial_scale = float(adapt_arg.get("rigid_radial_scale", 5.0))
-            scale_rho = np.full_like(rho_avatar, rigid_radial_scale)
+            scale_rho = np.full_like(rho_avatar, global_scale)
+            #rigid_radial_scale = float(adapt_arg.get("rigid_radial_scale", 5.0))
+            #scale_rho = np.full_like(rho_avatar, rigid_radial_scale)
             rho_acc = rho_avatar * scale_rho
             theta_tgt = theta_avatar + delta_theta
             if adapt_arg.get("debug_rigid_coords", False):
@@ -3878,9 +4033,56 @@ class PWLACurve():
             [w_n_acc + vx_acc , u_n_acc, v_n_acc],
             axis=1,
         )
-
         rho_n_acc = np.sqrt(u_n_acc ** 2 + v_n_acc ** 2)
         angles_acc = np.arctan2(v_n_acc, u_n_acc)
+
+        if adapt_arg.get("debug_acc_local", False):
+            print(
+                "[acc local]",
+                "acc_coords min/mean/max=",
+                float(np.min(acc_coords)),
+                float(np.mean(acc_coords)),
+                float(np.max(acc_coords)),
+                "w_n min/mean/max=",
+                float(np.min(w_n_acc)),
+                float(np.mean(w_n_acc)),
+                float(np.max(w_n_acc)),
+                "u_n min/mean/max=",
+                float(np.min(u_n_acc)),
+                float(np.mean(u_n_acc)),
+                float(np.max(u_n_acc)),
+                "v_n min/mean/max=",
+                float(np.min(v_n_acc)),
+                float(np.mean(v_n_acc)),
+                float(np.max(v_n_acc)),
+                "rho_n min/mean/max=",
+                float(np.min(rho_n_acc)),
+                float(np.mean(rho_n_acc)),
+                float(np.max(rho_n_acc)),
+            )
+            # Use accessory normalized local coordinates to split directions.
+            # Depending on your convention, front may be +v, -v, +u, or -u.
+            sectors = {
+                "u_pos": u_n_acc > 0,
+                "u_neg": u_n_acc < 0,
+                "v_pos": v_n_acc > 0,
+                "v_neg": v_n_acc < 0,
+            }
+
+            for name, m in sectors.items():
+                if np.any(m):
+                    print(
+                        "[front/back rho]",
+                        name,
+                        "count=", int(np.sum(m)),
+                        "rho_n min/mean/max=",
+                        float(np.min(rho_n_acc[m])),
+                        float(np.mean(rho_n_acc[m])),
+                        float(np.max(rho_n_acc[m])),
+                        "u_n mean=", float(np.mean(u_n_acc[m])),
+                        "v_n mean=", float(np.mean(v_n_acc[m])),
+                    )
+
 
         # ------------------------------------------------------------
         # 12) Return data dicts

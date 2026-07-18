@@ -84,7 +84,9 @@ def recompute_segment_fields_preserve_owned(seg):
 
 
 def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_keypoints=True):
+    #print(in_npz)
     segs = load_segments(in_npz)
+    #print("segd = ", segs)
     by_id = {int(s["id"]): deepcopy(s) for s in segs}
 
     # Match files like:
@@ -92,10 +94,14 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
     # 0_surface_points_all.ply
     # 0_surface_points_owned.ply
     #pat = re.compile(r"^(\d+)_(keypoints|surface_points_all|surface_points_owned)\.ply$")
-    #pat = re.compile(r"^(\d+)_(keypoints|surface_points_all)\.ply$")
-    pat = re.compile(r"^(\d+)_(keypoints)\.ply$")
+    pat = re.compile(r"^(\d+)_(keypoints|surface_points_all)\.ply$")
+    #pat = re.compile(r"^(\d+)_(keypoints)\.ply$")
 
     grouped = {}
+    print("ply_sir", ply_dir) 
+    ply_files = glob.glob(os.path.join(ply_dir, "*.ply"))
+    print(ply_files)
+    
     for fp in glob.glob(os.path.join(ply_dir, "*.ply")):
         name = os.path.basename(fp)
         m = pat.match(name)
@@ -106,6 +112,8 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
         grouped.setdefault(sid, {})[kind] = fp
 
     for sid, files in grouped.items():
+        print("sid = ", sid)
+        print("files keys",files.keys())
         if sid not in by_id:
             print(f"[skip] segment id {sid} not found in old NPZ")
             continue
@@ -113,10 +121,11 @@ def patch_segments_from_ply_folder(in_npz, ply_dir, out_npz, out_dir, update_key
         seg = by_id[sid]
 
         if update_keypoints and "keypoints" in files:
+            print("seg_keypoints_reassign")
             seg["keypoints"] = load_ply_xyz(files["keypoints"])
-#
-#        if "surface_points_all" in files:
-#            seg["surface_points_all"] = load_ply_xyz(files["surface_points_all"])
+
+        if "surface_points_all" in files:
+            seg["surface_points_all"] = load_ply_xyz(files["surface_points_all"])
 #
 #        if "surface_points_owned" in files:
 #            seg["surface_points_owned"] = load_ply_xyz(files["surface_points_owned"])

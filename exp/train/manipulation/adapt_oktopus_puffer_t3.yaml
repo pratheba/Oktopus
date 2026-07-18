@@ -1,0 +1,46 @@
+- target_key: oktopus_9_v1|t3
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.4
+  tgt_1: 1.0
+  scale: 1.5
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+
+
+  use_accessory_support_clamp: true 
+  support_rho_limit: 1.00
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: false
+  snug_field_n_s: 48
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: none 
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.00001
+  avatar_clearance: 0.00001
+  cut_avatar: false
+
+
+

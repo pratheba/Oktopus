@@ -45,9 +45,9 @@ def start_test(opt):
     # Marching Cubes config
     config_path = './exp/train/manipulation'
     grid_config = {
-        'reso': 128,
+        'reso': args.resolution,
         'level': 0.,
-        'size': 1.0,
+        'size': 1.2,
     }
 
     t0 = time()
@@ -124,6 +124,7 @@ if __name__ == '__main__':
     p.add_argument('-o', '--out_path', required=True)
     p.add_argument('-s', '--shape_name', required=True)
     p.add_argument('-y', '--test_file', required=True)
+    p.add_argument('-r', '--resolution', required=False, type=int, default=64)
 
     args = p.parse_args()
     opt = {
@@ -133,7 +134,8 @@ if __name__ == '__main__':
             'config_path': args.config_path,
             'out_path': args.out_path,
             'test_file': args.test_file,
-            'shape_name': args.shape_name
+            'shape_name': args.shape_name,
+            'resolution': args.resolution
     }
 
     opt = process_options(opt, mode='inference')

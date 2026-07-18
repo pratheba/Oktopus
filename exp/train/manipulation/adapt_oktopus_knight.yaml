@@ -1,0 +1,303 @@
+- target_key: oktopus_9_v1|body
+  accessory_key: knight_10_v1|body
+  mode: direct  
+  wrap_radius: true
+  rigid_radius: false
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.35
+  tgt_1: 0.8
+  scale: 0.6
+  rot_deg: 180.0
+  tilt_v: 0.0
+  tilt_v_anchor: 0.8
+  cache_as: knight_10_v1_body_wrap
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  wrap_scale_min: 0.15
+  wrap_scale_max: 1.0
+  wrap_adapt_n_keypoints: 128
+  wrap_adapt_smooth_s: 2.0
+  wrap_adapt_smooth_theta: 1.0
+  wrap_adapt_lookup_n: 128
+
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 64
+  snug_field_n_theta: 64 
+  snug_surface_band: 0.015
+  snug_target_gap: 0.010
+  snug_gain: 2.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: false
+
+  use_adapt_control_field: true
+  adapt_control_n_keypoints: 128
+
+  smooth_avatar_adapt_fields: false 
+  avatar_adapt_smooth_points_sigma: 0.0
+  avatar_adapt_smooth_coords_sigma: .0
+  avatar_adapt_rebuild_frames: true
+  recompute_avatar_local_after_smooth: true
+
+  smooth_accessory_adapt_fields: false
+  accessory_adapt_smooth_points_sigma: 0.0
+  accessory_adapt_smooth_radius_sigma: 0.0
+  accessory_adapt_rebuild_frames: true
+
+
+
+  accessory_offset_mode: none
+  use_soft_snug: false
+  target_gap: 0.010
+  local_offset_strength: 0.20
+  local_offset_band: 0.018
+  local_offset_gate_sigma: 0.012
+
+  detail_avatar_gate: false
+  final_carve: false
+  carve_c0: 0.0005
+  avatar_clearance: 0.0005
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  attach_blend_debug: false
+  debug_wrap_radius_stats: true
+  wrap_debug: true 
+  adapt_debug_counts: false
+
+
+
+- target_key: oktopus_9_v1|body
+  accessory_key: knight_10_v1|body
+  mode: direct  
+  wrap_radius: false 
+  rigid_radius: true
+  src_0: 0.4
+  src_1: 1.0
+  tgt_0: 0.15
+  tgt_1: 0.5
+  rot_deg: 180.0
+  tilt_v: 0.0
+  tilt_v_anchor: 0.5
+  cache_as: knight_10_v1_body_rigid
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+  scale: 0.6
+
+  use_accessory_support_clamp: true 
+  support_rho_limit: 0.5
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.15
+  wrap_scale_max: 2.2
+  wrap_adapt_n_keypoints: 4
+  wrap_adapt_smooth_s: 2.0
+  wrap_adapt_smooth_theta: 1.0
+  wrap_adapt_lookup_n: 128
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+
+  smooth_avatar_adapt_fields: true 
+  use_adapt_control_field: true
+  adapt_control_n_keypoints: 4
+  avatar_adapt_smooth_points_sigma: 0.0
+  avatar_adapt_smooth_coords_sigma: .0
+  avatar_adapt_rebuild_frames: true
+  recompute_avatar_local_after_smooth: true
+
+  auto_avatar_snug_field: false 
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+
+
+- target_key: oktopus_9_v1|t1
+  accessory_key: knight_10_v1|l_arm
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.8
+  src_1: 0.5
+  tgt_0: 0.5
+  tgt_1: 0.9
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: knight_10_v1_l_arm_t1_rigid
+
+
+- target_key: oktopus_9_v1|t1
+  accessory_key: knight_10_v1|r_arm
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.8
+  src_1: 0.5
+  tgt_0: 0.9
+  tgt_1: 0.5
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: knight_10_v1_r_arm_t1_rigid
+
+
+- target_key: oktopus_9_v1|t1
+  accessory_key: knight_10_v1|r_arm
+  wrap_radius: True 
+  rigid_radius: False 
+  mode: direct  
+  src_0: 0.9
+  src_1: 0.5
+  tgt_0: 0.9
+  tgt_1: 0.5
+  scale: 0.6
+  rot_deg: 0.0
+  cache_as: knight_10_v1_r_arm_t1_wrap
+
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 12
+  snug_field_n_theta: 12 
+  snug_surface_band: 0.015
+  snug_target_gap: 0.010
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 1.5
+  snug_smooth_theta: 1.5
+  snug_debug: false
+
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+
+- target_key: oktopus_9_v1|t2
+  accessory_key: knight_10_v1|r_arm
+  wrap_radius: True 
+  rigid_radius: False 
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.2
+  tgt_1: 0.9
+  scale: 1.2
+  rot_deg: 0.0
+  cache_as: knight_10_v1_r_arm_t2_wrap
+
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 12
+  snug_field_n_theta: 12 
+  snug_surface_band: 0.015
+  snug_target_gap: 0.010
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 1.5
+  snug_smooth_theta: 1.5
+  snug_debug: false
+
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+
+- target_key: oktopus_9_v1|t3
+  accessory_key: knight_10_v1|r_arm
+  wrap_radius: True 
+  rigid_radius: False 
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.9
+  tgt_1: 0.2
+  scale: 0.7
+  rot_deg: 0.0
+  cache_as: knight_10_v1_r_arm_t3_wrap
+
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 12
+  snug_field_n_theta: 12 
+  snug_surface_band: 0.015
+  snug_target_gap: 0.010
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 1.5
+  snug_smooth_theta: 1.5
+  snug_debug: false
+
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+
+
+- target_key: oktopus_9_v1|t4
+  accessory_key: knight_10_v1|r_arm
+  wrap_radius: True 
+  rigid_radius: False 
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.9
+  tgt_1: 0.2
+  scale: 0.7
+  rot_deg: 0.0
+  cache_as: knight_10_v1_r_arm_t4_wrap
+
+  auto_avatar_snug_field: true 
+  snug_mode: multiplicative
+  snug_field_n_s: 12
+  snug_field_n_theta: 12 
+  snug_surface_band: 0.015
+  snug_target_gap: 0.010
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 1.5
+  snug_smooth_theta: 1.5
+  snug_debug: false
+
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+

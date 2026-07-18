@@ -1,0 +1,18 @@
+- target_key: oktopus_9_v1|t4
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.84
+  scale: 3.5
+  rot_deg: 0.0
+  cache_as: boots_1_v1|t4
+  tloc: [0.0, 0.0, 0.1]
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+

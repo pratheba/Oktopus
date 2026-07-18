@@ -1,0 +1,230 @@
+- target_key: devil_23_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.0
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.9
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true 
+  support_rho_limit: 0.7
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: false 
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 128 
+  snug_field_n_theta: 64
+  snug_surface_band: 0.0015
+  snug_target_gap: 0.0005
+  snug_gain: 5.0
+  snug_min_scale: 0.0
+  snug_max_scale: 0.8
+
+  use_tiled_detail: true 
+  detail_tile_start: 0.1
+  detail_tile_end: 0.80
+
+
+
+- target_key: devil_23_v1|l_arm_1
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.1
+  src_1: 0.9
+  tgt_0: 0.3
+  tgt_1: 0.9
+  scale: 1.0
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 5.0
+  snug_min_scale: 0.0
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+
+- target_key: devil_23_v1|l_arm_2
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.1
+  src_1: 0.9
+  tgt_0: 0.3
+  tgt_1: 0.9
+  scale: 0.9
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 128 
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 5.0
+  snug_min_scale: 0.0
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+
+
+- target_key: devil_23_v1|r_arm_1
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.3
+  src_1: 0.9
+  tgt_0: 0.9
+  tgt_1: 0.3
+  scale: 0.9
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 12 
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 5.0
+  snug_min_scale: 0.0
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+
+
+- target_key: devil_23_v1|r_arm_2
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.3
+  src_1: 0.9
+  tgt_0: 0.9
+  tgt_1: 0.3
+  scale: 1.0
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 0.7
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 12 
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 5.0
+  snug_min_scale: 0.0
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+
+

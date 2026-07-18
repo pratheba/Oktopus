@@ -1,0 +1,21 @@
+# Specify the executable file
+executable = train.sh
+
+# Specify standard output and error files
+LOG_PATH = logs
+log = $(LOG_PATH)/config_grid_b13d3_oktopus_boots1.log 
+output = $(LOG_PATH)/config_grid_b13d3_oktopus_boots1.out 
+error = $(LOG_PATH)/config_grid_b13d3_oktopus_boots1.err 
+
+# Requirements
+request_memory = 100G
+request_cpus = 1
+request_gpus = 1
+request_disk = 100G
+require_gpus = Capability >= 8.0
+requirements = (TARGET.CUDACapability > 8.0 && TARGET.CUDAGlobalMemoryMb >=8192)
++BypassLXCfs="true"
+
+# Specify the number of jobs to run
+queue 1
+

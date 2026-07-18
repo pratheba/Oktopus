@@ -631,4 +631,80 @@ def visualize_keyframes_with_profiles_trimesh(
 
     return scene
 
+def export_adapt_control_rings_ply(
+    self,
+    out_path,
+    coords_query,
+    n_control=6,
+    smooth_points_sigma=2.0,
+    smooth_radius_sigma=2.0,
+    rebuild_frames=True,
+    preserve_endpoints=True,
+    radius_type="train",
+    n_theta=96,
+    stride=1,
+):
+    """
+    Export the actual smoothed control-field rings.
 
+    This shows what build_adapt_control_field() is producing:
+        points + frames + radius
+
+    Use radius_type="train" to see the model/rigid radius.
+    Use radius_type="cylinder" to see the support/cylinder radius.
+    """
+    coords_query = np.asarray(coords_query, dtype=np.float64).reshape(-1)
+
+    ctrl = self.build_adapt_control_field(
+        coords_query,
+        n_control=int(n_control),
+        smooth_points_sigma=float(smooth_points_sigma),
+        smooth_radius_sigma=float(smooth_radius_sigma),
+        rebuild_frames=bool(rebuild_frames),
+        preserve_endpoints=bool(preserve_endpoints),
+        radius_type=radius_type,
+    )
+
+    theta = np.linspace(0.0, 2.0 * np.pi, int(n_theta), endpoint=False)
+
+    pts_all = []
+    for i in range(0, len(coords_query), max(1, int(stride))):
+        C = ctrl["points"][i]
+        F = ctrl["frame"][i]
+        ry, rz = ctrl["radius"][i]
+
+        U = F[1]
+        V = F[2]
+
+        ring = (
+            C[None, :]
+            + (ry * np.cos(theta))[:, None] * U[None, :]
+            + (rz * np.sin(theta))[:, None] * V[None, :]
+        )
+        pts_all.append(ring)
+
+    P = np.vstack(pts_all)
+    P = P[np.isfinite(P).all(axis=1)]
+
+    colors = np.tile(
+        np.array([0, 180, 255, 255], dtype=np.uint8),
+        (P.shape[0], 1),
+    )
+
+    trimesh.points.PointCloud(P, colors=colors).export(out_path)
+
+    print(
+        "[export_adapt_control_rings]",
+        out_path,
+        "radius_type=", radius_type,
+        "n_control=", int(n_control),
+        "smooth_points_sigma=", float(smooth_points_sigma),
+        "smooth_radius_sigma=", float(smooth_radius_sigma),
+        "points=", P.shape[0],
+        "radius min/mean/max=",
+        float(np.min(ctrl["radius"])),
+        float(np.mean(ctrl["radius"])),
+        float(np.max(ctrl["radius"])),
+    )
+
+    return ctrl

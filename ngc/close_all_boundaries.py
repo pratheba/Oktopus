@@ -195,8 +195,92 @@ def signed_area_2d(points: np.ndarray) -> float:
     return 0.5 * float(np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
 
 
+def _normalise(vector: np.ndarray) -> np.ndarray | None:
+    vector = np.asarray(vector, dtype=np.float64)
+    length = float(np.linalg.norm(vector))
+    if not np.isfinite(length) or length < 1.0e-14:
+        return None
+    return vector / length
+
+
+def _newell_normal(points_3d: np.ndarray) -> np.ndarray | None:
+    """Return a Newell polygon normal for an ordered 3D loop."""
+    points_3d = np.asarray(points_3d, dtype=np.float64)
+    shifted = np.roll(points_3d, -1, axis=0)
+    normal = np.array(
+        [
+            np.sum((points_3d[:, 1] - shifted[:, 1])
+                   * (points_3d[:, 2] + shifted[:, 2])),
+            np.sum((points_3d[:, 2] - shifted[:, 2])
+                   * (points_3d[:, 0] + shifted[:, 0])),
+            np.sum((points_3d[:, 0] - shifted[:, 0])
+                   * (points_3d[:, 1] + shifted[:, 1])),
+        ],
+        dtype=np.float64,
+    )
+    return _normalise(normal)
+
+
+def _plane_basis_from_normal(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    normal = _normalise(normal)
+    if normal is None:
+        raise BoundaryError("Cannot construct a plane from a zero normal.")
+
+    # Choose the coordinate axis least parallel to the normal.
+    helpers = np.eye(3, dtype=np.float64)
+    helper = helpers[int(np.argmin(np.abs(helpers @ normal)))]
+
+    axis_u = _normalise(np.cross(normal, helper))
+    if axis_u is None:
+        raise BoundaryError("Failed to construct the first plane axis.")
+
+    axis_v = _normalise(np.cross(normal, axis_u))
+    if axis_v is None:
+        raise BoundaryError("Failed to construct the second plane axis.")
+
+    return axis_u, axis_v
+
+
+def _fibonacci_sphere_directions(count: int) -> list[np.ndarray]:
+    """Deterministic, approximately uniform unit directions."""
+    count = max(1, int(count))
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+    directions: list[np.ndarray] = []
+
+    for index in range(count):
+        z = 1.0 - 2.0 * (index + 0.5) / count
+        radius = np.sqrt(max(0.0, 1.0 - z * z))
+        phi = golden_angle * index
+        directions.append(
+            np.array(
+                [radius * np.cos(phi), radius * np.sin(phi), z],
+                dtype=np.float64,
+            )
+        )
+
+    return directions
+
+
+def _project_loop_with_normal(
+    points_3d: np.ndarray,
+    normal: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    center = np.asarray(points_3d, dtype=np.float64).mean(axis=0)
+    centered = np.asarray(points_3d, dtype=np.float64) - center
+    axis_u, axis_v = _plane_basis_from_normal(normal)
+    points_2d = np.column_stack((centered @ axis_u, centered @ axis_v))
+
+    # Make the cap-directed loop counter-clockwise in the projected plane.
+    if signed_area_2d(points_2d) < 0.0:
+        axis_v = -axis_v
+        points_2d[:, 1] *= -1.0
+
+    return points_2d, center, axis_u, axis_v
+
+
 def project_loop_to_best_fit_plane(points_3d: np.ndarray):
-    """Return 2D coordinates and an orthonormal PCA plane basis."""
+    """Return the traditional PCA projection used by earlier versions."""
+    points_3d = np.asarray(points_3d, dtype=np.float64)
     center = points_3d.mean(axis=0)
     centered = points_3d - center
 
@@ -208,12 +292,98 @@ def project_loop_to_best_fit_plane(points_3d: np.ndarray):
     axis_v = vh[1]
     points_2d = np.column_stack((centered @ axis_u, centered @ axis_v))
 
-    # Make the cap-directed loop counter-clockwise in the projected plane.
     if signed_area_2d(points_2d) < 0.0:
         axis_v = -axis_v
         points_2d[:, 1] *= -1.0
 
     return points_2d, center, axis_u, axis_v
+
+
+def project_loop_to_valid_plane(
+    points_3d: np.ndarray,
+    search_direction_count: int = 96,
+):
+    """
+    Find a non-self-intersecting orthographic projection of a 3D loop.
+
+    A strongly non-planar boundary can self-intersect in its PCA projection
+    even when the 3D boundary itself is a perfectly valid simple loop.  Try
+    PCA, Newell, coordinate-axis and deterministic spherical directions, then
+    retain the valid projection with the largest projected area.
+    """
+    points_3d = np.asarray(points_3d, dtype=np.float64)
+    if len(points_3d) < 3:
+        raise BoundaryError("A boundary loop needs at least three vertices.")
+
+    centered = points_3d - points_3d.mean(axis=0)
+    _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+    if len(singular_values) < 2 or singular_values[1] < 1.0e-12:
+        raise BoundaryError("Boundary loop is degenerate or nearly collinear.")
+
+    candidate_normals: list[np.ndarray] = []
+
+    if vh.shape[0] >= 3:
+        candidate_normals.append(np.asarray(vh[2], dtype=np.float64))
+
+    newell = _newell_normal(points_3d)
+    if newell is not None:
+        candidate_normals.append(newell)
+
+    candidate_normals.extend(np.eye(3, dtype=np.float64))
+    candidate_normals.extend(
+        _fibonacci_sphere_directions(search_direction_count)
+    )
+
+    # Remove duplicate planes. n and -n describe the same projection plane.
+    unique_normals: list[np.ndarray] = []
+    for normal in candidate_normals:
+        normal = _normalise(normal)
+        if normal is None:
+            continue
+        if any(abs(float(np.dot(normal, previous))) > 1.0 - 1.0e-8
+               for previous in unique_normals):
+            continue
+        unique_normals.append(normal)
+
+    best = None
+    best_score = -np.inf
+    attempted = 0
+
+    for normal in unique_normals:
+        attempted += 1
+        try:
+            projection = _project_loop_with_normal(points_3d, normal)
+        except BoundaryError:
+            continue
+
+        points_2d = projection[0]
+        bbox_diag = float(np.linalg.norm(np.ptp(points_2d, axis=0)))
+        area_tolerance = max(
+            1.0e-16,
+            1.0e-14 * max(bbox_diag * bbox_diag, 1.0),
+        )
+
+        polygon = Polygon(points_2d)
+        if polygon.is_empty:
+            continue
+        if not polygon.is_valid or not polygon.exterior.is_simple:
+            continue
+        if float(polygon.area) <= area_tolerance:
+            continue
+
+        # Prefer a projection far from edge-on degeneracy.
+        score = float(polygon.area)
+        if score > best_score:
+            best = projection
+            best_score = score
+
+    if best is None:
+        raise BoundaryError(
+            "No non-self-intersecting planar projection was found for this "
+            f"non-planar boundary loop after testing {attempted} planes."
+        )
+
+    return best
 
 
 def triangulate_boundary_loop(
@@ -223,7 +393,7 @@ def triangulate_boundary_loop(
 ) -> np.ndarray:
     """Triangulate one (possibly concave) simple boundary loop."""
     points_3d = vertices[loop]
-    points_2d, _, _, _ = project_loop_to_best_fit_plane(points_3d)
+    points_2d, _, _, _ = project_loop_to_valid_plane(points_3d)
 
     polygon = Polygon(points_2d)
     if polygon.is_empty or polygon.area <= 1e-16:
@@ -440,7 +610,7 @@ def triangulate_boundary_loop_ear_clip(
     """
     loop = np.asarray(loop, dtype=np.int64)
     points_3d = np.asarray(vertices, dtype=np.float64)[loop]
-    points_2d, _, _, _ = project_loop_to_best_fit_plane(points_3d)
+    points_2d, _, _, _ = project_loop_to_valid_plane(points_3d)
 
     polygon = Polygon(points_2d)
     if polygon.is_empty or polygon.area <= 1e-16:
@@ -619,6 +789,115 @@ def triangulate_boundary_loop_ear_clip(
     return result
 
 
+def triangulate_boundary_loop_center_fan(
+    vertices: np.ndarray,
+    loop: np.ndarray,
+    source_faces: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Last-resort non-planar cap using one new Steiner vertex.
+
+    This fallback does not require a globally valid 2D projection.  Every
+    original boundary edge receives exactly one cap triangle and every new
+    center-to-boundary edge receives exactly two cap triangles, so the result
+    is topologically closed.  It is intended for SDF-oracle closure of highly
+    folded/non-planar cut boundaries.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    loop = np.asarray(loop, dtype=np.int64)
+    points = vertices[loop]
+
+    edge_vectors = np.roll(points, -1, axis=0) - points
+    edge_lengths = np.linalg.norm(edge_vectors, axis=1)
+    scale = float(np.linalg.norm(np.ptp(points, axis=0)))
+    if not np.isfinite(scale) or scale < 1.0e-12:
+        raise BoundaryError("Cannot fan-cap a degenerate boundary loop.")
+
+    mean_center = points.mean(axis=0)
+    median_center = np.median(points, axis=0)
+
+    length_sum = float(edge_lengths.sum())
+    if length_sum > 1.0e-14:
+        edge_midpoints = 0.5 * (points + np.roll(points, -1, axis=0))
+        weighted_center = np.sum(
+            edge_midpoints * edge_lengths[:, None],
+            axis=0,
+        ) / length_sum
+    else:
+        weighted_center = mean_center
+
+    normals: list[np.ndarray] = []
+    newell = _newell_normal(points)
+    if newell is not None:
+        normals.append(newell)
+
+    centered = points - mean_center
+    _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+    if len(singular_values) >= 2 and singular_values[1] >= 1.0e-12:
+        if vh.shape[0] >= 3:
+            pca_normal = _normalise(vh[2])
+            if pca_normal is not None:
+                normals.append(pca_normal)
+
+    if not normals:
+        normals.append(np.array([0.0, 0.0, 1.0], dtype=np.float64))
+
+    base_centers = [mean_center, weighted_center, median_center]
+    relative_offsets = [0.0, 1.0e-4, -1.0e-4, 1.0e-3, -1.0e-3,
+                        1.0e-2, -1.0e-2, 5.0e-2, -5.0e-2]
+
+    area_tolerance = max(1.0e-18, 1.0e-14 * scale * scale)
+    best = None
+    best_min_area = -np.inf
+
+    for base_center in base_centers:
+        for normal in normals:
+            for relative_offset in relative_offsets:
+                center = base_center + relative_offset * scale * normal
+                center_id = len(vertices)
+                cap_faces = np.column_stack(
+                    [
+                        loop,
+                        np.roll(loop, -1),
+                        np.full(len(loop), center_id, dtype=np.int64),
+                    ]
+                ).astype(np.int64)
+
+                tri_a = points
+                tri_b = np.roll(points, -1, axis=0)
+                doubled_areas = np.linalg.norm(
+                    np.cross(tri_b - tri_a, center[None, :] - tri_a),
+                    axis=1,
+                )
+                min_area = float(np.min(doubled_areas))
+                if not np.isfinite(min_area) or min_area <= area_tolerance:
+                    continue
+
+                errors = _validate_cap_against_source(
+                    source_faces,
+                    loop,
+                    cap_faces,
+                )
+                if errors:
+                    continue
+
+                # Prefer the most numerically stable fan.  Zero-offset
+                # candidates are encountered first when equally stable.
+                if min_area > best_min_area:
+                    best = (center, cap_faces)
+                    best_min_area = min_area
+
+    if best is None:
+        raise BoundaryError(
+            "Failed to construct a non-degenerate center-fan cap for the "
+            "non-planar boundary loop."
+        )
+
+    center, cap_faces = best
+    vertices_out = np.vstack([vertices, center[None, :]])
+    return vertices_out, cap_faces
+
+
 def describe_boundaries(mesh: trimesh.Trimesh):
     boundary, directed, nonmanifold = edge_topology(mesh.faces)
     components = connected_boundary_components(boundary)
@@ -641,6 +920,7 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
     directed_set = {(int(a), int(b)) for a, b in directed}
     loops: list[np.ndarray] = []
     all_cap_faces: list[np.ndarray] = []
+    working_vertices = np.asarray(mesh.vertices, dtype=np.float64).copy()
 
     for component_id, edge_ids in enumerate(components):
         component_edges = boundary[edge_ids]
@@ -648,16 +928,13 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
 
         delaunay_failure = None
         try:
-            cap_faces = triangulate_boundary_loop(mesh.vertices, loop)
+            cap_faces = triangulate_boundary_loop(working_vertices, loop)
             cap_errors = _validate_cap_against_source(
                 mesh.faces,
                 loop,
                 cap_faces,
             )
         except BoundaryError as exc:
-            # Delaunay can fail even when a valid cap exists, for example when
-            # Shapely returns fewer than n-2 triangles after filtering. Treat
-            # any Delaunay failure as a reason to try the constrained fallback.
             delaunay_failure = str(exc)
             cap_errors = []
 
@@ -678,21 +955,55 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
                 for error in cap_errors:
                     print(f"    {error}")
 
-            cap_faces = triangulate_boundary_loop_ear_clip(
-                mesh.vertices,
-                loop,
-                mesh.faces,
-            )
-            cap_errors = _validate_cap_against_source(
-                mesh.faces,
-                loop,
-                cap_faces,
-            )
+            ear_failure = None
+            try:
+                cap_faces = triangulate_boundary_loop_ear_clip(
+                    working_vertices,
+                    loop,
+                    mesh.faces,
+                )
+                cap_errors = _validate_cap_against_source(
+                    mesh.faces,
+                    loop,
+                    cap_faces,
+                )
+                if cap_errors:
+                    raise BoundaryError(
+                        "Constrained cap failed topology validation: "
+                        + "; ".join(cap_errors)
+                    )
+            except BoundaryError as exc:
+                ear_failure = str(exc)
 
-            if cap_errors:
-                raise BoundaryError(
-                    "Constrained cap failed topology validation: "
-                    + "; ".join(cap_errors)
+            if ear_failure is not None:
+                print(
+                    f"  boundary {component_id:02d}: "
+                    "constrained ear clipping failed; "
+                    "using non-planar center-fan fallback"
+                )
+                print(f"    {ear_failure}")
+
+                working_vertices, cap_faces = (
+                    triangulate_boundary_loop_center_fan(
+                        working_vertices,
+                        loop,
+                        mesh.faces,
+                    )
+                )
+                cap_errors = _validate_cap_against_source(
+                    mesh.faces,
+                    loop,
+                    cap_faces,
+                )
+                if cap_errors:
+                    raise BoundaryError(
+                        "Center-fan cap failed topology validation: "
+                        + "; ".join(cap_errors)
+                    )
+
+                print(
+                    f"    added one Steiner cap vertex at index "
+                    f"{len(working_vertices) - 1}"
                 )
 
         loops.append(loop)
@@ -704,7 +1015,7 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
 
     cap_faces_all = np.vstack(all_cap_faces)
     closed = trimesh.Trimesh(
-        vertices=np.asarray(mesh.vertices).copy(),
+        vertices=working_vertices,
         faces=np.vstack(
             (
                 np.asarray(mesh.faces, dtype=np.int64),
@@ -714,8 +1025,6 @@ def close_all_boundaries(mesh: trimesh.Trimesh):
         process=False,
     )
 
-    # Do not silently delete cap faces after insertion. The source was already
-    # cleaned in load_triangle_mesh(), and every cap was validated above.
     boundary_after, _, nonmanifold_after, _, _ = describe_boundaries(closed)
 
     if len(boundary_after) != 0:

@@ -1,17 +1,15 @@
-
 - target_key: armadillo_13_v1|body
   accessory_key: dress_2_v1|top
   mode: direct
   cache_as: dress_bottom_upper
 
-  src_0: 0.2
-  src_1: 0.55
+  src_0: 0.3
+  src_1: 0.7
 
   tgt_0: 0.2
   tgt_1: 0.9
 
   rot_deg: 0.0
-  tloc: [0.0, 0.0, 0.0]
 
   avatar_cylinder_radius_scale: 1.0
   avatar_cylinder_radius_add: 0.0
@@ -20,7 +18,7 @@
 
   wrap_radius: true
   rigid_radius: false
-  scale: 0.7
+  scale: 1.0
 
   use_accessory_support_clamp: true
   support_rho_limit: 1.0
@@ -40,15 +38,19 @@
   auto_avatar_snug_field: true
   use_soft_snug: false
   use_hard_avatar_clamp: false
-  cut_avatar: true
+  cut_avatar: false
 
   snug_field_n_s: 24
   snug_field_n_theta: 48
   snug_surface_band: 0.015
   snug_target_gap: 0.005
-  snug_gain: 2.0
+  snug_gain: 1.0
   snug_min_scale: 0.9
   snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
 
 #=================== BOTTOM ==============================
 - target_key: armadillo_13_v1|body
@@ -59,13 +61,13 @@
   src_0: 0.45
   src_1: 1.0
 
-  tgt_0: 0.1
+  tgt_0: 0.0
   tgt_1: 0.9
 
   rot_deg: 0.0
   tloc: [0.0, 0.00, 0.0]
-  tilt_u: 5.0
-  tilt_u_anchor: 0.1
+  tilt_u: 0.0
+  tilt_u_anchor: 0.0
   tilt_v: 0.0
   tilt_v_anchor: 0.0
 
@@ -81,26 +83,25 @@
 
 
   wrap_scale_min: 0.15
-  wrap_scale_max: 2.2
+  wrap_scale_max: 3.0
   wrap_adapt_n_keypoints: 4
   wrap_adapt_smooth_s: 8.0
   wrap_adapt_smooth_theta: 4.0
   wrap_adapt_lookup_n: 128
-  debug_export_wrap_used: false
-  use_adapt_control_filter_grid: false
+  debug_export_wrap_used: true
 
   avatar_cylinder_radius_scale: 1.0
   avatar_cylinder_radius_add: 0.0
   adapt_localize_norm: 3.0
   adapt_use_owned_gate: false
 
-  use_accessory_support_clamp: true
+  use_accessory_support_clamp: true 
   support_rho_limit: 1.0
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
 
-  use_adapt_control_field: false
+  use_adapt_control_field: true
   adapt_control_n_keypoints: 12
   avatar_control_smooth_points_sigma: 8.0
   avatar_control_smooth_radius_sigma: 0.0
@@ -115,8 +116,8 @@
   attach_s1: 0.15
   unified_release_band: 0.05
   unified_flare_end: 0.25
-  unified_flare_gain: 0.7
-  unified_hold_umbrella: true 
+  unified_flare_gain: 1.30
+  unified_hold_umbrella: true
 
 
 
@@ -151,20 +152,15 @@
   mode: direct
   cache_as: dress_bottom_upper
 
-  src_0: 0.45
+  src_0: 0.55
   src_1: 1.0
 
-  tgt_0: 0.1
-  tgt_1: 0.9
+  tgt_0: 0.0
+  tgt_1: 1.0
 
   rot_deg: 0.0
-  tloc: [0.0, 0.00, 0.0]
-  tilt_u: 5.0
-  tilt_u_anchor: 0.1
-  tilt_v: 0.0
-  tilt_v_anchor: 0.0
 
-  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_scale: 3.0
   avatar_cylinder_radius_add: 0.0
   adapt_localize_norm: 1.0
   adapt_use_owned_gate: false
@@ -172,12 +168,12 @@
 
   wrap_radius: true
   rigid_radius: false
-  scale: 0.7
+  scale: 1.0
 
   use_accessory_support_clamp: true
   support_soft_clamp: true
   support_rho_limit: 1.00
-  support_rho_fade_limit: 2.2
+  support_rho_fade_limit: 2.80
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
@@ -187,10 +183,10 @@
   attach_blend_coord: accessory
   attach_coord_space: relative
   attach_s0: 0.00
-  attach_s1: 0.15
-  free_grow_start: 0.15
-  free_grow_end: 0.25
-  free_hold_gain: 0.7
+  attach_s1: 0.00
+  free_grow_start: 0.00
+  free_grow_end: 0.1
+  free_hold_gain: 1.00
 
 
   wrap_scale_min: 0.7
@@ -228,18 +224,13 @@
   mode: direct
   cache_as: dress_bottom_upper
 
-  src_0: 0.45
+  src_0: 0.55
   src_1: 1.0
 
-  tgt_0: 0.1
+  tgt_0: 0.2
   tgt_1: 0.9
 
   rot_deg: 0.0
-  tloc: [0.0, 0.0, 0.1]
-  tilt_u: 5.0
-  tilt_u_anchor: 0.1
-  tilt_v: 0.0
-  tilt_v_anchor: 0.0
 
   avatar_cylinder_radius_scale: 3.0
   avatar_cylinder_radius_add: 0.0
@@ -249,7 +240,7 @@
 
   wrap_radius: true
   rigid_radius: false
-  scale: 0.7
+  scale: 1.0
 
   use_accessory_support_clamp: true
   support_soft_clamp: true
@@ -264,16 +255,16 @@
   attach_blend_coord: accessory
   attach_coord_space: relative
   attach_s0: 0.00
-  attach_s1: 0.15
+  attach_s1: 0.00
 
 
   free_scale: 1.0
   use_free_profile_scale: true
   profile_type: ramp
-  free_profile_start: 0.15
-  free_profile_end: 0.25
-  free_profile_gain: 1.0
-  free_profile_attach_gap: 0.04
+  free_profile_start: 0.00
+  free_profile_end: 0.1
+  free_profile_gain: 0.5
+  free_profile_attach_gap: 0.00
   
   wrap_scale_min: 0.7
   wrap_scale_max: 1.4
@@ -311,18 +302,13 @@
   mode: direct
   cache_as: dress_bottom_upper
 
-  src_0: 0.45
+  src_0: 0.55
   src_1: 1.0
 
-  tgt_0: 0.1
+  tgt_0: 0.2
   tgt_1: 0.9
 
-  rot_deg: 0.0
-  tloc: [0.0, 0.00, 0.1]
-  tilt_u: 5.0
-  tilt_u_anchor: 0.1
-  tilt_v: 0.0
-  tilt_v_anchor: 0.0
+  rot_deg: 180.0
 
   avatar_cylinder_radius_scale: 3.0
   avatar_cylinder_radius_add: 0.0
@@ -354,7 +340,7 @@
   free_scale: 1.35
   use_free_profile_scale: true 
   
-  wrap_scale_min: 0.15
+  wrap_scale_min: 0.5
   wrap_scale_max: 3.0
 
   auto_avatar_snug_field: false

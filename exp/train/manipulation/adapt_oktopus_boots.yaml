@@ -1,0 +1,151 @@
+- target_key: oktopus_9_v1|t1
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.2
+  tgt_0: 0.85
+  tgt_1: 0.0
+  scale: 5.5
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 1.0
+  snug_min_scale: 0.95
+  snug_max_scale: 1.05
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+  attach_blend_debug: false 
+  wrap_debug: true
+  adapt_debug_counts: true
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+  blend_group: boot
+  mesh_blend_delta: 0.005
+
+
+- target_key: oktopus_9_v1|t2
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 5.5
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+- target_key: oktopus_9_v1|t3
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.82
+  scale: 4.0
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+- target_key: oktopus_9_v1|t4
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 4.0
+  rot_deg: 0.0
+
+- target_key: oktopus_9_v1|t5
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.8
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.82
+  scale: 2.0
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+
+- target_key: oktopus_9_v1|t6
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.85
+  tgt_1: 0.0
+  scale: 6.0
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+
+
+- target_key: oktopus_9_v1|t7
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.5
+  src_1: 1.0
+  tgt_0: 0.0
+  tgt_1: 0.82
+  scale: 6.0
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0
+
+
+- target_key: oktopus_9_v1|t8
+  accessory_key: boots_1_v1|boot
+  wrap_radius: False
+  rigid_radius: True
+  mode: direct  
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.82
+  tgt_1: 0.0
+  scale: 6.5
+  rot_deg: 0.0
+  cache_as: boots_1_v1|0

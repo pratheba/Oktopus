@@ -1,0 +1,199 @@
+# have been evaluated and merged into the combined SDF grid.
+# Save each adaptation independently as 0_..., 1_..., ... .
+# Union/blending is intentionally a separate opt-in task.
+combine_adaptations: false
+
+surface_extraction:
+  method: mc #reach_for_the_arcs
+
+  # Limit the number of active grid samples passed to RFTA.
+  max_samples: 150000
+  near_surface_fraction: 1.0
+  rng_seed: 3452
+
+  # RFTA interprets |SDF| as a geometric distance. Keep 1.0 only when the
+  # predicted SDF already uses the same units as mc_grid.idx2pts().
+  sdf_scale: 1.0
+  level: 0.0
+
+  # Drop large/artificial support values before RFTA. In particular, the
+  # support clamp below writes +1.0 as an outside marker; that is not a
+  # metric sphere radius and must not reach RFTA. Tune this after checking
+  # the printed |sdf| percentiles.
+  max_abs_sdf: 0.05
+
+  # Use .inf when the network SDF is not explicitly truncated/clamped.
+  # Replace this with the actual world-unit truncation distance for a TSDF.
+  clamp_value: .inf
+
+  fine_tune_iters: 1
+  batch_size: 3000
+  screening_weight: 10.0
+  rasterization_resolution: 160
+  max_points_per_sphere: 1
+  n_local_searches: 16
+  local_search_iters: 8
+  local_search_t: 0.01
+  tol: 0.0001
+
+  force_cpu: false
+  parallel: true
+  verbose: true
+  process_mesh: false
+  fix_normals: false
+
+  # Keep the old Marching Cubes path available while testing.
+  fallback_to_marching_cubes: false
+
+# Both entries below execute independently. They currently use the same
+# target key but different adaptation parameters. Change the second
+# target_key when it is intended for a different avatar curve.
+adaptations:
+- name: puffer_body_wrap
+  target_key: oktopus_9_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.4
+  src_1: 0.9
+  tgt_0: 0.1
+  tgt_1: 0.5
+  scale: 0.8
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+
+  use_accessory_support_clamp: true 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  #tilt_v: 2.0
+  #tilt_v_anchor: 1.0
+  #tilt_v_end: 0.0
+
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 4.0
+  snug_min_scale: 0.0
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.0001
+  avatar_clearance: 0.0001
+  cut_avatar: true 
+
+
+- name: puffer_body_rigid
+  target_key: oktopus_9_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.4
+  src_1: 1.0
+  tgt_0: 0.1
+  tgt_1: 0.5
+  scale: 0.8
+  rot_deg: 0.0
+  wrap_radius: false 
+  rigid_radius: true
+
+  use_accessory_support_clamp: false 
+  tloc: [0.0, 0.0, 0.05]
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+
+  tilt_v: 4.0
+  tilt_v_anchor: 0.5
+  tilt_v_end: 0.1
+
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.0
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.0001
+  avatar_clearance: 0.0001
+  cut_avatar: true 
+
+
+- name: puffer_body_rigid
+  target_key: oktopus_9_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.4
+  src_1: 1.0
+  tgt_0: 0.1
+  tgt_1: 0.5
+  scale: 0.9
+  rot_deg: 0.0
+  wrap_radius: false 
+  rigid_radius: true
+
+  tloc: [0.0, 0.0, 0.05]
+  tilt_v: 2.0
+  tilt_v_anchor: 0.5
+  tilt_v_end: 0.1
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  # Main correction: geometric snug field
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.0
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  # Disable these in first test
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.0001
+  avatar_clearance: 0.0001
+  cut_avatar: true 
