@@ -288,7 +288,18 @@ class AgentUDF(AgentBase):
                 pp = pts.copy(); pp[:, a] += eps
                 pm = pts.copy(); pm[:, a] -= eps
                 g[:, a] = (_q(pp) - _q(pm)) / (2.0 * eps)
-            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
+            _gn = np.linalg.norm(g, axis=1)
+            if getattr(self, "_udf_grad_dbg", 0) < 10:
+                print("[udf grad]", "query=", int(pts.shape[0]),
+                      "cube_d_min/med/max=",
+                      ((round(float(d.min()), 5), round(float(np.median(d)), 5),
+                        round(float(d.max()), 5)) if d.size else None),
+                      "|g| min/med/max=",
+                      ((round(float(_gn.min()), 4), round(float(np.median(_gn)), 4),
+                        round(float(_gn.max()), 4)) if _gn.size else None),
+                      "zero_grad=", int((_gn < 1e-8).sum()))
+                self._udf_grad_dbg = getattr(self, "_udf_grad_dbg", 0) + 1
+            nrm = _gn.reshape(-1, 1); nrm[nrm == 0] = 1.0
             return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
 
         max_depth = int(config.get('udf_max_depth',
@@ -732,18 +743,58 @@ class AgentUDF(AgentBase):
                     print("[udf prepass] no finite udf values on support")
 
                 if requested_extractor == 'dualmeshudf_model':
+                    from scipy.spatial import cKDTree as _cKDTree
                     _oracle_arg = dict(adapt_arg)
                     _oracle_arg['adapt_debug_counts'] = False
                     _oracle_arg['debug_interval_projection'] = False
                     _far = float(extraction_config.get('udf_far_value', 1.0))
                     _dbg = bool(extraction_config.get('udf_oracle_debug', True))
+                    _trunc = float(extraction_config.get('udf_truncation', 0.1))
+
+                    # World points localize operates on (oracle frame), aligned
+                    # with udf_vals; used for BOTH the shell KDTree and the bbox.
+                    if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
+                        _sw = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
+                    else:
+                        _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
+                    _aligned = (_sw.shape[0] == udf_vals.shape[0])
+
+                    # DualMeshUDF needs a field with a real (unit) gradient to
+                    # navigate its octree and solve each cell's QEF. The trained
+                    # UDF is TRUNCATED (flat ~trunc off-surface) and points
+                    # outside the support are far_value -- both flat, zero
+                    # gradient -> it finds near-zero points but places no
+                    # vertices (V=0). Rebuild a real distance continuation from
+                    # the near-surface shell points (analytic EDT via a KDTree),
+                    # refined by the model UDF where the model is inside its
+                    # trusted band. Continuous analogue of the grid path's
+                    # np.where(near, raw, band+edt).
+                    _shell_band = float(extraction_config.get('udf_shell_band_world', 0.02))
+                    _shell = None
+                    if _aligned:
+                        _sm = udf_vals < _shell_band
+                        if int(_sm.sum()) < 16:
+                            _sm = udf_vals < (2.0 * _shell_band)
+                        if int(_sm.sum()) >= 4:
+                            _shell = _sw[_sm]
+                    _tree = _cKDTree(_shell) if _shell is not None else None
+                    print("[udf shell] band=", _shell_band,
+                          "n_shell=", (int(_shell.shape[0]) if _shell is not None else 0),
+                          "continuation=", ("KDTree" if _tree is not None else "far_value"))
 
                     def _udf_point_fn(world_pts, _self=self, _c=curve,
                                       _aa=_oracle_arg, _k=accessory_key,
-                                      _bs=int(batch_size), _far=_far, _dbg=_dbg):
+                                      _bs=int(batch_size), _far=_far, _dbg=_dbg,
+                                      _tree=_tree, _trunc=_trunc):
                         world_pts = np.asarray(
                             world_pts, dtype=np.float64).reshape(-1, 3)
-                        out = np.full(world_pts.shape[0], _far, dtype=np.float64)
+                        # continuation field: true distance to the shell (unit
+                        # gradient everywhere), so the octree can always descend.
+                        if _tree is not None:
+                            out = np.asarray(_tree.query(world_pts)[0],
+                                             dtype=np.float64).reshape(-1)
+                        else:
+                            out = np.full(world_pts.shape[0], _far, dtype=np.float64)
                         idx = np.zeros(0, dtype=np.int64)
                         d = np.zeros(0, dtype=np.float64)
                         try:
@@ -756,7 +807,10 @@ class AgentUDF(AgentBase):
                                         acc_d, _k, batch_size=_bs)
                                     d = _self._udf_clamp(acc_o["dist"]).reshape(-1)
                                     n = min(idx.size, d.size)
-                                    out[idx[:n]] = d[:n]
+                                    # refine with the model only where it is inside
+                                    # its trusted band (not saturated at trunc).
+                                    _tr = d[:n] < (0.9 * _trunc)
+                                    out[idx[:n][_tr]] = d[:n][_tr]
                         except Exception:
                             pass
                         if _dbg and getattr(_self, "_udf_oracle_dbg", 0) < 15:
@@ -764,29 +818,22 @@ class AgentUDF(AgentBase):
                             print("[udf oracle]",
                                   "query=", int(world_pts.shape[0]),
                                   "inside=", int(idx.size),
-                                  "d_min/med/max=",
+                                  "model_d_min/med/max=",
                                   ((round(float(_f.min()), 5),
                                     round(float(np.median(_f)), 5),
                                     round(float(_f.max()), 5)) if _f.size else None),
-                                  "near003=", int((d < 0.03).sum()) if d.size else 0,
-                                  "near005=", int((d < 0.05).sum()) if d.size else 0)
+                                  "out_min/max=",
+                                  (round(float(out.min()), 5), round(float(out.max()), 5)))
                             _self._udf_oracle_dbg = getattr(_self, "_udf_oracle_dbg", 0) + 1
                         return out
 
-                    # domain = bbox of the world points localize operates on
-                    # (avatar_data['samples'], oracle frame; idx2pts fallback).
-                    if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
-                        _sw = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
-                    else:
-                        _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
-                    # Optionally tighten the search cube to the NEAR-UDF shell:
-                    # the full support bbox spans the whole elongated tentacle, so
-                    # the thin puffer shell is only a small fraction of a big cube.
+                    # Optionally shrink the octree cube to the NEAR-UDF shell:
+                    # the full support bbox spans the whole elongated tentacle.
                     _nb = float(extraction_config.get('udf_domain_near_band_world', 0.0))
                     _minnear = int(extraction_config.get('udf_domain_min_near', 64))
                     _used = "full-support"
                     _domain_pts = _sw
-                    if _nb > 0.0 and _sw.shape[0] == udf_vals.shape[0]:
+                    if _nb > 0.0 and _aligned:
                         _mask = udf_vals < _nb
                         if int(_mask.sum()) >= _minnear:
                             _domain_pts = _sw[_mask]
