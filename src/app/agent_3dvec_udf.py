@@ -320,8 +320,10 @@ class AgentUDF(AgentBase):
                                    process=False)
 
         edt = distance_transform_edt(~near).astype(np.float64) * step
-        vol = np.where(near, raw, surface_band + edt)   # thin zero-set + EDT cont.
-        fill = float(surface_band + edt.max()) if edt.size else 1.0
+        #vol = np.where(near, raw, surface_band + edt)   # thin zero-set + EDT cont.
+        #fill = float(surface_band + edt.max()) if edt.size else 1.0
+        vol = edt
+        fill = float(vol.max()) if vol.size else 1.0
         interp = RegularGridInterpolator(
             (np.arange(N1), np.arange(N1), np.arange(N1)), vol,
             method='linear', bounds_error=False, fill_value=fill)
