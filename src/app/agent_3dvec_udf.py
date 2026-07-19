@@ -717,52 +717,91 @@ class AgentUDF(AgentBase):
                 # --- true-UDF finalize: clamp only; NO signed base/detail/carve ---
                 udf_vals = self._udf_clamp(acc_vals)
 
+                # PREPASS DIAGNOSTIC (free: acc_vals is the network UDF on the
+                # accepted support points, aligned with kidx / avatar samples).
+                # Answers "does the trained UDF actually reach ~0 on the support?"
+                _fin = udf_vals[np.isfinite(udf_vals)]
+                if _fin.size:
+                    _pc = np.percentile(_fin, [0, 1, 5, 25, 50, 95, 100]).tolist()
+                    print("[udf prepass]", "n=", int(udf_vals.size),
+                          "pct[0,1,5,25,50,95,100]=", [round(float(x), 5) for x in _pc],
+                          "near003=", int((udf_vals < 0.03).sum()),
+                          "near005=", int((udf_vals < 0.05).sum()),
+                          "near010=", int((udf_vals < 0.10).sum()))
+                else:
+                    print("[udf prepass] no finite udf values on support")
+
                 if requested_extractor == 'dualmeshudf_model':
                     _oracle_arg = dict(adapt_arg)
                     _oracle_arg['adapt_debug_counts'] = False
                     _oracle_arg['debug_interval_projection'] = False
                     _far = float(extraction_config.get('udf_far_value', 1.0))
+                    _dbg = bool(extraction_config.get('udf_oracle_debug', True))
 
                     def _udf_point_fn(world_pts, _self=self, _c=curve,
                                       _aa=_oracle_arg, _k=accessory_key,
-                                      _bs=int(batch_size), _far=_far):
+                                      _bs=int(batch_size), _far=_far, _dbg=_dbg):
                         world_pts = np.asarray(
                             world_pts, dtype=np.float64).reshape(-1, 3)
                         out = np.full(world_pts.shape[0], _far, dtype=np.float64)
+                        idx = np.zeros(0, dtype=np.int64)
+                        d = np.zeros(0, dtype=np.float64)
                         try:
                             acc_d, _av, inside = _c.core.localize_samples_adapt(
                                 world_pts, _aa)
+                            if acc_d is not None:
+                                idx = np.asarray(inside, dtype=np.int64).reshape(-1)
+                                if idx.size:
+                                    acc_o = _self._inference_full_vals(
+                                        acc_d, _k, batch_size=_bs)
+                                    d = _self._udf_clamp(acc_o["dist"]).reshape(-1)
+                                    n = min(idx.size, d.size)
+                                    out[idx[:n]] = d[:n]
                         except Exception:
-                            return out
-                        if acc_d is None:
-                            return out
-                        idx = np.asarray(inside, dtype=np.int64).reshape(-1)
-                        if idx.size == 0:
-                            return out
-                        acc_o = _self._inference_full_vals(acc_d, _k, batch_size=_bs)
-                        d = _self._udf_clamp(acc_o["dist"]).reshape(-1)
-                        n = min(idx.size, d.size)
-                        out[idx[:n]] = d[:n]
+                            pass
+                        if _dbg and getattr(_self, "_udf_oracle_dbg", 0) < 15:
+                            _f = d[np.isfinite(d)] if d.size else d
+                            print("[udf oracle]",
+                                  "query=", int(world_pts.shape[0]),
+                                  "inside=", int(idx.size),
+                                  "d_min/med/max=",
+                                  ((round(float(_f.min()), 5),
+                                    round(float(np.median(_f)), 5),
+                                    round(float(_f.max()), 5)) if _f.size else None),
+                                  "near003=", int((d < 0.03).sum()) if d.size else 0,
+                                  "near005=", int((d < 0.05).sum()) if d.size else 0)
+                            _self._udf_oracle_dbg = getattr(_self, "_udf_oracle_dbg", 0) + 1
                         return out
 
-                    # domain = bbox of the world points localize actually
-                    # operates on (avatar_data['samples'], oracle frame);
-                    # fall back to the inside grid points if absent.
-                    _dom = None
+                    # domain = bbox of the world points localize operates on
+                    # (avatar_data['samples'], oracle frame; idx2pts fallback).
                     if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
-                        _dom = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
-                    if _dom is None or _dom.size == 0:
-                        _dom = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
-                    if _dom.size == 0:
+                        _sw = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
+                    else:
+                        _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
+                    # Optionally tighten the search cube to the NEAR-UDF shell:
+                    # the full support bbox spans the whole elongated tentacle, so
+                    # the thin puffer shell is only a small fraction of a big cube.
+                    _nb = float(extraction_config.get('udf_domain_near_band_world', 0.0))
+                    _minnear = int(extraction_config.get('udf_domain_min_near', 64))
+                    _used = "full-support"
+                    _domain_pts = _sw
+                    if _nb > 0.0 and _sw.shape[0] == udf_vals.shape[0]:
+                        _mask = udf_vals < _nb
+                        if int(_mask.sum()) >= _minnear:
+                            _domain_pts = _sw[_mask]
+                            _used = "near-UDF(<%.3g)" % _nb
+                    if _domain_pts.shape[0] == 0:
                         _center = np.zeros(3, dtype=np.float64)
                         _half = float(mc_grid.size)
                     else:
-                        _bmin = _dom.min(axis=0); _bmax = _dom.max(axis=0)
+                        _bmin = _domain_pts.min(axis=0); _bmax = _domain_pts.max(axis=0)
                         _center = 0.5 * (_bmin + _bmax)
                         _pad = float(extraction_config.get('udf_domain_padding', 0.2))
                         _half = 0.5 * float(np.max(_bmax - _bmin)) * (1.0 + _pad)
-                    print('[dualmeshudf-model domain] center=', _center,
-                          'half_extent=', _half, 'n_dom=', int(_dom.shape[0]))
+                    print("[dualmeshudf-model domain]", "using", _used,
+                          "n=", int(_domain_pts.shape[0]),
+                          "center=", _center, "half_extent=", round(_half, 5))
                     mesh_acc = self.extract_udf_mesh_from_model(
                         _udf_point_fn,
                         float(mc_grid.size),

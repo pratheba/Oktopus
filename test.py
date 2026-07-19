@@ -97,6 +97,8 @@ def start_test(opt):
         arg['udf_level_offset'] = args.udf_level_offset
     if getattr(args, 'udf_domain_padding', None) is not None:
         arg['udf_domain_padding'] = args.udf_domain_padding
+    if getattr(args, 'udf_near_band', None) is not None:
+        arg['udf_domain_near_band_world'] = args.udf_near_band
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -167,6 +169,10 @@ if __name__ == '__main__':
     p.add_argument('--udf-domain-padding', dest='udf_domain_padding', type=float, default=None,
                    help="model-direct only: pad the accessory bbox the octree "
                         "searches, as a fraction (default 0.2)")
+    p.add_argument('--udf-near-band', dest='udf_near_band', type=float, default=None,
+                   help="model-direct only: shrink the octree search cube to the "
+                        "bbox of support points with UDF < this (world units), "
+                        "e.g. 0.08. Off (0/unset) = full support bbox.")
 
     args = p.parse_args()
     opt = {
