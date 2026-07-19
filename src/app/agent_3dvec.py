@@ -2962,7 +2962,7 @@ class Agent():
                 acc_grid_base_fit.clear_grid()
                 acc_grid_base_fit.update_grid(vals_base_fit, kidx, mark=True, mode="overwrite")
 
-                mesh_acc_base_fit = acc_grid_base_fit.extract_mesh()
+                # mesh_acc_base_fit = acc_grid_base_fit.extract_mesh()  # dead debug (result unused; direct MC crashes on an all-positive UDF grid)
 #                if len(mesh_acc_base_fit.faces) > 0:
 #                    parts = mesh_acc_base_fit.split(only_watertight=False)
 #                    if len(parts) > 0:
