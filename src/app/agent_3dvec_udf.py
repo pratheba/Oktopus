@@ -782,6 +782,34 @@ class AgentUDF(AgentBase):
                           "near003=", int((udf_vals < 0.03).sum()),
                           "near005=", int((udf_vals < 0.05).sum()),
                           "near010=", int((udf_vals < 0.10).sum()))
+                    # ------------------------------------------------------------
+                    if bool(extraction_config.get("udf_export_near_points", True)):
+                        domain_pts_all = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64)
+
+                        debug_dir = op.join(output_folder, "udf_debug")
+                        os.makedirs(debug_dir, exist_ok=True)
+
+                        safe_acc = accessory_key.replace("|", "_").replace("/", "_")
+
+                        for band_dbg in [0.03, 0.05, 0.10]:
+                            near_dbg = udf_dbg < float(band_dbg)
+
+                            print(
+                                "[udf near export]",
+                                "band=", band_dbg,
+                                "near=", int(np.sum(near_dbg)),
+                                "/", int(udf_dbg.shape[0]),
+                            )
+
+                            if np.any(near_dbg):
+                                trimesh.PointCloud(
+                                    domain_pts_all[near_dbg]
+                                ).export(
+                                    op.join(
+                                        debug_dir,
+                                        f"{item_index}_{safe_acc}_near_udf_{band_dbg:.3f}.ply",
+                                    )
+                                )
                 else:
                     print("[udf prepass] no finite udf values on support")
 
