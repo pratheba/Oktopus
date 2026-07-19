@@ -83,6 +83,12 @@ def start_test(opt):
     }
     if getattr(args, 'extractor', None):
         arg['surface_extraction'] = args.extractor
+    if getattr(args, 'udf_threshold', None) is not None:
+        arg['udf_reliable_threshold'] = args.udf_threshold
+    if getattr(args, 'udf_surface_band', None) is not None:
+        arg['udf_surface_band'] = args.udf_surface_band
+    if getattr(args, 'udf_max_depth', None) is not None:
+        arg['udf_max_depth'] = args.udf_max_depth
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -135,6 +141,12 @@ if __name__ == '__main__':
     p.add_argument('-r', '--resolution', required=False, type=int, default=64)
     p.add_argument('-e', '--extractor', required=False, default=None,
                    help="surface extractor: marching_cubes (default) or dualmeshudf (UDF models)")
+    p.add_argument('--udf-threshold', dest='udf_threshold', type=float, default=None,
+                   help="DualMeshUDF reliable threshold in cube units (try 0.01 / 0.015 / 0.02 at low res)")
+    p.add_argument('--udf-surface-band', dest='udf_surface_band', type=float, default=None,
+                   help="voxels with net UDF below this are the surface (default 0.02)")
+    p.add_argument('--udf-max-depth', dest='udf_max_depth', type=int, default=None,
+                   help="DualMeshUDF octree depth (overrides the reso-derived default)")
 
     args = p.parse_args()
     opt = {

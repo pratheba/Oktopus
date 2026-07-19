@@ -972,6 +972,39 @@ class Agent():
 
         return mesh
 
+    def _dualmeshudf_extract(self, udf_func, udf_grad_func, batch_size=150000,
+                             max_depth=7, reliable=0.01):
+        """DualMeshUDF's extract_mesh octree loop, but with the reliable-UDF
+        threshold exposed (stock extract_mesh hardcodes 0.002, too tight for a
+        rasterized/low-res grid). No edit to the installed package needed."""
+        import numpy as _np
+        import igl as _igl
+        from DualMeshUDF_core import Octree, triangulate_faces
+        from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
+
+        octree = Octree(max_depth=max_depth,
+                        min_corner=_np.array([[-1.], [-1.], [-1.]]),
+                        max_corner=_np.array([[1.], [1.], [1.]]),
+                        sampling_depth=1)
+        cur_depth = 0
+        while cur_depth <= max_depth:
+            centroids = octree.centroids_of_new_nodes().astype(_np.float32)
+            cu, cg = query_udf_and_grad(udf_grad_func, centroids, batch_size)
+            octree.adaptive_subdivide(cu, cg, reliable)
+            cur_depth += 1
+        gi, gc = octree.get_samples_of_new_nodes()
+        gu, gg = query_udf_and_grad(udf_grad_func, gc.astype(_np.float32), batch_size)
+        octree.set_new_grid_data(gi, gu, gg)
+        idx, proj = octree.get_projections_for_checking_validity()
+        pu = query_udf(udf_func, proj, batch_size)
+        octree.set_grid_validity(idx, pu < reliable)
+        octree.batch_solve(reliable, 1.0, 1.0, 0.15, 0.08)
+        octree.generate_mesh()
+        tri = triangulate_faces(octree.mesh_v, octree.mesh_f, octree.v_type, octree.mesh_v_dir)
+        v, _, _, f = _igl.remove_duplicate_vertices(_np.array(octree.mesh_v), tri, 1e-7)
+        v, f, _, _ = _igl.remove_unreferenced(v, f)
+        return v, f
+
     def extract_udf_mesh_from_grid(self, sdf_grid, config=None):
         """Extract a mesh from an UNSIGNED-distance grid via DualMeshUDF.
 
@@ -1009,26 +1042,24 @@ class Agent():
         raw = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(N1, N1, N1)
         raw = np.maximum(raw, 0.0)                              # UDF >= 0
 
-        # Active = voxels the network actually wrote (net UDF, ~0..trunc); empty
-        # voxels sit at ~empty_val. A constant fill leaves the field FLAT, so
-        # DualMeshUDF's octree (rooted on the whole cube) sees "surface is far"
-        # at the centre and never subdivides toward the small accessory. Replace
-        # the empty region with a SMOOTH distance continuation so it can navigate.
-        active = raw < (0.5 * empty_val)
-        if active.any():
-            _av = raw[active]
-            print("[udf active stats] count=", _av.size,
-                  "min=", float(_av.min()),
-                  "p01=", float(np.quantile(_av, 0.01)),
-                  "p50=", float(np.quantile(_av, 0.50)),
-                  "below_0.002(world)=", int((_av < 0.002).sum()),
-                  "below_0.01(world)=", int((_av < 0.01).sum()))
-        if active.any():
-            edt = distance_transform_edt(~active).astype(np.float64) * step
-            vol = np.where(active, raw, trunc + edt)
-        else:
-            vol = raw
-        fill = float(vol.max()) if vol.size else empty_val
+        # The network's UDF is only trustworthy NEAR the surface; beyond its
+        # truncation band it flattens (~1.0) and extrapolates. That flat region
+        # breaks DualMeshUDF's octree navigation (it prunes cells where
+        # udf > cell_size). So use the net ONLY to locate the surface (udf ~ 0)
+        # and build a clean geometric distance field from those voxels -- a true
+        # smooth distance the octree can descend to the (thin) accessory shell.
+        surface_band = float(config.get('udf_surface_band', 0.02))
+        surf = raw < surface_band
+        _net = raw[raw < (0.5 * empty_val)]
+        print(f"[udf field] surf_voxels(raw<{surface_band})={int(surf.sum())} "
+              f"net_voxels={_net.size} "
+              f"min_net={(float(_net.min()) if _net.size else float('nan')):.4g}")
+        if not surf.any():
+            print("[dualmeshudf] no surface voxels (net udf never near 0) -> empty")
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64), process=False)
+        vol = distance_transform_edt(~surf).astype(np.float64) * step
+        fill = float(vol.max()) if vol.size else 1.0
 
         axes = (np.arange(N1), np.arange(N1), np.arange(N1))
         interp = RegularGridInterpolator(
@@ -1116,7 +1147,11 @@ class Agent():
             _igl.remove_unreferenced = _unref
             _igl._udf_igl_patched = True
 
-        v, f = _dmudf_extract(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
+        reliable = float(config.get('udf_reliable_threshold', 0.01))
+        print(f"[dualmeshudf] reliable_threshold={reliable} (cube units)")
+        v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
+                                         batch_size=batch_size, max_depth=max_depth,
+                                         reliable=reliable)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         print(f"[dualmeshudf] extracted V={len(v)} F={len(f)}"
               + ("  <-- EMPTY: net UDF likely never dips below 0.002" if len(f) == 0 else ""))
