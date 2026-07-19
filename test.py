@@ -81,6 +81,8 @@ def start_test(opt):
         'shape': shape_name,
         'adapt_file': op.join(config_path, f'{test_file}'),
     }
+    if getattr(args, 'extractor', None):
+        arg['surface_extraction'] = args.extractor
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -131,6 +133,8 @@ if __name__ == '__main__':
     p.add_argument('-s', '--shape_name', required=True)
     p.add_argument('-y', '--test_file', required=True)
     p.add_argument('-r', '--resolution', required=False, type=int, default=64)
+    p.add_argument('-e', '--extractor', required=False, default=None,
+                   help="surface extractor: marching_cubes (default) or dualmeshudf (UDF models)")
 
     args = p.parse_args()
     opt = {
@@ -141,7 +145,8 @@ if __name__ == '__main__':
             'out_path': args.out_path,
             'test_file': args.test_file,
             'shape_name': args.shape_name,
-            'resolution': args.resolution
+            'resolution': args.resolution,
+            'extractor': args.extractor
     }
 
     opt = process_options(opt, mode='inference')

@@ -710,6 +710,9 @@ class Agent():
         }:
             return 'reach_for_the_arcs'
 
+        if method in {'dualmeshudf', 'dual_mesh_udf', 'dmudf', 'udf'}:
+            return 'dualmeshudf'
+
         return method
 
     @staticmethod
@@ -969,6 +972,82 @@ class Agent():
 
         return mesh
 
+    def extract_udf_mesh_from_grid(self, sdf_grid, config=None):
+        """Extract a mesh from an UNSIGNED-distance grid via DualMeshUDF.
+
+        Used for UDF-trained models where marching cubes (needs a sign crossing)
+        cannot work.  The grid (MCGrid.val_grid) holds the accessory UDF (>=0, 10
+        in empty voxels).  We clamp >=0 and wrap it as a udf_func over [-1,1]^3 by
+        trilinear interpolation (finite-difference gradient), run DualMeshUDF, and
+        map the result back to world coords with the SAME origin/step/flip that
+        marching cubes uses -- so UDF output lands in the SDF output frame.
+
+        Enable via the adapt yaml:  surface_extraction: dualmeshudf
+        Optional knobs: udf_max_depth, udf_batch_size, udf_fill_value.
+        """
+        from scipy.interpolate import RegularGridInterpolator
+        try:
+            from DualMeshUDF import extract_mesh as _dmudf_extract
+        except Exception as exc:  # pragma: no cover
+            raise ImportError(
+                "DualMeshUDF is required for surface_extraction: dualmeshudf. "
+                "Install the vendored copy under third_party/DualMesh-UDF "
+                "(see third_party/README_DualMeshUDF.md)."
+            ) from exc
+
+        config = {} if config is None else config
+        gc = sdf_grid.grid_config
+        N = int(sdf_grid.reso)
+        N1 = N + 1
+        size = float(sdf_grid.size)
+
+        vol = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(N1, N1, N1)
+        vol = np.maximum(vol, 0.0)   # UDF is non-negative (clamp any net undershoot)
+
+        fill = float(config.get('udf_fill_value', 10.0))
+        axes = (np.arange(N1), np.arange(N1), np.arange(N1))
+        interp = RegularGridInterpolator(
+            axes, vol, method='linear', bounds_error=False, fill_value=fill)
+
+        # DualMeshUDF domain u in [-1,1]^3 ; u -> grid index: idx = (u+1)*N/2
+        def _idx(u):
+            return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
+
+        def udf_func(pts):
+            d = np.maximum(interp(_idx(pts)), 0.0)
+            return d.reshape(-1, 1).astype(np.float32)
+
+        eps = 2.0 / max(N, 1)  # one voxel in u-space
+        def udf_grad_func(pts):
+            pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            d = np.maximum(interp(_idx(pts)), 0.0)
+            g = np.empty_like(pts)
+            for a in range(3):
+                pp = pts.copy(); pp[:, a] += eps
+                pm = pts.copy(); pm[:, a] -= eps
+                g[:, a] = (interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
+            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
+            return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
+
+        import math
+        max_depth = int(config.get('udf_max_depth', max(1, int(round(math.log2(max(N, 2)))))))
+        batch_size = int(config.get('udf_batch_size', 150000))
+        print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size}")
+
+        v, f = _dmudf_extract(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
+        v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
+        if len(v) == 0 or len(f) == 0:
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64), process=False)
+
+        # map u in [-1,1] back to world (pre-flip p = u*size), then flip x<->z
+        # to match marching_cubes (grid_config['do_flip']).
+        p = v * size
+        if gc.get('do_flip', True):
+            p = p[:, [2, 1, 0]]
+            f = f[:, [0, 2, 1]]   # reflection reverses winding; flip to compensate
+        return trimesh.Trimesh(vertices=p, faces=f, process=False)
+
     def extract_surface_mesh(
         self,
         sdf_grid,
@@ -1018,6 +1097,9 @@ class Agent():
 
         if method == 'marching_cubes':
             return getattr(sdf_grid, mc_method)()
+
+        if method == 'dualmeshudf':
+            return self.extract_udf_mesh_from_grid(sdf_grid, config)
 
         if method != 'reach_for_the_arcs':
             raise ValueError(
