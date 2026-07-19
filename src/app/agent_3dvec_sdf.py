@@ -1264,9 +1264,17 @@ class AgentSDF(AgentBase):
                     'mesh_extractor'
                 ]
 
-            # Also allow flat rfta_* settings at YAML top level.
+            # Also allow extraction/combination settings at YAML top level.
             for config_key, config_value in raw_config.items():
-                if str(config_key).startswith('rfta_'):
+                key_text = str(config_key)
+                if (
+                    key_text.startswith('rfta_')
+                    or key_text in {
+                        'combine_adaptations',
+                        'surface_extraction',
+                        'mesh_extractor',
+                    }
+                ):
                     extraction_config[config_key] = config_value
 
             adaptation_items = raw_config.get(

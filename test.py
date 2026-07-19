@@ -6,7 +6,6 @@ for _p in ('src', 'SDF', 'UDF'):
 # --- end bootstrap ---
 from time import time
 from app import AgentSDF, AgentUDF, AgentSDFasUDF
-SELECTED_AGENT = 'sdf'
 import os, pickle, yaml, argparse
 import os.path as op
 import torch
@@ -20,8 +19,9 @@ from utils import MCGrid, process_options, DotDict
 # torch.cuda.manual_seed(seed)
 device = torch.device('cuda:0')
 def start_test(opt):
+    selected_agent = getattr(opt, 'agent', 'sdf')
     _agent_cls = {'udf': AgentUDF, 'sdf_as_udf': AgentSDFasUDF}.get(
-        SELECTED_AGENT, AgentSDF)
+        selected_agent, AgentSDF)
     agent = _agent_cls()
     print('[test] agent =', _agent_cls.__name__)
 
@@ -164,7 +164,6 @@ if __name__ == '__main__':
                         "extraction, to hit the net's positive floor (model path)")
 
     args = p.parse_args()
-    SELECTED_AGENT = args.agent
     opt = {
             'checkpoint_path': args.checkpoint_path,
             'root_path': op.dirname(op.abspath(__file__)),
@@ -174,7 +173,8 @@ if __name__ == '__main__':
             'test_file': args.test_file,
             'shape_name': args.shape_name,
             'resolution': args.resolution,
-            'extractor': args.extractor
+            'extractor': args.extractor,
+            'agent': args.agent
     }
 
     opt = process_options(opt, mode='inference')

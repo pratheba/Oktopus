@@ -335,9 +335,17 @@ class AgentUDF(AgentBase):
                     'mesh_extractor'
                 ]
 
-            # Also allow flat rfta_* settings at YAML top level.
+            # Also allow UDF extraction/combination settings at YAML top level.
             for config_key, config_value in raw_config.items():
-                if str(config_key).startswith('rfta_'):
+                key_text = str(config_key)
+                if (
+                    key_text.startswith('udf_')
+                    or key_text in {
+                        'combine_adaptations',
+                        'surface_extraction',
+                        'mesh_extractor',
+                    }
+                ):
                     extraction_config[config_key] = config_value
 
             adaptation_items = raw_config.get(
@@ -419,18 +427,23 @@ class AgentUDF(AgentBase):
 
         extraction_spec = extraction_config.get(
             'surface_extraction',
-            extraction_config.get('mesh_extractor', 'marching_cubes'),
+            extraction_config.get('mesh_extractor', 'dualmeshudf'),
         )
         if isinstance(extraction_spec, dict):
             requested_extractor = extraction_spec.get(
                 'method',
-                extraction_spec.get('backend', 'marching_cubes'),
+                extraction_spec.get('backend', 'dualmeshudf'),
             )
         else:
             requested_extractor = extraction_spec
         requested_extractor = self._normalize_surface_extraction_method(
             requested_extractor
         )
+        if requested_extractor not in {'dualmeshudf', 'dualmeshudf_model'}:
+            raise ValueError(
+                f"AgentUDF only supports 'dualmeshudf' or 'dualmeshudf_model', "
+                f"got {requested_extractor!r}. Use AgentSDF for marching cubes/RFTA."
+            )
         combine_adaptations = bool(
             extraction_config.get("combine_adaptations", False)
         )
@@ -515,6 +528,15 @@ class AgentUDF(AgentBase):
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
                 adapt_arg.update(item)
+
+                # UDF is unsigned. These older knobs are signed-SDF/detail-only;
+                # ignore them here so an SDF YAML can be reused for a clean UDF test.
+                if bool(adapt_arg.get("auto_avatar_snug_field", False)):
+                    print("[udf] ignoring auto_avatar_snug_field (SDF-only)")
+                    adapt_arg["auto_avatar_snug_field"] = False
+                if bool(adapt_arg.get("use_tiled_detail", False)):
+                    print("[udf] ignoring use_tiled_detail (signed-detail/SDF-only)")
+                    adapt_arg["use_tiled_detail"] = False
 
                 if mode == 'direct':
                     accessory_curve_handle = self.curve_from_key(accessory_key)
