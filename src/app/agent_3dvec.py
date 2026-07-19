@@ -1016,6 +1016,14 @@ class Agent():
         # the empty region with a SMOOTH distance continuation so it can navigate.
         active = raw < (0.5 * empty_val)
         if active.any():
+            _av = raw[active]
+            print("[udf active stats] count=", _av.size,
+                  "min=", float(_av.min()),
+                  "p01=", float(np.quantile(_av, 0.01)),
+                  "p50=", float(np.quantile(_av, 0.50)),
+                  "below_0.002(world)=", int((_av < 0.002).sum()),
+                  "below_0.01(world)=", int((_av < 0.01).sum()))
+        if active.any():
             edt = distance_transform_edt(~active).astype(np.float64) * step
             vol = np.where(active, raw, trunc + edt)
         else:
@@ -1031,13 +1039,15 @@ class Agent():
             return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
 
         def udf_func(pts):
-            d = np.maximum(interp(_idx(pts)), 0.0)
+            # values are world-unit distances; DualMeshUDF works in the [-1,1]^3
+            # cube where world = u*size, so distances scale by 1/size.
+            d = np.maximum(interp(_idx(pts)), 0.0) / size
             return d.reshape(-1, 1).astype(np.float32)
 
         eps = 2.0 / max(N, 1)  # one voxel in u-space
         def udf_grad_func(pts):
             pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-            d = np.maximum(interp(_idx(pts)), 0.0)
+            d = np.maximum(interp(_idx(pts)), 0.0) / size   # world -> cube units
             g = np.empty_like(pts)
             for a in range(3):
                 pp = pts.copy(); pp[:, a] += eps
