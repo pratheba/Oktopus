@@ -23,8 +23,8 @@ n_sample_circle = 120
 #n_sample_points = 12
 
 
-from pwla_curve import (_CoreMixin, _FramesMixin, _RadiusMixin, _WrapMixin, _SDFMixin, _LocalizeMixin, _StretchMixin, _InterpolateMixin)
+from pwla_curve import (_CoreMixin, _FramesMixin, _RadiusMixin, _WrapMixin, _GeometryMixin, _LocalizeMixin, _StretchMixin, _InterpolateMixin)
 
-class PWLACurve(_CoreMixin, _FramesMixin, _RadiusMixin, _WrapMixin, _SDFMixin, _StretchMixin, _LocalizeMixin, _InterpolateMixin):
+class PWLACurve(_CoreMixin, _FramesMixin, _RadiusMixin, _WrapMixin, _GeometryMixin, _StretchMixin, _LocalizeMixin, _InterpolateMixin):
     """docstring for PWLACurve."""
     pass

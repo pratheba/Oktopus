@@ -1034,25 +1034,57 @@ class Agent():
         batch_size = int(config.get('udf_batch_size', 150000))
         print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size}")
 
-        # Compatibility shim: some libigl builds require int64 faces for
-        # igl.remove_duplicate_vertices / remove_unreferenced, but DualMeshUDF
-        # passes a narrower int type -> TypeError. Coerce dtypes at the igl call
-        # (live attribute lookup, so this applies inside DualMeshUDF too).
+        # DualMeshUDF calls igl.remove_duplicate_vertices / remove_unreferenced in
+        # a way newer libigl builds reject (they require float64 V + int64 F).
+        # Coerce the args (contiguous + correct dtype) and call the REAL igl; only
+        # if the binding still refuses do we fall back to a numpy equivalent.
+        # (live attribute lookup -> the wrap applies inside DualMeshUDF too.)
         import igl as _igl
-        if not getattr(_igl, "_udf_dtype_patched", False):
-            def _coerce(fn):
-                def _wrap(*a):
-                    a = list(a)
-                    if len(a) >= 1:
-                        a[0] = np.asarray(a[0], dtype=np.float64)   # V
-                    if len(a) >= 2 and np.asarray(a[1]).ndim == 2:
-                        a[1] = np.asarray(a[1], dtype=np.int64)     # F (2D only)
-                    return fn(*a)
-                return _wrap
-            for _name in ("remove_duplicate_vertices", "remove_unreferenced"):
-                if hasattr(_igl, _name):
-                    setattr(_igl, _name, _coerce(getattr(_igl, _name)))
-            _igl._udf_dtype_patched = True
+        if not getattr(_igl, "_udf_igl_patched", False):
+            _orig_dedup = getattr(_igl, "remove_duplicate_vertices", None)
+            _orig_unref = getattr(_igl, "remove_unreferenced", None)
+
+            def _np_dedup(V, F, eps):
+                key = np.round(V / max(float(eps), 1e-30))
+                _, SVI, SVJ = np.unique(key, axis=0, return_index=True, return_inverse=True)
+                SVJ = SVJ.reshape(-1)
+                SF = SVJ[np.asarray(F, dtype=np.int64)]
+                return V[SVI], SVI.astype(np.int64), SVJ.astype(np.int64), SF.astype(np.int64)
+
+            def _dedup(*a):
+                V = np.ascontiguousarray(a[0], dtype=np.float64)
+                if len(a) == 3:   # (V, F, eps)
+                    F = np.ascontiguousarray(a[1], dtype=np.int64)
+                    eps = float(a[2])
+                    if _orig_dedup is not None:
+                        try:
+                            return _orig_dedup(V, F, eps)
+                        except TypeError:
+                            pass
+                    return _np_dedup(V, F, eps)
+                eps = float(a[1])   # (V, eps)
+                if _orig_dedup is not None:
+                    return _orig_dedup(V, eps)
+                key = np.round(V / max(eps, 1e-30))
+                _, SVI, SVJ = np.unique(key, axis=0, return_index=True, return_inverse=True)
+                return V[SVI], SVI.astype(np.int64), SVJ.reshape(-1).astype(np.int64)
+
+            def _unref(*a):
+                V = np.ascontiguousarray(a[0], dtype=np.float64)
+                F = np.ascontiguousarray(a[1], dtype=np.int64)
+                if _orig_unref is not None:
+                    try:
+                        return _orig_unref(V, F)
+                    except TypeError:
+                        pass
+                used = np.unique(F.reshape(-1))
+                remap = -np.ones(V.shape[0], dtype=np.int64)
+                remap[used] = np.arange(used.shape[0], dtype=np.int64)
+                return V[used], remap[F].astype(np.int64), used.astype(np.int64), remap
+
+            _igl.remove_duplicate_vertices = _dedup
+            _igl.remove_unreferenced = _unref
+            _igl._udf_igl_patched = True
 
         v, f = _dmudf_extract(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)

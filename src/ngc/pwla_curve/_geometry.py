@@ -1,4 +1,5 @@
-# Auto-split from PWLA_curve_handle.py -- _SDFMixin
+# Auto-split from PWLA_curve_handle.py -- _GeometryMixin
+# Curve projection + analytic cylinder distance (used by BOTH sdf and udf).
 import os as _pwla_os, sys as _pwla_sys
 _pwla_sys.path.append(_pwla_os.path.abspath(_pwla_os.path.join(_pwla_os.path.dirname(__file__), '..')))
 
@@ -28,7 +29,7 @@ n_sample_circle = 120
 
 
 
-class _SDFMixin:
+class _GeometryMixin:
 
     def is_points_in_edge(self, points, vt0, vt1):
         # project points on line segment(edge), return if inside the edge 
@@ -36,12 +37,13 @@ class _SDFMixin:
         v1, t1 = vt1
 
         length = np.linalg.norm(v1 - v0)
-        vec = (v1 - v0) / length
+        length_safe = length + 1e-12   # guard degenerate (zero-length) edges
+        vec = (v1 - v0) / length_safe
         proj_len = (points - v0) @ vec
         inside_flag = np.logical_and(proj_len >= 0., proj_len <= length)
 
         # calculate natural coords for projected points
-        ts = t0 + ((t1 - t0)/length)* proj_len
+        ts = t0 + ((t1 - t0)/length_safe)* proj_len
         return inside_flag, ts
 
     def _projection_skeleton(self, N_discrete):
