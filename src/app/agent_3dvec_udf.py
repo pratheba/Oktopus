@@ -117,12 +117,18 @@ class AgentUDF(AgentBase):
                                    max(1, int(round(math.log2(max(N, 2)))))))
         batch_size = int(config.get('udf_batch_size', 150000))
         reliable = float(config.get('udf_reliable_threshold', 0.01))
-        print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
-              f"reliable={reliable} "
-              f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]")
+        if "udf_sample_threshold" in config:
+            sample_threshold = float(config["udf_sample_threshold"])
+        else:
+            sample_threshold = min(reliable * 0.25, 0.005)
+
+        print(
+            f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
+            f"reliable={reliable} sample_threshold={sample_threshold} "
+            f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]"
+
 
         self._ensure_udf_igl_patch()
-        sample_threshold = float(config.get("udf_sample_threshold", min(reliable * 0.25, 0.005)))
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
                                          batch_size=batch_size,
                                          max_depth=max_depth, reliable=reliable,
@@ -187,7 +193,7 @@ class AgentUDF(AgentBase):
             "projection_reliable=", reliable,
             "qef_sample_threshold=", sample_threshold,
         )
-        octree.batch_solve(reliable, 1.0, 1.0, 0.15, 0.08)
+        octree.batch_solve(sample_threshold, 1.0, 1.0, 0.15, 0.08)
         octree.generate_mesh()
         print('[dmudf] after solve: mesh_v=', len(octree.mesh_v),
               'mesh_f=', len(octree.mesh_f))
