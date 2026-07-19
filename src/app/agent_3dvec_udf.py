@@ -142,7 +142,7 @@ class AgentUDF(AgentBase):
 
 
     def _dualmeshudf_extract(self, udf_func, udf_grad_func, batch_size=150000,
-                             max_depth=7, reliable=0.01, sampling_depth=1, sample_threshold=None, sample_threshold=sample_threshold,):
+                             max_depth=7, reliable=0.01, sampling_depth=1, sample_threshold=None,):
         """DualMeshUDF's extract_mesh octree loop, but with the reliable-UDF
         threshold exposed (stock extract_mesh hardcodes 0.002, too tight for a
         rasterized/low-res grid). No edit to the installed package needed."""
