@@ -140,7 +140,7 @@ class AgentUDF(AgentBase):
 
 
     def _dualmeshudf_extract(self, udf_func, udf_grad_func, batch_size=150000,
-                             max_depth=7, reliable=0.01, sampling_depth=1):
+                             max_depth=7, reliable=0.01, sampling_depth=1, sample_threshold=None, sample_threshold=sample_threshold,):
         """DualMeshUDF's extract_mesh octree loop, but with the reliable-UDF
         threshold exposed (stock extract_mesh hardcodes 0.002, too tight for a
         rasterized/low-res grid). No edit to the installed package needed."""
@@ -148,6 +148,10 @@ class AgentUDF(AgentBase):
         import igl as _igl
         from DualMeshUDF_core import Octree, triangulate_faces
         from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
+
+        if sample_threshold is None:
+            sample_threshold = min(float(reliable) * 0.25, 0.005)
+        sample_threshold = float(sample_threshold)
 
         octree = Octree(max_depth=max_depth,
                         min_corner=_np.array([[-1.], [-1.], [-1.]]),
@@ -171,6 +175,16 @@ class AgentUDF(AgentBase):
               ([round(float(x), 5) for x in _np.percentile(_puf, [0, 1, 5, 25, 50])]
                if _puf.size else []))
         octree.set_grid_validity(idx, _pv)
+        print(
+            "[dmudf]",
+            "projection_reliable=", reliable,
+            "qef_sample_threshold=", sample_threshold,
+        )
+        print(
+            f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
+            f"reliable={reliable} sample_threshold={sample_threshold} "
+            f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]"
+        )
         octree.batch_solve(reliable, 1.0, 1.0, 0.15, 0.08)
         octree.generate_mesh()
         print('[dmudf] after solve: mesh_v=', len(octree.mesh_v),
