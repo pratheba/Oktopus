@@ -1034,6 +1034,26 @@ class Agent():
         batch_size = int(config.get('udf_batch_size', 150000))
         print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size}")
 
+        # Compatibility shim: some libigl builds require int64 faces for
+        # igl.remove_duplicate_vertices / remove_unreferenced, but DualMeshUDF
+        # passes a narrower int type -> TypeError. Coerce dtypes at the igl call
+        # (live attribute lookup, so this applies inside DualMeshUDF too).
+        import igl as _igl
+        if not getattr(_igl, "_udf_dtype_patched", False):
+            def _coerce(fn):
+                def _wrap(*a):
+                    a = list(a)
+                    if len(a) >= 1:
+                        a[0] = np.asarray(a[0], dtype=np.float64)   # V
+                    if len(a) >= 2 and np.asarray(a[1]).ndim == 2:
+                        a[1] = np.asarray(a[1], dtype=np.int64)     # F (2D only)
+                    return fn(*a)
+                return _wrap
+            for _name in ("remove_duplicate_vertices", "remove_unreferenced"):
+                if hasattr(_igl, _name):
+                    setattr(_igl, _name, _coerce(getattr(_igl, _name)))
+            _igl._udf_dtype_patched = True
+
         v, f = _dmudf_extract(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         if len(v) == 0 or len(f) == 0:
