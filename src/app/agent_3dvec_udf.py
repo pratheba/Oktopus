@@ -122,10 +122,12 @@ class AgentUDF(AgentBase):
               f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]")
 
         self._ensure_udf_igl_patch()
+        sample_threshold = float(config.get("udf_sample_threshold", min(reliable * 0.25, 0.005)))
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
                                          batch_size=batch_size,
                                          max_depth=max_depth, reliable=reliable,
-                                         sampling_depth=int(config.get('udf_sampling_depth', 1)))
+                                         sampling_depth=int(config.get('udf_sampling_depth', 1)),
+                                         sample_threshold = sample_threshold)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         print(f"[dualmeshudf] extracted V={len(v)} F={len(f)}")
         if len(v) == 0 or len(f) == 0:
