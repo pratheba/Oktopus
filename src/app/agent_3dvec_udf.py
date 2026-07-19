@@ -163,12 +163,22 @@ class AgentUDF(AgentBase):
         octree.set_new_grid_data(gi, gu, gg)
         idx, proj = octree.get_projections_for_checking_validity()
         pu = query_udf(udf_func, proj, batch_size)
-        octree.set_grid_validity(idx, pu < reliable)
+        _pv = pu < reliable
+        _puf = _np.asarray(pu).reshape(-1)
+        print('[dmudf] n_proj=', int(_puf.shape[0]), 'n_valid=', int(_np.asarray(_pv).sum()),
+              'reliable=', reliable, 'pu_pct[0,1,5,25,50]=',
+              ([round(float(x), 5) for x in _np.percentile(_puf, [0, 1, 5, 25, 50])]
+               if _puf.size else []))
+        octree.set_grid_validity(idx, _pv)
         octree.batch_solve(reliable, 1.0, 1.0, 0.15, 0.08)
         octree.generate_mesh()
+        print('[dmudf] after solve: mesh_v=', len(octree.mesh_v),
+              'mesh_f=', len(octree.mesh_f))
         tri = triangulate_faces(octree.mesh_v, octree.mesh_f, octree.v_type, octree.mesh_v_dir)
+        print('[dmudf] triangulated=', (len(tri) if tri is not None else 0))
         v, _, _, f = _igl.remove_duplicate_vertices(_np.array(octree.mesh_v), tri, 1e-7)
         v, f, _, _ = _igl.remove_unreferenced(v, f)
+        print('[dmudf] after igl: v=', len(v), 'f=', len(f))
         return v, f
 
     def _ensure_udf_igl_patch(self):
