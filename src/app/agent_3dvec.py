@@ -1064,7 +1064,7 @@ class Agent():
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64), process=False)
         edt = distance_transform_edt(~near).astype(np.float64) * step
-        vol = np.where(near, raw, surface_band + edt)
+        vol = edt   # REVERTED: fat-plateau field that produced the working V=3841 mesh
         fill = float(vol.max()) if vol.size else 1.0
 
         axes = (np.arange(N1), np.arange(N1), np.arange(N1))
