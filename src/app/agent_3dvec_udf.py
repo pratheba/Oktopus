@@ -126,7 +126,7 @@ class AgentUDF(AgentBase):
             f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
             f"reliable={reliable} sample_threshold={sample_threshold} "
             f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]"
-
+        )
 
         self._ensure_udf_igl_patch()
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
