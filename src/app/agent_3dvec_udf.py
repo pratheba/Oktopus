@@ -228,7 +228,8 @@ class AgentUDF(AgentBase):
         _igl.remove_unreferenced = _unref
         _igl._udf_igl_patched = True
 
-    def extract_udf_mesh_from_model(self, udf_point_fn, size, reso, config=None):
+    def extract_udf_mesh_from_model(self, udf_point_fn, size, reso, config=None,
+                                    domain_center=None, domain_half_extent=None):
         """Extract a UDF mesh by querying the trained network DIRECTLY as the
         DualMeshUDF oracle -- no dense grid, no trilinear interpolation.
 
@@ -255,12 +256,25 @@ class AgentUDF(AgentBase):
         N = int(reso)
         level = float(config.get('udf_level_offset', 0.0))
 
+        # Restrict DualMeshUDF's [-1,1]^3 cube to the ADAPTED ACCESSORY bbox
+        # rather than the whole grid domain: the accessory fills only a few
+        # percent of the full cube, so a whole-cube octree spends its coarse
+        # samples outside the support (-> far_value -> never refines ->
+        # empty mesh). world = center + u * half_extent maps onto that bbox.
+        if domain_center is None:
+            domain_center = np.zeros(3, dtype=np.float64)
+        else:
+            domain_center = np.asarray(domain_center, dtype=np.float64).reshape(3)
+        domain_half_extent = float(size if domain_half_extent is None
+                                   else domain_half_extent)
+
         def _world(u):
-            return np.asarray(u, dtype=np.float64).reshape(-1, 3) * size
+            u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
+            return domain_center[None, :] + u * domain_half_extent
 
         def _q(u):
             d = np.asarray(udf_point_fn(_world(u)), dtype=np.float64).reshape(-1)
-            return np.maximum(d - level, 0.0) / size   # world -> cube units, floor-shifted
+            return np.maximum(d - level, 0.0) / domain_half_extent   # world -> cube units
 
         def udf_func(pts):
             return _q(pts).reshape(-1, 1).astype(np.float32)
@@ -283,7 +297,7 @@ class AgentUDF(AgentBase):
         reliable = float(config.get('udf_reliable_threshold', 0.01))
         print(f"[dualmeshudf-model] reso={N} max_depth={max_depth} "
               f"batch={batch_size} reliable={reliable} level_offset={level} "
-              f"(cube units; world=u*{size})")
+              f"center={domain_center} half_extent={domain_half_extent:.4g}")
 
         self._ensure_udf_igl_patch()
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
@@ -297,7 +311,7 @@ class AgentUDF(AgentBase):
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64),
                                    process=False)
-        p = v * size   # cube -> world (network is world-native; no flip)
+        p = domain_center[None, :] + v * domain_half_extent   # cube -> world
         print(f"[dualmeshudf-model] recon-mesh world bbox "
               f"min={p.min(0)} max={p.max(0)}")
         return trimesh.Trimesh(vertices=p, faces=f, process=False)
@@ -731,11 +745,31 @@ class AgentUDF(AgentBase):
                         out[idx[:n]] = d[:n]
                         return out
 
+                    # domain = bbox of the world points localize actually
+                    # operates on (avatar_data['samples'], oracle frame);
+                    # fall back to the inside grid points if absent.
+                    _dom = None
+                    if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
+                        _dom = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
+                    if _dom is None or _dom.size == 0:
+                        _dom = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
+                    if _dom.size == 0:
+                        _center = np.zeros(3, dtype=np.float64)
+                        _half = float(mc_grid.size)
+                    else:
+                        _bmin = _dom.min(axis=0); _bmax = _dom.max(axis=0)
+                        _center = 0.5 * (_bmin + _bmax)
+                        _pad = float(extraction_config.get('udf_domain_padding', 0.2))
+                        _half = 0.5 * float(np.max(_bmax - _bmin)) * (1.0 + _pad)
+                    print('[dualmeshudf-model domain] center=', _center,
+                          'half_extent=', _half, 'n_dom=', int(_dom.shape[0]))
                     mesh_acc = self.extract_udf_mesh_from_model(
                         _udf_point_fn,
                         float(mc_grid.size),
                         int(mc_grid.reso),
                         extraction_config,
+                        domain_center=_center,
+                        domain_half_extent=_half,
                     )
                 else:
                     acc_grid = utils.create_grid_like(mc_grid)

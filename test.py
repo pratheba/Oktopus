@@ -95,6 +95,8 @@ def start_test(opt):
         arg['udf_max_depth'] = args.udf_max_depth
     if getattr(args, 'udf_level_offset', None) is not None:
         arg['udf_level_offset'] = args.udf_level_offset
+    if getattr(args, 'udf_domain_padding', None) is not None:
+        arg['udf_domain_padding'] = args.udf_domain_padding
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -162,6 +164,9 @@ if __name__ == '__main__':
     p.add_argument('--udf-level-offset', dest='udf_level_offset', type=float, default=None,
                    help="subtract this (world units) from the network UDF before "
                         "extraction, to hit the net's positive floor (model path)")
+    p.add_argument('--udf-domain-padding', dest='udf_domain_padding', type=float, default=None,
+                   help="model-direct only: pad the accessory bbox the octree "
+                        "searches, as a fraction (default 0.2)")
 
     args = p.parse_args()
     opt = {
