@@ -1001,10 +1001,27 @@ class Agent():
         N1 = N + 1
         size = float(sdf_grid.size)
 
-        vol = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(N1, N1, N1)
-        vol = np.maximum(vol, 0.0)   # UDF is non-negative (clamp any net undershoot)
+        from scipy.ndimage import distance_transform_edt
+        step = float(gc['step'])
+        empty_val = float(config.get('udf_fill_value', 10.0))   # MCGrid fills empty voxels with ~10
+        trunc = float(config.get('udf_truncation', 0.1))        # preprocessing UDF truncation band
 
-        fill = float(config.get('udf_fill_value', 10.0))
+        raw = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(N1, N1, N1)
+        raw = np.maximum(raw, 0.0)                              # UDF >= 0
+
+        # Active = voxels the network actually wrote (net UDF, ~0..trunc); empty
+        # voxels sit at ~empty_val. A constant fill leaves the field FLAT, so
+        # DualMeshUDF's octree (rooted on the whole cube) sees "surface is far"
+        # at the centre and never subdivides toward the small accessory. Replace
+        # the empty region with a SMOOTH distance continuation so it can navigate.
+        active = raw < (0.5 * empty_val)
+        if active.any():
+            edt = distance_transform_edt(~active).astype(np.float64) * step
+            vol = np.where(active, raw, trunc + edt)
+        else:
+            vol = raw
+        fill = float(vol.max()) if vol.size else empty_val
+
         axes = (np.arange(N1), np.arange(N1), np.arange(N1))
         interp = RegularGridInterpolator(
             axes, vol, method='linear', bounds_error=False, fill_value=fill)
@@ -1032,11 +1049,10 @@ class Agent():
         import math
         max_depth = int(config.get('udf_max_depth', max(1, int(round(math.log2(max(N, 2)))))))
         batch_size = int(config.get('udf_batch_size', 150000))
-        _active = vol[vol < fill]
-        _minudf = float(_active.min()) if _active.size else float('nan')
+        _min_raw = float(raw[active].min()) if active.any() else float('nan')
         print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
-              f"min_udf_in_grid={_minudf:.5g} active_voxels={_active.size} "
-              f"(DualMeshUDF reliable threshold is 0.002 -- surface needs udf below it)")
+              f"net_voxels={int(active.sum())} min_net_udf={_min_raw:.5g} "
+              f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}] (smooth edt continuation)")
 
         # DualMeshUDF calls igl.remove_duplicate_vertices / remove_unreferenced in
         # a way newer libigl builds reject (they require float64 V + int64 F).
