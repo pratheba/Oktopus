@@ -1164,6 +1164,19 @@ class Agent():
         if gc.get('do_flip', True):
             p = p[:, [2, 1, 0]]
             f = f[:, [0, 2, 1]]   # reflection reverses winding; flip to compensate
+
+        # Diagnostic: does the recon land exactly where the surface voxels are?
+        # (same origin/step/flip). Matching boxes => extraction mapping correct
+        # and any misplacement is upstream (adaptation), not this extractor.
+        _si, _sj, _sk = np.where(surf)
+        if _si.size:
+            _sw = np.stack([_si, _sj, _sk], 1).astype(np.float64) * step + np.asarray(gc['origin'])
+            if gc.get('do_flip', True):
+                _sw = _sw[:, [2, 1, 0]]
+            print(f"[dualmeshudf] surf-voxel world bbox min={_sw.min(0)} max={_sw.max(0)}")
+        if len(p):
+            print(f"[dualmeshudf] recon-mesh  world bbox min={p.min(0)} max={p.max(0)}")
+
         return trimesh.Trimesh(vertices=p, faces=f, process=False)
 
     def extract_surface_mesh(
