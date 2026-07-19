@@ -1048,17 +1048,23 @@ class Agent():
         # udf > cell_size). So use the net ONLY to locate the surface (udf ~ 0)
         # and build a clean geometric distance field from those voxels -- a true
         # smooth distance the octree can descend to the (thin) accessory shell.
-        surface_band = float(config.get('udf_surface_band', 0.02))
-        surf = raw < surface_band
+        surface_band = float(config.get('udf_surface_band', 0.05))
+        # Keep the NETWORK UDF within a band of the surface (it is 0 only at the
+        # true surface and grows smoothly to `band` -> a proper gradient), and a
+        # distance CONTINUATION beyond the band (where the net extrapolates to
+        # garbage). This keeps the zero-set THIN. Zeroing the whole near-surface
+        # voxel set instead gives DualMeshUDF a fat 0-plateau and collapses it.
+        near = raw < surface_band
         _net = raw[raw < (0.5 * empty_val)]
-        print(f"[udf field] surf_voxels(raw<{surface_band})={int(surf.sum())} "
+        print(f"[udf field] band={surface_band} near_voxels={int(near.sum())} "
               f"net_voxels={_net.size} "
               f"min_net={(float(_net.min()) if _net.size else float('nan')):.4g}")
-        if not surf.any():
-            print("[dualmeshudf] no surface voxels (net udf never near 0) -> empty")
+        if not near.any():
+            print("[dualmeshudf] no near-surface voxels (net udf never < band) -> empty")
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64), process=False)
-        vol = distance_transform_edt(~surf).astype(np.float64) * step
+        edt = distance_transform_edt(~near).astype(np.float64) * step
+        vol = np.where(near, raw, surface_band + edt)
         fill = float(vol.max()) if vol.size else 1.0
 
         axes = (np.arange(N1), np.arange(N1), np.arange(N1))
@@ -1168,7 +1174,7 @@ class Agent():
         # Diagnostic: does the recon land exactly where the surface voxels are?
         # (same origin/step/flip). Matching boxes => extraction mapping correct
         # and any misplacement is upstream (adaptation), not this extractor.
-        _si, _sj, _sk = np.where(surf)
+        _si, _sj, _sk = np.where(near)
         if _si.size:
             _sw = np.stack([_si, _sj, _sk], 1).astype(np.float64) * step + np.asarray(gc['origin'])
             if gc.get('do_flip', True):
