@@ -5,7 +5,8 @@ for _p in ('src', 'SDF', 'UDF'):
     _sys.path.insert(0, _os.path.join(_ROOT, _p))
 # --- end bootstrap ---
 from time import time
-from app import Agent
+from app import AgentSDF, AgentUDF, AgentSDFasUDF
+SELECTED_AGENT = 'sdf'
 import os, pickle, yaml, argparse
 import os.path as op
 import torch
@@ -19,7 +20,10 @@ from utils import MCGrid, process_options, DotDict
 # torch.cuda.manual_seed(seed)
 device = torch.device('cuda:0')
 def start_test(opt):
-    agent = Agent()
+    _agent_cls = {'udf': AgentUDF, 'sdf_as_udf': AgentSDFasUDF}.get(
+        SELECTED_AGENT, AgentSDF)
+    agent = _agent_cls()
+    print('[test] agent =', _agent_cls.__name__)
 
     config_path = op.join(opt.root_path, opt.config_path) # the config is yaml file path
     output_path = op.join(opt.root_path, 'inference', str(opt.num_samples), str(opt.out_path))
@@ -141,6 +145,10 @@ if __name__ == '__main__':
     p.add_argument('-s', '--shape_name', required=True)
     p.add_argument('-y', '--test_file', required=True)
     p.add_argument('-r', '--resolution', required=False, type=int, default=64)
+    p.add_argument('-a', '--agent', choices=['sdf', 'udf', 'sdf_as_udf'],
+                   default='sdf',
+                   help="which agent: sdf (signed, default), udf (unsigned / "
+                        "DualMeshUDF), or sdf_as_udf (diagnostic abs(SDF))")
     p.add_argument('-e', '--extractor', required=False, default=None,
                    help="surface extractor: marching_cubes (default), dualmeshudf "
                         "(UDF via grid), or dualmeshudf_model (UDF via the network "
@@ -156,6 +164,7 @@ if __name__ == '__main__':
                         "extraction, to hit the net's positive floor (model path)")
 
     args = p.parse_args()
+    SELECTED_AGENT = args.agent
     opt = {
             'checkpoint_path': args.checkpoint_path,
             'root_path': op.dirname(op.abspath(__file__)),
