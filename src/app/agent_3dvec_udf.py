@@ -130,6 +130,11 @@ class AgentUDF(AgentBase):
                                          sample_threshold = sample_threshold)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         print(f"[dualmeshudf] extracted V={len(v)} F={len(f)}")
+        print(
+            f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
+            f"reliable={reliable} sample_threshold={sample_threshold} "
+            f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]"
+        )
         if len(v) == 0 or len(f) == 0:
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64),
@@ -181,11 +186,6 @@ class AgentUDF(AgentBase):
             "[dmudf]",
             "projection_reliable=", reliable,
             "qef_sample_threshold=", sample_threshold,
-        )
-        print(
-            f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
-            f"reliable={reliable} sample_threshold={sample_threshold} "
-            f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]"
         )
         octree.batch_solve(reliable, 1.0, 1.0, 0.15, 0.08)
         octree.generate_mesh()
