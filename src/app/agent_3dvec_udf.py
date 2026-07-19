@@ -766,7 +766,7 @@ class AgentUDF(AgentBase):
                         batch_size=batch_size,
                     )
                 udf_dbg = np.maximum(
-                    np.asarray(acc_out_dbg["dist"], dtype=np.float64).reshape(-1),
+                    np.asarray(acc_out["dist"], dtype=np.float64).reshape(-1),
                     0.0,
                 )
 
