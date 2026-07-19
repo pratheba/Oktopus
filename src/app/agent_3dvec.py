@@ -1032,7 +1032,11 @@ class Agent():
         import math
         max_depth = int(config.get('udf_max_depth', max(1, int(round(math.log2(max(N, 2)))))))
         batch_size = int(config.get('udf_batch_size', 150000))
-        print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size}")
+        _active = vol[vol < fill]
+        _minudf = float(_active.min()) if _active.size else float('nan')
+        print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
+              f"min_udf_in_grid={_minudf:.5g} active_voxels={_active.size} "
+              f"(DualMeshUDF reliable threshold is 0.002 -- surface needs udf below it)")
 
         # DualMeshUDF calls igl.remove_duplicate_vertices / remove_unreferenced in
         # a way newer libigl builds reject (they require float64 V + int64 F).
@@ -1088,6 +1092,8 @@ class Agent():
 
         v, f = _dmudf_extract(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
+        print(f"[dualmeshudf] extracted V={len(v)} F={len(f)}"
+              + ("  <-- EMPTY: net UDF likely never dips below 0.002" if len(f) == 0 else ""))
         if len(v) == 0 or len(f) == 0:
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64), process=False)
