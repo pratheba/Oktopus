@@ -710,6 +710,12 @@ class Agent():
         }:
             return 'reach_for_the_arcs'
 
+        if method in {
+            'dualmeshudf_model', 'dmudf_model', 'udf_model',
+            'model_udf', 'dualmeshudf_direct', 'model',
+        }:
+            return 'dualmeshudf_model'
+
         if method in {'dualmeshudf', 'dual_mesh_udf', 'dmudf', 'udf'}:
             return 'dualmeshudf'
 
@@ -1183,6 +1189,137 @@ class Agent():
         if len(p):
             print(f"[dualmeshudf] recon-mesh  world bbox min={p.min(0)} max={p.max(0)}")
 
+        return trimesh.Trimesh(vertices=p, faces=f, process=False)
+
+    def _ensure_udf_igl_patch(self):
+        """Patch igl.remove_duplicate_vertices / remove_unreferenced so
+        DualMeshUDF runs on newer libigl builds (which require float64 V +
+        int64 F). Idempotent and shared with the grid path via the
+        _udf_igl_patched flag, so whichever extractor runs first patches once.
+        """
+        import igl as _igl
+        if getattr(_igl, "_udf_igl_patched", False):
+            return
+        _orig_dedup = getattr(_igl, "remove_duplicate_vertices", None)
+        _orig_unref = getattr(_igl, "remove_unreferenced", None)
+
+        def _np_dedup(V, F, eps):
+            key = np.round(V / max(float(eps), 1e-30))
+            _, SVI, SVJ = np.unique(key, axis=0, return_index=True, return_inverse=True)
+            SVJ = SVJ.reshape(-1)
+            SF = SVJ[np.asarray(F, dtype=np.int64)]
+            return V[SVI], SVI.astype(np.int64), SVJ.astype(np.int64), SF.astype(np.int64)
+
+        def _dedup(*a):
+            V = np.ascontiguousarray(a[0], dtype=np.float64)
+            if len(a) == 3:
+                F = np.ascontiguousarray(a[1], dtype=np.int64)
+                eps = float(a[2])
+                if _orig_dedup is not None:
+                    try:
+                        return _orig_dedup(V, F, eps)
+                    except TypeError:
+                        pass
+                return _np_dedup(V, F, eps)
+            eps = float(a[1])
+            if _orig_dedup is not None:
+                try:
+                    return _orig_dedup(V, eps)
+                except TypeError:
+                    pass
+            key = np.round(V / max(eps, 1e-30))
+            _, SVI, SVJ = np.unique(key, axis=0, return_index=True, return_inverse=True)
+            return V[SVI], SVI.astype(np.int64), SVJ.reshape(-1).astype(np.int64)
+
+        def _unref(*a):
+            V = np.ascontiguousarray(a[0], dtype=np.float64)
+            F = np.ascontiguousarray(a[1], dtype=np.int64)
+            if _orig_unref is not None:
+                try:
+                    return _orig_unref(V, F)
+                except TypeError:
+                    pass
+            used = np.unique(F.reshape(-1))
+            remap = -np.ones(V.shape[0], dtype=np.int64)
+            remap[used] = np.arange(used.shape[0], dtype=np.int64)
+            return V[used], remap[F].astype(np.int64), used.astype(np.int64), remap
+
+        _igl.remove_duplicate_vertices = _dedup
+        _igl.remove_unreferenced = _unref
+        _igl._udf_igl_patched = True
+
+    def extract_udf_mesh_from_model(self, udf_point_fn, size, reso, config=None):
+        """Extract a UDF mesh by querying the trained network DIRECTLY as the
+        DualMeshUDF oracle -- no dense grid, no trilinear interpolation.
+
+        This is the clean counterpart to extract_udf_mesh_from_grid.  The grid
+        path smears the network's thin zero-set across a voxel (interpolation)
+        and needs the band/EDT hack; here DualMeshUDF samples the *continuous*
+        network at its own adaptive octree points, so the surface stays sharp
+        and holes largely disappear.
+
+        udf_point_fn(world_pts) -> udf  returns the UNSIGNED distance (>=0,
+        world units) of the ADAPTED accessory field at arbitrary world points,
+        built from the same adaptation state (adapt_arg, incl. any snug field)
+        that fills the grid.  DualMeshUDF works in [-1,1]^3 with world = u*size,
+        so we map cube<->world by world = u*size.  No do_flip: the network is
+        world-native, unlike the axis-swapped grid val array.
+
+        config knobs: udf_reliable_threshold, udf_max_depth, udf_batch_size,
+        udf_level_offset (subtract to hit the net's positive floor),
+        udf_far_value.
+        """
+        import math
+        config = {} if config is None else config
+        size = float(size)
+        N = int(reso)
+        level = float(config.get('udf_level_offset', 0.0))
+
+        def _world(u):
+            return np.asarray(u, dtype=np.float64).reshape(-1, 3) * size
+
+        def _q(u):
+            d = np.asarray(udf_point_fn(_world(u)), dtype=np.float64).reshape(-1)
+            return np.maximum(d - level, 0.0) / size   # world -> cube units, floor-shifted
+
+        def udf_func(pts):
+            return _q(pts).reshape(-1, 1).astype(np.float32)
+
+        eps = 2.0 / max(N, 1)   # ~one voxel in u-space
+        def udf_grad_func(pts):
+            pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            d = _q(pts)
+            g = np.empty_like(pts)
+            for a in range(3):
+                pp = pts.copy(); pp[:, a] += eps
+                pm = pts.copy(); pm[:, a] -= eps
+                g[:, a] = (_q(pp) - _q(pm)) / (2.0 * eps)
+            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
+            return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
+
+        max_depth = int(config.get('udf_max_depth',
+                                   max(1, int(round(math.log2(max(N, 2)))))))
+        batch_size = int(config.get('udf_batch_size', 150000))
+        reliable = float(config.get('udf_reliable_threshold', 0.01))
+        print(f"[dualmeshudf-model] reso={N} max_depth={max_depth} "
+              f"batch={batch_size} reliable={reliable} level_offset={level} "
+              f"(cube units; world=u*{size})")
+
+        self._ensure_udf_igl_patch()
+        v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
+                                         batch_size=batch_size,
+                                         max_depth=max_depth, reliable=reliable)
+        v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
+        print(f"[dualmeshudf-model] extracted V={len(v)} F={len(f)}"
+              + ("  <-- EMPTY: net UDF never dips below reliable; raise "
+                 "--udf-threshold or --udf-level-offset" if len(f) == 0 else ""))
+        if len(v) == 0 or len(f) == 0:
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64),
+                                   process=False)
+        p = v * size   # cube -> world (network is world-native; no flip)
+        print(f"[dualmeshudf-model] recon-mesh world bbox "
+              f"min={p.min(0)} max={p.max(0)}")
         return trimesh.Trimesh(vertices=p, faces=f, process=False)
 
     def extract_surface_mesh(
@@ -3126,14 +3263,56 @@ class Agent():
                 # The output prefix is the concrete adaptation order:
                 #   first run -> 0_..., second run -> 1_..., etc.
                 # This is independent of any later union/blending task.
-                mesh_acc = self.extract_surface_mesh(
-                    acc_grid,
-                    extraction_config,
-                    context=(
-                        f"part_adapt[{item_index}] "
-                        f"target={target_key} accessory={accessory_key}"
-                    ),
-                )
+                if requested_extractor == 'dualmeshudf_model':
+                    # Model-direct UDF oracle: query the trained network at
+                    # DualMeshUDF's own adaptive octree points (continuous),
+                    # reproducing the SAME adaptation used to fill acc_grid --
+                    # localize_samples_adapt() then inference_full -> "dist".
+                    # No grid, no interpolation smearing => far fewer holes.
+                    _oracle_arg = dict(adapt_arg)
+                    _oracle_arg['adapt_debug_counts'] = False
+                    _oracle_arg['debug_interval_projection'] = False
+                    _far = float(extraction_config.get('udf_far_value', 1.0))
+
+                    def _udf_point_fn(world_pts, _self=self, _c=curve,
+                                      _aa=_oracle_arg, _k=accessory_key,
+                                      _bs=int(batch_size), _far=_far):
+                        world_pts = np.asarray(
+                            world_pts, dtype=np.float64).reshape(-1, 3)
+                        out = np.full(world_pts.shape[0], _far, dtype=np.float64)
+                        try:
+                            acc_d, _av, inside = _c.core.localize_samples_adapt(
+                                world_pts, _aa)
+                        except Exception as _exc:
+                            return out
+                        if acc_d is None:
+                            return out
+                        idx = np.asarray(inside, dtype=np.int64).reshape(-1)
+                        if idx.size == 0:
+                            return out
+                        acc_out = _self.__inference_full_vals(
+                            acc_d, _k, batch_size=_bs)
+                        d = np.abs(np.asarray(
+                            acc_out["dist"], dtype=np.float64).reshape(-1))
+                        n = min(idx.size, d.size)
+                        out[idx[:n]] = d[:n]
+                        return out
+
+                    mesh_acc = self.extract_udf_mesh_from_model(
+                        _udf_point_fn,
+                        float(mc_grid.size),
+                        int(mc_grid.reso),
+                        extraction_config,
+                    )
+                else:
+                    mesh_acc = self.extract_surface_mesh(
+                        acc_grid,
+                        extraction_config,
+                        context=(
+                            f"part_adapt[{item_index}] "
+                            f"target={target_key} accessory={accessory_key}"
+                        ),
+                    )
                 if len(mesh_acc.faces) > 0:
                     parts = mesh_acc.split(only_watertight=False)
                     if len(parts) > 0:
