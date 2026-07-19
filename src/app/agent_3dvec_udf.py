@@ -240,101 +240,108 @@ class AgentUDF(AgentBase):
 
     def extract_udf_mesh_from_model(self, udf_point_fn, size, reso, config=None,
                                     domain_center=None, domain_half_extent=None):
-        """Extract a UDF mesh by querying the trained network DIRECTLY as the
-        DualMeshUDF oracle -- no dense grid, no trilinear interpolation.
+        """Model-direct UDF extraction via a LOCAL dense grid + EDT.
 
-        This is the clean counterpart to extract_udf_mesh_from_grid.  The grid
-        path smears the network's thin zero-set across a voxel (interpolation)
-        and needs the band/EDT hack; here DualMeshUDF samples the *continuous*
-        network at its own adaptive octree points, so the surface stays sharp
-        and holes largely disappear.
+        The continuous-oracle approach fails DualMeshUDF's validity/QEF: a
+        point-cloud / distance-continuation field's zero-set is not a clean
+        2-manifold, so the surface-projection marks ~every grid point valid and
+        the dual solve degenerates (mesh_v=0). Instead we sample the model UDF
+        onto a dense grid over the ACCESSORY BBOX (small domain -> fine spacing
+        = the resolution win), rebuild the SAME thin-zero-set EDT field the grid
+        path uses (proven to extract cleanly), and run the same octree loop.
 
-        udf_point_fn(world_pts) -> udf  returns the UNSIGNED distance (>=0,
-        world units) of the ADAPTED accessory field at arbitrary world points,
-        built from the same adaptation state (adapt_arg, incl. any snug field)
-        that fills the grid.  DualMeshUDF works in [-1,1]^3 with world = u*size,
-        so we map cube<->world by world = u*size.  No do_flip: the network is
-        world-native, unlike the axis-swapped grid val array.
-
-        config knobs: udf_reliable_threshold, udf_max_depth, udf_batch_size,
-        udf_level_offset (subtract to hit the net's positive floor),
-        udf_far_value.
+        udf_point_fn(world_pts) -> RAW model UDF (>=0 world units; large
+        `udf_fill_value` outside the support). Recon maps back to the bbox
+        (center + u*half), so it lands in the oracle's world frame.
         """
+        from scipy.interpolate import RegularGridInterpolator
+        from scipy.ndimage import distance_transform_edt
         import math
         config = {} if config is None else config
-        size = float(size)
-        N = int(reso)
-        level = float(config.get('udf_level_offset', 0.0))
-
-        # Restrict DualMeshUDF's [-1,1]^3 cube to the ADAPTED ACCESSORY bbox
-        # rather than the whole grid domain: the accessory fills only a few
-        # percent of the full cube, so a whole-cube octree spends its coarse
-        # samples outside the support (-> far_value -> never refines ->
-        # empty mesh). world = center + u * half_extent maps onto that bbox.
+        N = int(reso); N1 = N + 1
         if domain_center is None:
             domain_center = np.zeros(3, dtype=np.float64)
         else:
             domain_center = np.asarray(domain_center, dtype=np.float64).reshape(3)
-        domain_half_extent = float(size if domain_half_extent is None
-                                   else domain_half_extent)
+        half = float(size if domain_half_extent is None else domain_half_extent)
+        empty_val = float(config.get('udf_fill_value', 10.0))
+        step = 2.0 * half / max(N, 1)   # world spacing of the local grid
 
-        def _world(u):
-            u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
-            return domain_center[None, :] + u * domain_half_extent
+        # sample the RAW model UDF on the local grid (axis i->x, j->y, k->z).
+        gi, gj, gk = np.meshgrid(np.arange(N1), np.arange(N1), np.arange(N1),
+                                 indexing='ij')
+        pts = np.stack([
+            domain_center[0] - half + gi.reshape(-1) * step,
+            domain_center[1] - half + gj.reshape(-1) * step,
+            domain_center[2] - half + gk.reshape(-1) * step], axis=1)
+        qbatch = int(config.get('udf_grid_query_batch', 200000))
+        raw = np.empty(pts.shape[0], dtype=np.float64)
+        for s0 in range(0, pts.shape[0], qbatch):
+            raw[s0:s0 + qbatch] = np.asarray(
+                udf_point_fn(pts[s0:s0 + qbatch]), dtype=np.float64).reshape(-1)
+        raw = np.maximum(raw, 0.0).reshape(N1, N1, N1)
 
-        def _q(u):
-            d = np.asarray(udf_point_fn(_world(u)), dtype=np.float64).reshape(-1)
-            return np.maximum(d - level, 0.0) / domain_half_extent   # world -> cube units
+        surface_band = float(config.get('udf_surface_band', 0.03))
+        near = raw < surface_band
+        _net = raw[raw < 0.5 * empty_val]
+        print("[dualmeshudf-model grid] reso=", N, "half=", round(half, 4),
+              "step=", round(step, 5), "near_voxels=", int(near.sum()),
+              "net_voxels=", int(_net.size),
+              "net_min/med=",
+              ((round(float(_net.min()), 5), round(float(np.median(_net)), 5))
+               if _net.size else None))
+        if not near.any():
+            print("[dualmeshudf-model] no near-surface voxels -> empty")
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64),
+                                   process=False)
 
-        def udf_func(pts):
-            return _q(pts).reshape(-1, 1).astype(np.float32)
+        edt = distance_transform_edt(~near).astype(np.float64) * step
+        vol = np.where(near, raw, surface_band + edt)   # thin zero-set + EDT cont.
+        fill = float(surface_band + edt.max()) if edt.size else 1.0
+        interp = RegularGridInterpolator(
+            (np.arange(N1), np.arange(N1), np.arange(N1)), vol,
+            method='linear', bounds_error=False, fill_value=fill)
 
-        eps = 2.0 / max(N, 1)   # ~one voxel in u-space
-        def udf_grad_func(pts):
-            pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-            d = _q(pts)
-            g = np.empty_like(pts)
+        def _idx(u):
+            return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
+
+        def udf_func(p):
+            return (np.maximum(interp(_idx(p)), 0.0) / half).reshape(-1, 1).astype(np.float32)
+
+        eps = 2.0 / max(N, 1)
+        def udf_grad_func(p):
+            p = np.asarray(p, dtype=np.float64).reshape(-1, 3)
+            d = np.maximum(interp(_idx(p)), 0.0) / half
+            g = np.empty_like(p)
             for a in range(3):
-                pp = pts.copy(); pp[:, a] += eps
-                pm = pts.copy(); pm[:, a] -= eps
-                g[:, a] = (_q(pp) - _q(pm)) / (2.0 * eps)
-            _gn = np.linalg.norm(g, axis=1)
-            if getattr(self, "_udf_grad_dbg", 0) < 10:
-                print("[udf grad]", "query=", int(pts.shape[0]),
-                      "cube_d_min/med/max=",
-                      ((round(float(d.min()), 5), round(float(np.median(d)), 5),
-                        round(float(d.max()), 5)) if d.size else None),
-                      "|g| min/med/max=",
-                      ((round(float(_gn.min()), 4), round(float(np.median(_gn)), 4),
-                        round(float(_gn.max()), 4)) if _gn.size else None),
-                      "zero_grad=", int((_gn < 1e-8).sum()))
-                self._udf_grad_dbg = getattr(self, "_udf_grad_dbg", 0) + 1
-            nrm = _gn.reshape(-1, 1); nrm[nrm == 0] = 1.0
+                pp = p.copy(); pp[:, a] += eps
+                pm = p.copy(); pm[:, a] -= eps
+                g[:, a] = (interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
+            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
             return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
 
         max_depth = int(config.get('udf_max_depth',
                                    max(1, int(round(math.log2(max(N, 2)))))))
         batch_size = int(config.get('udf_batch_size', 150000))
         reliable = float(config.get('udf_reliable_threshold', 0.01))
-        print(f"[dualmeshudf-model] reso={N} max_depth={max_depth} "
-              f"batch={batch_size} reliable={reliable} level_offset={level} "
-              f"center={domain_center} half_extent={domain_half_extent:.4g}")
+        print("[dualmeshudf-model] max_depth=", max_depth, "reliable=", reliable,
+              "field_range=",
+              (round(float(vol.min()), 4), round(float(vol.max()), 4)))
 
         self._ensure_udf_igl_patch()
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
                                          batch_size=batch_size,
                                          max_depth=max_depth, reliable=reliable)
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
-        print(f"[dualmeshudf-model] extracted V={len(v)} F={len(f)}"
-              + ("  <-- EMPTY: net UDF never dips below reliable; raise "
-                 "--udf-threshold or --udf-level-offset" if len(f) == 0 else ""))
+        print("[dualmeshudf-model] extracted V=", len(v), "F=", len(f))
         if len(v) == 0 or len(f) == 0:
             return trimesh.Trimesh(vertices=np.zeros((0, 3)),
                                    faces=np.zeros((0, 3), dtype=np.int64),
                                    process=False)
-        p = domain_center[None, :] + v * domain_half_extent   # cube -> world
-        print(f"[dualmeshudf-model] recon-mesh world bbox "
-              f"min={p.min(0)} max={p.max(0)}")
+        p = domain_center[None, :] + v * half   # cube [-1,1] -> world bbox
+        print("[dualmeshudf-model] recon world bbox min=", p.min(0),
+              "max=", p.max(0))
         return trimesh.Trimesh(vertices=p, faces=f, process=False)
 
     @torch.no_grad()
@@ -753,60 +760,18 @@ class AgentUDF(AgentBase):
                     print("[udf prepass] no finite udf values on support")
 
                 if requested_extractor == 'dualmeshudf_model':
-                    from scipy.spatial import cKDTree as _cKDTree
                     _oracle_arg = dict(adapt_arg)
                     _oracle_arg['adapt_debug_counts'] = False
                     _oracle_arg['debug_interval_projection'] = False
-                    _far = float(extraction_config.get('udf_far_value', 1.0))
-                    _dbg = bool(extraction_config.get('udf_oracle_debug', True))
-                    _trunc = float(extraction_config.get('udf_truncation', 0.1))
+                    _fill = float(extraction_config.get('udf_fill_value', 10.0))
 
-                    # World points localize operates on (oracle frame), aligned
-                    # with udf_vals; used for BOTH the shell KDTree and the bbox.
-                    if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
-                        _sw = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
-                    else:
-                        _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
-                    _aligned = (_sw.shape[0] == udf_vals.shape[0])
-
-                    # DualMeshUDF needs a field with a real (unit) gradient to
-                    # navigate its octree and solve each cell's QEF. The trained
-                    # UDF is TRUNCATED (flat ~trunc off-surface) and points
-                    # outside the support are far_value -- both flat, zero
-                    # gradient -> it finds near-zero points but places no
-                    # vertices (V=0). Rebuild a real distance continuation from
-                    # the near-surface shell points (analytic EDT via a KDTree),
-                    # refined by the model UDF where the model is inside its
-                    # trusted band. Continuous analogue of the grid path's
-                    # np.where(near, raw, band+edt).
-                    _shell_band = float(extraction_config.get('udf_shell_band_world', 0.02))
-                    _shell = None
-                    if _aligned:
-                        _sm = udf_vals < _shell_band
-                        if int(_sm.sum()) < 16:
-                            _sm = udf_vals < (2.0 * _shell_band)
-                        if int(_sm.sum()) >= 4:
-                            _shell = _sw[_sm]
-                    _tree = _cKDTree(_shell) if _shell is not None else None
-                    print("[udf shell] band=", _shell_band,
-                          "n_shell=", (int(_shell.shape[0]) if _shell is not None else 0),
-                          "continuation=", ("KDTree" if _tree is not None else "far_value"))
-
-                    def _udf_point_fn(world_pts, _self=self, _c=curve,
-                                      _aa=_oracle_arg, _k=accessory_key,
-                                      _bs=int(batch_size), _far=_far, _dbg=_dbg,
-                                      _tree=_tree, _trunc=_trunc):
+                    # RAW model UDF sampler (no continuation here -- the local
+                    # grid's EDT rebuilds a clean thin-zero-set distance field).
+                    def _raw_udf(world_pts, _self=self, _c=curve, _aa=_oracle_arg,
+                                 _k=accessory_key, _bs=int(batch_size), _fill=_fill):
                         world_pts = np.asarray(
                             world_pts, dtype=np.float64).reshape(-1, 3)
-                        # continuation field: true distance to the shell (unit
-                        # gradient everywhere), so the octree can always descend.
-                        if _tree is not None:
-                            out = np.asarray(_tree.query(world_pts)[0],
-                                             dtype=np.float64).reshape(-1)
-                        else:
-                            out = np.full(world_pts.shape[0], _far, dtype=np.float64)
-                        idx = np.zeros(0, dtype=np.int64)
-                        d = np.zeros(0, dtype=np.float64)
+                        out = np.full(world_pts.shape[0], _fill, dtype=np.float64)
                         try:
                             acc_d, _av, inside = _c.core.localize_samples_adapt(
                                 world_pts, _aa)
@@ -817,40 +782,27 @@ class AgentUDF(AgentBase):
                                         acc_d, _k, batch_size=_bs)
                                     d = _self._udf_clamp(acc_o["dist"]).reshape(-1)
                                     n = min(idx.size, d.size)
-                                    # refine with the model only where it is inside
-                                    # its trusted band (not saturated at trunc).
-                                    _tr = d[:n] < (0.9 * _trunc)
-                                    out[idx[:n][_tr]] = d[:n][_tr]
+                                    out[idx[:n]] = d[:n]
                         except Exception:
                             pass
-                        if _dbg and getattr(_self, "_udf_oracle_dbg", 0) < 15:
-                            _f = d[np.isfinite(d)] if d.size else d
-                            print("[udf oracle]",
-                                  "query=", int(world_pts.shape[0]),
-                                  "inside=", int(idx.size),
-                                  "model_d_min/med/max=",
-                                  ((round(float(_f.min()), 5),
-                                    round(float(np.median(_f)), 5),
-                                    round(float(_f.max()), 5)) if _f.size else None),
-                                  "out_min/max=",
-                                  (round(float(out.min()), 5), round(float(out.max()), 5)))
-                            _self._udf_oracle_dbg = getattr(_self, "_udf_oracle_dbg", 0) + 1
                         return out
 
-                    # Optionally shrink the octree cube to the NEAR-UDF shell:
-                    # the full support bbox spans the whole elongated tentacle.
+                    # bbox of the world points localize operates on (oracle
+                    # frame); optionally tighten to the near-UDF shell.
+                    if isinstance(avatar_data, dict) and avatar_data.get('samples') is not None:
+                        _sw = np.asarray(avatar_data['samples'], dtype=np.float64).reshape(-1, 3)
+                    else:
+                        _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
+                    _aligned = (_sw.shape[0] == udf_vals.shape[0])
                     _nb = float(extraction_config.get('udf_domain_near_band_world', 0.0))
                     _minnear = int(extraction_config.get('udf_domain_min_near', 64))
-                    _used = "full-support"
-                    _domain_pts = _sw
+                    _used = "full-support"; _domain_pts = _sw
                     if _nb > 0.0 and _aligned:
                         _mask = udf_vals < _nb
                         if int(_mask.sum()) >= _minnear:
-                            _domain_pts = _sw[_mask]
-                            _used = "near-UDF(<%.3g)" % _nb
+                            _domain_pts = _sw[_mask]; _used = "near-UDF(<%.3g)" % _nb
                     if _domain_pts.shape[0] == 0:
-                        _center = np.zeros(3, dtype=np.float64)
-                        _half = float(mc_grid.size)
+                        _center = np.zeros(3, dtype=np.float64); _half = float(mc_grid.size)
                     else:
                         _bmin = _domain_pts.min(axis=0); _bmax = _domain_pts.max(axis=0)
                         _center = 0.5 * (_bmin + _bmax)
@@ -860,7 +812,7 @@ class AgentUDF(AgentBase):
                           "n=", int(_domain_pts.shape[0]),
                           "center=", _center, "half_extent=", round(_half, 5))
                     mesh_acc = self.extract_udf_mesh_from_model(
-                        _udf_point_fn,
+                        _raw_udf,
                         float(mc_grid.size),
                         int(mc_grid.reso),
                         extraction_config,
