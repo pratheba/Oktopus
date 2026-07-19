@@ -1090,10 +1090,9 @@ class Agent():
         import math
         max_depth = int(config.get('udf_max_depth', max(1, int(round(math.log2(max(N, 2)))))))
         batch_size = int(config.get('udf_batch_size', 150000))
-        _min_raw = float(raw[active].min()) if active.any() else float('nan')
         print(f"[dualmeshudf] reso={N} max_depth={max_depth} batch={batch_size} "
-              f"net_voxels={int(active.sum())} min_net_udf={_min_raw:.5g} "
-              f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}] (smooth edt continuation)")
+              f"surf_voxels={int(surf.sum())} "
+              f"field_range=[{float(vol.min()):.4g},{float(vol.max()):.4g}]")
 
         # DualMeshUDF calls igl.remove_duplicate_vertices / remove_unreferenced in
         # a way newer libigl builds reject (they require float64 V + int64 F).
