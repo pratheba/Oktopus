@@ -99,6 +99,8 @@ def start_test(opt):
         arg['udf_domain_padding'] = args.udf_domain_padding
     if getattr(args, 'udf_near_band', None) is not None:
         arg['udf_domain_near_band_world'] = args.udf_near_band
+    if getattr(args, 'udf_sampling_depth', None) is not None:
+        arg['udf_sampling_depth'] = args.udf_sampling_depth
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -173,6 +175,9 @@ if __name__ == '__main__':
                    help="model-direct only: shrink the octree search cube to the "
                         "bbox of support points with UDF < this (world units), "
                         "e.g. 0.08. Off (0/unset) = full support bbox.")
+    p.add_argument('--udf-sampling-depth', dest='udf_sampling_depth', type=int, default=None,
+                   help="DualMeshUDF per-cell sampling depth (1 -> 27 pts/cell, "
+                        "2 -> 125). Higher catches thin shells -> fewer holes.")
 
     args = p.parse_args()
     opt = {

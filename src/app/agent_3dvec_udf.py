@@ -124,7 +124,8 @@ class AgentUDF(AgentBase):
         self._ensure_udf_igl_patch()
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
                                          batch_size=batch_size,
-                                         max_depth=max_depth, reliable=reliable)
+                                         max_depth=max_depth, reliable=reliable,
+                                         sampling_depth=int(config.get('udf_sampling_depth', 1)))
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         print(f"[dualmeshudf] extracted V={len(v)} F={len(f)}")
         if len(v) == 0 or len(f) == 0:
@@ -139,7 +140,7 @@ class AgentUDF(AgentBase):
 
 
     def _dualmeshudf_extract(self, udf_func, udf_grad_func, batch_size=150000,
-                             max_depth=7, reliable=0.01):
+                             max_depth=7, reliable=0.01, sampling_depth=1):
         """DualMeshUDF's extract_mesh octree loop, but with the reliable-UDF
         threshold exposed (stock extract_mesh hardcodes 0.002, too tight for a
         rasterized/low-res grid). No edit to the installed package needed."""
@@ -151,7 +152,7 @@ class AgentUDF(AgentBase):
         octree = Octree(max_depth=max_depth,
                         min_corner=_np.array([[-1.], [-1.], [-1.]]),
                         max_corner=_np.array([[1.], [1.], [1.]]),
-                        sampling_depth=1)
+                        sampling_depth=int(sampling_depth))
         cur_depth = 0
         while cur_depth <= max_depth:
             centroids = octree.centroids_of_new_nodes().astype(_np.float32)
@@ -332,7 +333,8 @@ class AgentUDF(AgentBase):
         self._ensure_udf_igl_patch()
         v, f = self._dualmeshudf_extract(udf_func, udf_grad_func,
                                          batch_size=batch_size,
-                                         max_depth=max_depth, reliable=reliable)
+                                         max_depth=max_depth, reliable=reliable,
+                                         sampling_depth=int(config.get('udf_sampling_depth', 1)))
         v = np.asarray(v, dtype=np.float64); f = np.asarray(f, dtype=np.int64)
         print("[dualmeshudf-model] extracted V=", len(v), "F=", len(f))
         if len(v) == 0 or len(f) == 0:
