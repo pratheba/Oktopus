@@ -105,7 +105,7 @@ class AgentUDF(AgentBase):
 
             edt = distance_transform_edt(~near).astype(np.float64) * step
             sign = np.where(signed >= 0.0, 1.0, -1.0)
-            vol = np.where(near, signed, sign * (iso_band + edt)
+            vol = np.where(near, signed, sign * (iso_band + edt))
             #vol = np.where(near, scalar, iso_band + edt)
             fill = float(iso_band + edt.max()) if edt.size else 1.0
 
@@ -145,21 +145,43 @@ class AgentUDF(AgentBase):
         def _idx(u):
             return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
 
+
+        def _eval_field(pts):
+            y = np.asarray(interp(_idx(pts)), dtype=np.float64)
+
+            if use_signed_iso_interp:
+                y = np.abs(y)
+            else:
+                y = np.maximum(y, 0.0)
+
+            return np.maximum(y, 0.0)
+
         def udf_func(pts):
-            d = np.maximum(interp(_idx(pts)), 0.0) / size
+            d = _eval_field(pts) / size
             return d.reshape(-1, 1).astype(np.float32)
 
         eps = 2.0 / max(N, 1)
+
         def udf_grad_func(pts):
             pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-            d = np.maximum(interp(_idx(pts)), 0.0) / size
+            d = _eval_field(pts) / size
+
             g = np.empty_like(pts)
             for a in range(3):
-                pp = pts.copy(); pp[:, a] += eps
-                pm = pts.copy(); pm[:, a] -= eps
-                g[:, a] = (interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
-            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
+                pp = pts.copy()
+                pp[:, a] += eps
+
+                pm = pts.copy()
+                pm[:, a] -= eps
+
+                g[:, a] = (_eval_field(pp) - _eval_field(pm)) / (2.0 * eps)
+
+            nrm = np.linalg.norm(g, axis=1, keepdims=True)
+            nrm[nrm == 0] = 1.0
+
             return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
+
+        
 
         max_depth = int(config.get('udf_max_depth',
                                    max(1, int(round(math.log2(max(N, 2)))))))
