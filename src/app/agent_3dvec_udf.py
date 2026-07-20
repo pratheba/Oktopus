@@ -67,28 +67,71 @@ class AgentUDF(AgentBase):
         # true UDF: clamp only tiny negative numerical garbage (NOT abs()).
         raw = self._udf_clamp(raw0)
 
-        surface_band = float(config.get('udf_surface_band', 0.03))
-        near = raw < surface_band
-        _net = raw[raw < (0.5 * empty_val)]
-        print("[udf field]",
-              "band=", surface_band,
-              "near_voxels=", int(near.sum()),
-              "net_voxels=", int(_net.size),
-              "min/mean/max=",
-              float(_net.min()) if _net.size else float("nan"),
-              float(_net.mean()) if _net.size else float("nan"),
-              float(_net.max()) if _net.size else float("nan"),
-              "neg_raw0=", int(np.sum(raw0 < 0.0)))
-        if not near.any():
-            print("[dualmeshudf] no near-surface voxels -> empty")
-            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
-                                   faces=np.zeros((0, 3), dtype=np.int64),
-                                   process=False)
+        surface_band = float(config.get("udf_surface_band", 0.03))
+        extract_level = float(config.get("udf_extract_level", 0.0))
 
-        edt = distance_transform_edt(~near).astype(np.float64) * step
-        # network UDF inside the band; smooth distance continuation outside.
-        vol = np.where(near, raw, surface_band + edt)
-        fill = float(surface_band + edt.max()) if edt.size else 1.0
+        if extract_level > 0.0:
+            # Extract the level set raw == extract_level.
+            # This is useful when true UDF zero is sparse/noisy, but low-UDF bands show the shape.
+            iso_band = float(config.get("udf_iso_band", surface_band))
+
+            scalar = np.abs(raw - extract_level)
+            near = scalar < iso_band
+
+            _net = raw[raw < (0.5 * empty_val)]
+            print(
+                "[udf field iso]",
+                "level=", extract_level,
+                "iso_band=", iso_band,
+                "near_voxels=", int(near.sum()),
+                "net_voxels=", int(_net.size),
+                "raw_min/mean/max=",
+                float(_net.min()) if _net.size else float("nan"),
+                float(_net.mean()) if _net.size else float("nan"),
+                float(_net.max()) if _net.size else float("nan"),
+                "neg_raw0=", int(np.sum(raw0 < 0.0)),
+            )
+
+            if not near.any():
+                print("[dualmeshudf] no iso-near voxels -> empty")
+                return trimesh.Trimesh(
+                    vertices=np.zeros((0, 3)),
+                    faces=np.zeros((0, 3), dtype=np.int64),
+                    process=False,
+                )
+
+            edt = distance_transform_edt(~near).astype(np.float64) * step
+            vol = np.where(near, scalar, iso_band + edt)
+            fill = float(iso_band + edt.max()) if edt.size else 1.0
+
+        else:
+            # Original strict zero-UDF extraction
+            near = raw < surface_band
+
+            _net = raw[raw < (0.5 * empty_val)]
+            print(
+                "[udf field]",
+                "band=", surface_band,
+                "near_voxels=", int(near.sum()),
+                "net_voxels=", int(_net.size),
+                "min/mean/max=",
+                float(_net.min()) if _net.size else float("nan"),
+                float(_net.mean()) if _net.size else float("nan"),
+                float(_net.max()) if _net.size else float("nan"),
+                "neg_raw0=", int(np.sum(raw0 < 0.0)),
+            )
+
+            if not near.any():
+                print("[dualmeshudf] no near-surface voxels -> empty")
+                return trimesh.Trimesh(
+                    vertices=np.zeros((0, 3)),
+                    faces=np.zeros((0, 3), dtype=np.int64),
+                    process=False,
+                )
+
+            edt = distance_transform_edt(~near).astype(np.float64) * step
+            vol = np.where(near, raw, surface_band + edt)
+            fill = float(surface_band + edt.max()) if edt.size else 1.0
 
         axes = (np.arange(N1), np.arange(N1), np.arange(N1))
         interp = RegularGridInterpolator(
