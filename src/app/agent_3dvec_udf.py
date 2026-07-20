@@ -955,20 +955,45 @@ class AgentUDF(AgentBase):
                     mesh_acc = self.extract_udf_mesh_from_grid(
                         acc_grid, extract_cfg)
 
+#                if len(mesh_acc.faces) > 0:
+#                    parts = mesh_acc.split(only_watertight=False)
+#                    if len(parts) > 0:
+#                        mesh_acc = max(parts, key=lambda m: len(m.faces))
+#                    individual_mesh_file = op.join(
+#                        output_folder,
+#                        f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+#                    )
+#                    mesh_acc.export(individual_mesh_file)
+#                    print(
+#                        f"[udf part_adapt {item_index + 1}/{len(adaptation_items)}] "
+#                        f"saved {individual_mesh_file} "
+#                        f"V={len(mesh_acc.vertices)} F={len(mesh_acc.faces)}"
+#                    )
                 if len(mesh_acc.faces) > 0:
+                    safe_acc = accessory_key.replace("|", "_").replace("/", "_")
+
+                    full_mesh_file = op.join(
+                        output_folder,
+                        f"{item_index}_{mode}_{safe_acc}_FULL.ply",
+                    )
+                    mesh_acc.export(full_mesh_file)
+
                     parts = mesh_acc.split(only_watertight=False)
-                    if len(parts) > 0:
-                        mesh_acc = max(parts, key=lambda m: len(m.faces))
+                    face_counts = sorted([len(p.faces) for p in parts], reverse=True)
+
+                    print(
+                        "[udf components]",
+                        "n=", len(parts),
+                        "faces_top30=", face_counts[:30],
+                    )
+                    print("[udf full export]", full_mesh_file)
+
+                    # For now, DO NOT keep only largest component.
                     individual_mesh_file = op.join(
                         output_folder,
-                        f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+                        f"{item_index}_{mode}_{safe_acc}.ply",
                     )
                     mesh_acc.export(individual_mesh_file)
-                    print(
-                        f"[udf part_adapt {item_index + 1}/{len(adaptation_items)}] "
-                        f"saved {individual_mesh_file} "
-                        f"V={len(mesh_acc.vertices)} F={len(mesh_acc.faces)}"
-                    )
                 else:
                     print(
                         f"[udf part_adapt {item_index + 1}/{len(adaptation_items)}] "
