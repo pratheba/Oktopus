@@ -401,31 +401,30 @@ class AgentUDF(AgentBase):
         def _idx(u):
             return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
 
-        def _eval_field(pts):
-            y = np.asarray(interp(_idx(pts)), dtype = np.float64)
-
-            if use_signed_iso_interp:
-                y = np.abs(y)
-            else:
-                y = np.maximum(y, 0.0)
-            return np.maximum(y, 0.0)
-
         def udf_func(p):
-            d = _eval_field(pts) / size
-            return d.reshape(-1,1).astype(np.float32)
-            #return (np.maximum(interp(_idx(p)), 0.0) / half).reshape(-1, 1).astype(np.float32)
+            return (
+                np.maximum(interp(_idx(p)), 0.0) / half
+            ).reshape(-1, 1).astype(np.float32)
 
         eps = 2.0 / max(N, 1)
+
         def udf_grad_func(p):
             p = np.asarray(p, dtype=np.float64).reshape(-1, 3)
-            d = _eval_field(p) / size
-            #d = np.maximum(interp(_idx(p)), 0.0) / half
+            d = np.maximum(interp(_idx(p)), 0.0) / half
+
             g = np.empty_like(p)
             for a in range(3):
-                pp = p.copy(); pp[:, a] += eps
-                pm = p.copy(); pm[:, a] -= eps
-                g[:, a] = ((_eval_field(pp) - _eval_field(pm)) / (2.0 * eps) #(interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
-            nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
+                pp = p.copy()
+                pp[:, a] += eps
+
+                pm = p.copy()
+                pm[:, a] -= eps
+
+                g[:, a] = (interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
+
+            nrm = np.linalg.norm(g, axis=1, keepdims=True)
+            nrm[nrm == 0] = 1.0
+
             return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
 
         max_depth = int(config.get('udf_max_depth',
