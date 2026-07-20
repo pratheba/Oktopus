@@ -817,6 +817,76 @@ class AgentUDF(AgentBase):
 
                 # --- true-UDF finalize: clamp only; NO signed base/detail/carve ---
                 udf_vals = self._udf_clamp(acc_vals)
+                # ------------------------------------------------------------
+                # UDF zero-bias calibration.
+                # For tight scales, the learned UDF may not place the usable surface exactly
+                # at raw==0 everywhere. Instead of extracting a global positive iso-level,
+                # subtract a slow local low-quantile bias along the accessory coordinate.
+                # This keeps high-frequency detail in the residual field.
+                # ------------------------------------------------------------
+                if bool(adapt_arg.get("udf_local_zero_calibration", False)):
+                    coords_for_calib = np.asarray(accessory_data["coords"], dtype=np.float64).reshape(-1)
+                    vals_for_calib = np.asarray(udf_vals, dtype=np.float64).reshape(-1)
+
+                    n_bins = int(adapt_arg.get("udf_zero_calib_bins", 64))
+                    q = float(adapt_arg.get("udf_zero_calib_quantile", 1.0))
+                    max_shift = float(adapt_arg.get("udf_zero_calib_max_shift", 0.04))
+                    smooth_bins = int(adapt_arg.get("udf_zero_calib_smooth_bins", 2))
+                    min_count = int(adapt_arg.get("udf_zero_calib_min_count", 16))
+
+                    bins = np.linspace(
+                        float(np.min(coords_for_calib)),
+                        float(np.max(coords_for_calib)) + 1e-9,
+                        n_bins + 1,
+                    )
+                    bid = np.searchsorted(bins, coords_for_calib, side="right") - 1
+                    bid = np.clip(bid, 0, n_bins - 1)
+
+                    bias = np.full(n_bins, np.nan, dtype=np.float64)
+                    counts = np.zeros(n_bins, dtype=np.int64)
+
+                    finite = np.isfinite(vals_for_calib)
+                    for bi in range(n_bins):
+                        m = finite & (bid == bi)
+                        counts[bi] = int(np.sum(m))
+                        if counts[bi] >= min_count:
+                            bias[bi] = np.percentile(vals_for_calib[m], q)
+
+                    # Fill missing bins by nearest valid value
+                    valid = np.isfinite(bias)
+                    if np.any(valid):
+                        x = np.arange(n_bins)
+                        bias = np.interp(x, x[valid], bias[valid])
+                    else:
+                        bias[:] = 0.0
+
+                    # Smooth the slow bias; keep details in udf_vals itself.
+                    if smooth_bins > 0:
+                        from scipy.ndimage import gaussian_filter1d
+                        bias = gaussian_filter1d(
+                            bias,
+                            sigma=float(smooth_bins),
+                            mode="nearest",
+                        )
+
+                    bias = np.clip(bias, 0.0, max_shift)
+                    local_bias = bias[bid]
+
+                    udf_vals = np.maximum(vals_for_calib - local_bias, 0.0)
+
+                    print(
+                        "[udf zero calib]",
+                        "enabled",
+                        "q=", q,
+                        "bias_min/med/max=",
+                        round(float(np.min(bias)), 5),
+                        round(float(np.median(bias)), 5),
+                        round(float(np.max(bias)), 5),
+                        "counts_min/med/max=",
+                        int(np.min(counts)),
+                        int(np.median(counts)),
+                        int(np.max(counts)),
+                    )
 
                 # PREPASS DIAGNOSTIC (free: acc_vals is the network UDF on the
                 # accepted support points, aligned with kidx / avatar samples).
