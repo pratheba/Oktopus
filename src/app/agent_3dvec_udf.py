@@ -860,11 +860,39 @@ class AgentUDF(AgentBase):
                 else:
                     print("[udf prepass] no finite udf values on support")
 
+                # ------------------------------------------------------------
+                # Per-adaptation extraction config.
+                # Needed for legacy list YAML where udf_* keys live inside
+                # each adaptation item instead of at YAML top level.
+                # ------------------------------------------------------------
+                extract_cfg = dict(extraction_config)
+
+                for config_key, config_value in item.items():
+                    key_text = str(config_key)
+                    if (
+                        key_text.startswith("udf_")
+                        or key_text in {
+                            "surface_extraction",
+                            "mesh_extractor",
+                            "combine_adaptations",
+                        }
+                    ):
+                        extract_cfg[config_key] = config_value
+
+                print(
+                    "[udf extract cfg]",
+                    "surface_band=", extract_cfg.get("udf_surface_band"),
+                    "reliable=", extract_cfg.get("udf_reliable_threshold"),
+                    "sample=", extract_cfg.get("udf_sample_threshold"),
+                    "extract_level=", extract_cfg.get("udf_extract_level"),
+                    "iso_band=", extract_cfg.get("udf_iso_band"),
+                )
+
                 if requested_extractor == 'dualmeshudf_model':
                     _oracle_arg = dict(adapt_arg)
                     _oracle_arg['adapt_debug_counts'] = False
                     _oracle_arg['debug_interval_projection'] = False
-                    _fill = float(extraction_config.get('udf_fill_value', 10.0))
+                    _fill = float(extract_cfg.get('udf_fill_value', 10.0))
 
                     # RAW model UDF sampler (no continuation here -- the local
                     # grid's EDT rebuilds a clean thin-zero-set distance field).
@@ -895,8 +923,8 @@ class AgentUDF(AgentBase):
                     else:
                         _sw = np.asarray(mc_grid.idx2pts(kidx), dtype=np.float64).reshape(-1, 3)
                     _aligned = (_sw.shape[0] == udf_vals.shape[0])
-                    _nb = float(extraction_config.get('udf_domain_near_band_world', 0.0))
-                    _minnear = int(extraction_config.get('udf_domain_min_near', 64))
+                    _nb = float(extract_cfg.get('udf_domain_near_band_world', 0.0))
+                    _minnear = int(extract_cfg.get('udf_domain_min_near', 64))
                     _used = "full-support"; _domain_pts = _sw
                     if _nb > 0.0 and _aligned:
                         _mask = udf_vals < _nb
@@ -907,7 +935,7 @@ class AgentUDF(AgentBase):
                     else:
                         _bmin = _domain_pts.min(axis=0); _bmax = _domain_pts.max(axis=0)
                         _center = 0.5 * (_bmin + _bmax)
-                        _pad = float(extraction_config.get('udf_domain_padding', 0.2))
+                        _pad = float(extract_cfg.get('udf_domain_padding', 0.2))
                         _half = 0.5 * float(np.max(_bmax - _bmin)) * (1.0 + _pad)
                     print("[dualmeshudf-model domain]", "using", _used,
                           "n=", int(_domain_pts.shape[0]),
@@ -916,7 +944,7 @@ class AgentUDF(AgentBase):
                         _raw_udf,
                         float(mc_grid.size),
                         int(mc_grid.reso),
-                        extraction_config,
+                        extract_cfg,
                         domain_center=_center,
                         domain_half_extent=_half,
                     )
@@ -925,7 +953,7 @@ class AgentUDF(AgentBase):
                     acc_grid.clear_grid()
                     acc_grid.update_grid(udf_vals, kidx, mark=True, mode="overwrite")
                     mesh_acc = self.extract_udf_mesh_from_grid(
-                        acc_grid, extraction_config)
+                        acc_grid, extract_cfg)
 
                 if len(mesh_acc.faces) > 0:
                     parts = mesh_acc.split(only_watertight=False)
