@@ -66,6 +66,7 @@ class AgentUDF(AgentBase):
         raw0 = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(N1, N1, N1)
         # true UDF: clamp only tiny negative numerical garbage (NOT abs()).
         raw = self._udf_clamp(raw0)
+        use_signed_iso_interp = False
 
         surface_band = float(config.get("udf_surface_band", 0.03))
         extract_level = float(config.get("udf_extract_level", 0.0))
@@ -75,12 +76,14 @@ class AgentUDF(AgentBase):
             # This is useful when true UDF zero is sparse/noisy, but low-UDF bands show the shape.
             iso_band = float(config.get("udf_iso_band", surface_band))
 
-            scalar = np.abs(raw - extract_level)
+            signed = raw - extract_level
+            scalar = np.abs(signed)
             near = scalar < iso_band
+            use_signed_iso_interp = True
 
             _net = raw[raw < (0.5 * empty_val)]
             print(
-                "[udf field iso]",
+                "[udf field iso signed]",
                 "level=", extract_level,
                 "iso_band=", iso_band,
                 "near_voxels=", int(near.sum()),
@@ -101,7 +104,9 @@ class AgentUDF(AgentBase):
                 )
 
             edt = distance_transform_edt(~near).astype(np.float64) * step
-            vol = np.where(near, scalar, iso_band + edt)
+            sign = np.where(signed >= 0.0, 1.0, -1.0)
+            vol = np.where(near, signed, sign * (iso_band + edt)
+            #vol = np.where(near, scalar, iso_band + edt)
             fill = float(iso_band + edt.max()) if edt.size else 1.0
 
         else:
@@ -374,18 +379,30 @@ class AgentUDF(AgentBase):
         def _idx(u):
             return (np.asarray(u, dtype=np.float64) + 1.0) * (N / 2.0)
 
+        def _eval_field(pts):
+            y = np.asarray(interp(_idx(pts)), dtype = np.float64)
+
+            if use_signed_iso_interp:
+                y = np.abs(y)
+            else:
+                y = np.maximum(y, 0.0)
+            return np.maximum(y, 0.0)
+
         def udf_func(p):
-            return (np.maximum(interp(_idx(p)), 0.0) / half).reshape(-1, 1).astype(np.float32)
+            d = _eval_field(pts) / size
+            return d.reshape(-1,1).astype(np.float32)
+            #return (np.maximum(interp(_idx(p)), 0.0) / half).reshape(-1, 1).astype(np.float32)
 
         eps = 2.0 / max(N, 1)
         def udf_grad_func(p):
             p = np.asarray(p, dtype=np.float64).reshape(-1, 3)
-            d = np.maximum(interp(_idx(p)), 0.0) / half
+            d = _eval_field(p) / size
+            #d = np.maximum(interp(_idx(p)), 0.0) / half
             g = np.empty_like(p)
             for a in range(3):
                 pp = p.copy(); pp[:, a] += eps
                 pm = p.copy(); pm[:, a] -= eps
-                g[:, a] = (interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
+                g[:, a] = ((_eval_field(pp) - _eval_field(pm)) / (2.0 * eps) #(interp(_idx(pp)) - interp(_idx(pm))) / (2.0 * eps)
             nrm = np.linalg.norm(g, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
             return d.reshape(-1, 1).astype(np.float32), (g / nrm).astype(np.float32)
 
