@@ -6,12 +6,18 @@
   src_1: 0.6
   tgt_0: 0.2
   tgt_1: 0.7
-  scale: 1.5
+  scale: 1.0
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
-  udf_sample_threshold: 0.005
-  udf_sampling_depth: 1
+
+  udf_local_zero_calibration: false
+
+  udf_extract_level: 0.0
+  udf_surface_band: 0.04
+  udf_reliable_threshold: 0.025
+  udf_sample_threshold: 0.002
+
 
   use_accessory_support_clamp: false 
   support_rho_limit: 1.00
@@ -30,6 +36,47 @@
   hard_clearance: 0.00001
   avatar_clearance: 0.00001
   cut_avatar: false 
+
+
+- target_key: oktopus_9_v1|t1
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.9
+  src_1: 0.6
+  tgt_0: 0.2
+  tgt_1: 0.7
+  scale: 1.5
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+
+  udf_local_zero_calibration: false
+
+  udf_extract_level: 0.0
+  udf_surface_band: 0.04
+  udf_reliable_threshold: 0.025
+  udf_sample_threshold: 0.002
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.00
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  # Main correction: geometric snug field
+  # Disable these in first test
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.00001
+  avatar_clearance: 0.00001
+  cut_avatar: false 
+
+
 
 
 - target_key: oktopus_9_v1|t1
