@@ -6,10 +6,11 @@ for _p in ('src', 'SDF', 'UDF'):
 # --- end bootstrap ---
 from time import time
 from app import AgentSDF, AgentUDF, AgentSDFasUDF
-import os, pickle, yaml, argparse
+import argparse
+import os
 import os.path as op
+
 import torch
-import numpy as np
 import yaml
 from utils import MCGrid, process_options, DotDict
 
@@ -87,20 +88,16 @@ def start_test(opt):
     }
     if getattr(args, 'extractor', None):
         arg['surface_extraction'] = args.extractor
-    if getattr(args, 'udf_threshold', None) is not None:
-        arg['udf_reliable_threshold'] = args.udf_threshold
-    if getattr(args, 'udf_surface_band', None) is not None:
-        arg['udf_surface_band'] = args.udf_surface_band
     if getattr(args, 'udf_max_depth', None) is not None:
         arg['udf_max_depth'] = args.udf_max_depth
-    if getattr(args, 'udf_level_offset', None) is not None:
-        arg['udf_level_offset'] = args.udf_level_offset
     if getattr(args, 'udf_domain_padding', None) is not None:
         arg['udf_domain_padding'] = args.udf_domain_padding
-    if getattr(args, 'udf_near_band', None) is not None:
-        arg['udf_domain_near_band_world'] = args.udf_near_band
-    if getattr(args, 'udf_sampling_depth', None) is not None:
-        arg['udf_sampling_depth'] = args.udf_sampling_depth
+    if getattr(args, 'udf_domain_band', None) is not None:
+        arg['udf_domain_band'] = args.udf_domain_band
+    if getattr(args, 'udf_fd_cell_fraction', None) is not None:
+        arg['udf_fd_cell_fraction'] = args.udf_fd_cell_fraction
+    if getattr(args, 'udf_far_value', None) is not None:
+        arg['udf_far_value'] = args.udf_far_value
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -156,28 +153,18 @@ if __name__ == '__main__':
                    help="which agent: sdf (signed, default), udf (unsigned / "
                         "DualMeshUDF), or sdf_as_udf (diagnostic abs(SDF))")
     p.add_argument('-e', '--extractor', required=False, default=None,
-                   help="surface extractor: marching_cubes (default), dualmeshudf "
-                        "(UDF via grid), or dualmeshudf_model (UDF via the network "
-                        "queried directly -- sharper, fewer holes)")
-    p.add_argument('--udf-threshold', dest='udf_threshold', type=float, default=None,
-                   help="DualMeshUDF reliable threshold in cube units (try 0.01 / 0.015 / 0.02 at low res)")
-    p.add_argument('--udf-surface-band', dest='udf_surface_band', type=float, default=None,
-                   help="voxels with net UDF below this are the surface (default 0.02)")
+                   help="SDF extractor override. AgentUDF always uses direct DualMesh-UDF.")
     p.add_argument('--udf-max-depth', dest='udf_max_depth', type=int, default=None,
-                   help="DualMeshUDF octree depth (overrides the reso-derived default)")
-    p.add_argument('--udf-level-offset', dest='udf_level_offset', type=float, default=None,
-                   help="subtract this (world units) from the network UDF before "
-                        "extraction, to hit the net's positive floor (model path)")
+                   help="DualMesh-UDF octree depth; 7 corresponds to about 128^3.")
     p.add_argument('--udf-domain-padding', dest='udf_domain_padding', type=float, default=None,
-                   help="model-direct only: pad the accessory bbox the octree "
-                        "searches, as a fraction (default 0.2)")
-    p.add_argument('--udf-near-band', dest='udf_near_band', type=float, default=None,
-                   help="model-direct only: shrink the octree search cube to the "
-                        "bbox of support points with UDF < this (world units), "
-                        "e.g. 0.08. Off (0/unset) = full support bbox.")
-    p.add_argument('--udf-sampling-depth', dest='udf_sampling_depth', type=int, default=None,
-                   help="DualMeshUDF per-cell sampling depth (1 -> 27 pts/cell, "
-                        "2 -> 125). Higher catches thin shells -> fewer holes.")
+                   help="Padding around the low-UDF support bbox (default 0.15).")
+    p.add_argument('--udf-domain-band', dest='udf_domain_band', type=float, default=None,
+                   help="Raw model UDF band used only to choose the extraction bbox.")
+    p.add_argument('--udf-fd-cell-fraction', dest='udf_fd_cell_fraction',
+                   type=float, default=None,
+                   help="Finite-difference step as a fraction of one octree cell.")
+    p.add_argument('--udf-far-value', dest='udf_far_value', type=float, default=None,
+                   help="Raw UDF returned outside adaptation support (default 0.1).")
 
     args = p.parse_args()
     opt = {

@@ -1,0 +1,63 @@
+# Minimal UDF extraction settings.
+# DualMesh-UDF queries the adapted model directly; no raster UDF, EDT,
+# positive iso-level, zero calibration, snug field, or tiled detail.
+udf_max_depth: 7
+udf_batch_size: 150000
+udf_far_value: 0.1
+udf_fd_cell_fraction: 1.0
+udf_domain_band: 0.05
+udf_domain_padding: 0.15
+udf_domain_min_points: 128
+udf_export_near_points: true
+
+adaptations:
+  - target_key: oktopus_9_v1|t1
+    accessory_key: puffer_3_v1|l_arm
+    mode: direct
+    src_0: 0.9
+    src_1: 0.6
+    tgt_0: 0.2
+    tgt_1: 0.7
+    scale: 1.5
+    rot_deg: 0.0
+    wrap_radius: false
+    rigid_radius: true
+
+  - target_key: oktopus_9_v1|t1
+    accessory_key: puffer_3_v1|l_arm
+    mode: direct
+    src_0: 0.65
+    src_1: 0.0
+    tgt_0: 0.3
+    tgt_1: 0.9
+    scale: 1.0
+    rot_deg: 0.0
+    wrap_radius: false
+    rigid_radius: true
+    loop_projection_candidates: 1
+    avatar_cylinder_radius_scale: 1.2
+    use_adapt_control_filter_grid: true
+
+  - target_key: oktopus_9_v1|t1
+    accessory_key: puffer_3_v1|l_arm
+    mode: direct
+    src_0: 1.0
+    src_1: 0.0
+    tgt_0: 0.4
+    tgt_1: 0.85
+    scale: 1.4
+    rot_deg: 0.0
+    wrap_radius: false
+    rigid_radius: true
+
+  - target_key: oktopus_9_v1|t1
+    accessory_key: puffer_3_v1|l_arm
+    mode: direct
+    src_0: 1.0
+    src_1: 0.5
+    tgt_0: 0.0
+    tgt_1: 1.0
+    scale: 1.0
+    rot_deg: 0.0
+    wrap_radius: true
+    rigid_radius: false
