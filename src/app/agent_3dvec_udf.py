@@ -163,6 +163,7 @@ class AgentUDF(AgentBase):
         accessory_key,
         batch_size,
         far_world,
+        return_valid=False,
     ):
         """Query the adapted network field at arbitrary world points.
 
@@ -171,13 +172,14 @@ class AgentUDF(AgentBase):
         """
         world_points = np.asarray(world_points, dtype=np.float64).reshape(-1, 3)
         output = np.full(world_points.shape[0], float(far_world), dtype=np.float64)
+        valid = np.zeros(world_points.shape[0], dtype=bool)
 
         accessory_data, _avatar_data, inside = (
             avatar_curve.core.localize_samples_adapt(world_points, adapt_arg)
         )
         inside = np.asarray(inside, dtype=np.int64).reshape(-1)
         if inside.size == 0:
-            return output
+            return (output, valid) if return_valid else output
 
         inferred = self._inference_full_vals(
             accessory_data,
@@ -191,7 +193,8 @@ class AgentUDF(AgentBase):
                 f"values={values.shape[0]}, inside={inside.shape[0]}."
             )
         output[inside] = values
-        return output
+        valid[inside] = True
+        return (output, valid) if return_valid else output
 
     def _make_dualmesh_oracle(
         self,
@@ -201,7 +204,6 @@ class AgentUDF(AgentBase):
         domain_half_extent,
         max_depth,
         far_world,
-        fd_cell_fraction=1.0,
     ):
         """Build the API expected by DualMesh-UDF.
 
@@ -223,39 +225,124 @@ class AgentUDF(AgentBase):
             raise ValueError(f"Invalid UDF domain half extent: {half}")
 
         cells_per_axis = float(2 ** int(max_depth))
-        eps_u = float(fd_cell_fraction) * (2.0 / cells_per_axis)
+        cell_width_u = 2.0 / cells_per_axis
+
+        # Use half of the finest-cell width as the default finite-difference
+        # radius.  This is derived entirely from the active octree resolution,
+        # so there is no per-run tuning knob.  Near localization boundaries we
+        # retry with progressively smaller radii before falling back to a
+        # one-sided derivative.
+        base_eps_u = 0.5 * cell_width_u
+        retry_eps_u = (
+            base_eps_u,
+            0.5 * base_eps_u,
+            0.25 * base_eps_u,
+        )
         far_cube = float(far_world) / half
         grad_floor = 1.0e-8
+        stats = {
+            "eval_points": 0,
+            "central": 0,
+            "one_sided": 0,
+            "invalid_axes": 0,
+            "invalid_gradients": 0,
+        }
 
         def to_world(u):
             u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
             return center[None, :] + half * u
 
         def raw_u(u):
-            return self._udf_clamp(raw_world_udf_fn(to_world(u))).reshape(-1)
+            result = raw_world_udf_fn(to_world(u))
+            if isinstance(result, tuple):
+                values, valid = result
+                values = self._udf_clamp(values).reshape(-1)
+                valid = np.asarray(valid, dtype=bool).reshape(-1)
+            else:
+                values = self._udf_clamp(result).reshape(-1)
+                valid = np.ones(values.shape[0], dtype=bool)
+            return values, valid
 
         def evaluate(u):
             u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
-            raw = raw_u(u)
-            grad_u = np.empty_like(u)
+            raw, center_valid = raw_u(u)
+            grad_u = np.zeros_like(u)
+            axis_valid = np.zeros_like(u, dtype=bool)
+            stats["eval_points"] += int(u.shape[0])
+
             for axis in range(3):
-                plus = u.copy()
-                minus = u.copy()
-                plus[:, axis] += eps_u
-                minus[:, axis] -= eps_u
-                grad_u[:, axis] = (raw_u(plus) - raw_u(minus)) / (2.0 * eps_u)
+                unresolved = center_valid.copy()
+                fallback_grad = np.zeros(u.shape[0], dtype=np.float64)
+                fallback_valid = np.zeros(u.shape[0], dtype=bool)
+
+                for eps_u in retry_eps_u:
+                    active = np.flatnonzero(unresolved)
+                    if active.size == 0:
+                        break
+
+                    plus = u[active].copy()
+                    minus = u[active].copy()
+                    plus[:, axis] += eps_u
+                    minus[:, axis] -= eps_u
+                    plus_value, plus_valid = raw_u(plus)
+                    minus_value, minus_valid = raw_u(minus)
+
+                    both_local = plus_valid & minus_valid
+                    if np.any(both_local):
+                        both = active[both_local]
+                        grad_u[both, axis] = (
+                            plus_value[both_local] - minus_value[both_local]
+                        ) / (2.0 * eps_u)
+                        axis_valid[both, axis] = True
+                        unresolved[both] = False
+                        stats["central"] += int(both.size)
+
+                    # Save a valid one-sided estimate, but continue trying a
+                    # smaller radius in case it recovers a central difference.
+                    plus_only_local = plus_valid & ~minus_valid
+                    minus_only_local = minus_valid & ~plus_valid
+                    if np.any(plus_only_local):
+                        plus_only = active[plus_only_local]
+                        fallback_grad[plus_only] = (
+                            plus_value[plus_only_local] - raw[plus_only]
+                        ) / eps_u
+                        fallback_valid[plus_only] = True
+                    if np.any(minus_only_local):
+                        minus_only = active[minus_only_local]
+                        fallback_grad[minus_only] = (
+                            raw[minus_only] - minus_value[minus_only_local]
+                        ) / eps_u
+                        fallback_valid[minus_only] = True
+
+                if np.any(unresolved):
+                    use_fallback = unresolved & fallback_valid
+                    if np.any(use_fallback):
+                        grad_u[use_fallback, axis] = fallback_grad[use_fallback]
+                        axis_valid[use_fallback, axis] = True
+                        unresolved[use_fallback] = False
+                        stats["one_sided"] += int(np.sum(use_fallback))
+
+                stats["invalid_axes"] += int(np.sum(unresolved))
 
             grad_norm = np.linalg.norm(grad_u, axis=1)
             safe_norm = np.maximum(grad_norm, grad_floor)
+            enough_axes = np.sum(axis_valid, axis=1) >= 2
+            valid_gradient = center_valid & enough_axes & (grad_norm > grad_floor)
+            stats["invalid_gradients"] += int(np.sum(~valid_gradient))
 
             # First-order re-distance correction.  Clip unsupported flat regions
             # to the configured far value instead of letting division explode.
-            distance_cube = np.minimum(raw / safe_norm, far_cube)
+            distance_cube = np.full(raw.shape[0], far_cube, dtype=np.float64)
+            distance_cube[valid_gradient] = np.minimum(
+                raw[valid_gradient] / safe_norm[valid_gradient],
+                far_cube,
+            )
             distance_cube = np.maximum(distance_cube, 0.0)
 
             unit_grad = np.zeros_like(grad_u)
-            valid = grad_norm > grad_floor
-            unit_grad[valid] = grad_u[valid] / grad_norm[valid, None]
+            unit_grad[valid_gradient] = (
+                grad_u[valid_gradient] / grad_norm[valid_gradient, None]
+            )
             return distance_cube, unit_grad, raw, grad_norm
 
         def udf_func(points):
@@ -269,7 +356,7 @@ class AgentUDF(AgentBase):
                 gradient.astype(np.float32),
             )
 
-        return udf_func, udf_grad_func, eps_u
+        return udf_func, udf_grad_func, base_eps_u, stats
 
     # ------------------------------------------------------------------
     # DualMesh-UDF extraction
@@ -371,15 +458,12 @@ class AgentUDF(AgentBase):
         )
         batch_size = int(config.get("udf_batch_size", 150000))
         far_world = float(config.get("udf_far_value", 0.1))
-        fd_fraction = float(config.get("udf_fd_cell_fraction", 1.0))
-
-        udf_func, udf_grad_func, eps_u = self._make_dualmesh_oracle(
+        udf_func, udf_grad_func, eps_u, fd_stats = self._make_dualmesh_oracle(
             raw_world_udf_fn,
             domain_center=domain_center,
             domain_half_extent=domain_half_extent,
             max_depth=max_depth,
             far_world=far_world,
-            fd_cell_fraction=fd_fraction,
         )
 
         print(
@@ -388,7 +472,9 @@ class AgentUDF(AgentBase):
             f"batch={batch_size}",
             f"center={np.asarray(domain_center)}",
             f"half={float(domain_half_extent):.6g}",
-            f"fd_eps_u={eps_u:.6g}",
+            f"fd_base_eps_u={eps_u:.6g}",
+            f"fd_base_eps_world={float(domain_half_extent) * eps_u:.6g}",
+            "fd_mode=adaptive_half_cell",
             "distance_correction=f/|grad(f)|",
         )
 
@@ -403,6 +489,16 @@ class AgentUDF(AgentBase):
         faces = np.asarray(faces, dtype=np.int64)
         print(
             f"[dualmeshudf direct] extracted V={len(vertices)} F={len(faces)}"
+        )
+        total_axes = max(1, int(fd_stats["eval_points"]) * 3)
+        print(
+            "[dualmeshudf fd]",
+            f"eval_points={fd_stats['eval_points']}",
+            f"central={fd_stats['central']}",
+            f"one_sided={fd_stats['one_sided']}",
+            f"invalid_axes={fd_stats['invalid_axes']}",
+            f"invalid_axis_pct={100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
+            f"invalid_gradients={fd_stats['invalid_gradients']}",
         )
         if len(vertices) == 0 or len(faces) == 0:
             return self._empty_mesh()
@@ -632,6 +728,7 @@ class AgentUDF(AgentBase):
                     accessory_key=_accessory_key,
                     batch_size=_batch_size,
                     far_world=_far_world,
+                    return_valid=True,
                 )
 
             mesh = self.extract_udf_mesh_from_model(
