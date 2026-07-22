@@ -264,29 +264,40 @@ class AgentUDF(AgentBase):
             stats["eval_points"] += n_points
 
             active = np.flatnonzero(center_valid)
-            for axis in range(3):
-                if active.size == 0:
-                    stats["invalid_axes"] += n_points
-                    continue
+            if active.size == 0:
+                stats["invalid_axes"] += n_points * 3
+            else:
+                # Query all six central-difference offsets (+/-eps on each of
+                # the three axes) for the active centers in ONE model pass
+                # instead of six separate calls. The central-difference math
+                # and validity gating are byte-identical to the per-axis loop;
+                # this only collapses the localization/inference passes (the
+                # real cost on gradient-bound runs) from 7 to 2. Row layout
+                # after reshape(6, -1): [x+, x-, y+, y-, z+, z-].
+                base = u[active]
+                offs = np.repeat(base[None, :, :], 6, axis=0)
+                for axis in range(3):
+                    offs[2 * axis, :, axis] += eps_u
+                    offs[2 * axis + 1, :, axis] -= eps_u
 
-                plus = u[active].copy()
-                minus = u[active].copy()
-                plus[:, axis] += eps_u
-                minus[:, axis] -= eps_u
+                off_value, off_valid = raw_u(offs.reshape(-1, 3))
+                off_value = off_value.reshape(6, -1)
+                off_valid = off_valid.reshape(6, -1)
 
-                plus_value, plus_valid = raw_u(plus)
-                minus_value, minus_valid = raw_u(minus)
-                both_valid = plus_valid & minus_valid
-                rows = active[both_valid]
+                for axis in range(3):
+                    plus_value = off_value[2 * axis]
+                    minus_value = off_value[2 * axis + 1]
+                    both_valid = off_valid[2 * axis] & off_valid[2 * axis + 1]
+                    rows = active[both_valid]
 
-                if rows.size:
-                    grad_u[rows, axis] = (
-                        plus_value[both_valid] - minus_value[both_valid]
-                    ) / (2.0 * eps_u)
-                    axis_valid[rows, axis] = True
+                    if rows.size:
+                        grad_u[rows, axis] = (
+                            plus_value[both_valid] - minus_value[both_valid]
+                        ) / (2.0 * eps_u)
+                        axis_valid[rows, axis] = True
 
-                stats["central_axes"] += int(rows.size)
-                stats["invalid_axes"] += n_points - int(rows.size)
+                    stats["central_axes"] += int(rows.size)
+                    stats["invalid_axes"] += n_points - int(rows.size)
 
             grad_norm = np.linalg.norm(grad_u, axis=1)
             valid_gradient = (
