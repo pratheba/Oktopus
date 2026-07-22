@@ -98,6 +98,20 @@ def start_test(opt):
         arg['udf_fd_cell_fraction'] = args.udf_fd_cell_fraction
     if getattr(args, 'udf_far_value', None) is not None:
         arg['udf_far_value'] = args.udf_far_value
+    if getattr(args, 'udf_reliable', None) is not None:
+        arg['udf_reliable_threshold'] = args.udf_reliable
+    if getattr(args, 'udf_subdivide_threshold', None) is not None:
+        arg['udf_subdivide_threshold'] = args.udf_subdivide_threshold
+    if getattr(args, 'udf_projection_threshold', None) is not None:
+        arg['udf_projection_threshold'] = args.udf_projection_threshold
+    if getattr(args, 'udf_sample_threshold', None) is not None:
+        arg['udf_sample_threshold'] = args.udf_sample_threshold
+    if getattr(args, 'udf_sampling_depth', None) is not None:
+        arg['udf_sampling_depth'] = args.udf_sampling_depth
+    if getattr(args, 'udf_cleanup', False):
+        arg['udf_cleanup'] = True
+    if getattr(args, 'udf_no_fill_holes', False):
+        arg['udf_fill_holes'] = False
     agent('part_adapt', arg)
     print('time cost: ', time()-t0)
 ################################################################################
@@ -165,6 +179,23 @@ if __name__ == '__main__':
                    help="Finite-difference step as a fraction of one octree cell.")
     p.add_argument('--udf-far-value', dest='udf_far_value', type=float, default=None,
                    help="Raw UDF returned outside adaptation support (default 0.1).")
+    p.add_argument('--udf-reliable', dest='udf_reliable', type=float, default=None,
+                   help="DualMesh reliable threshold in cube units (default 0.002).")
+    p.add_argument('--udf-subdivide-threshold', dest='udf_subdivide_threshold',
+                   type=float, default=None,
+                   help="Octree adaptive-subdivide threshold (defaults to reliable).")
+    p.add_argument('--udf-projection-threshold', dest='udf_projection_threshold',
+                   type=float, default=None,
+                   help="Grid-vertex validity threshold pu<thr (defaults to reliable).")
+    p.add_argument('--udf-sample-threshold', dest='udf_sample_threshold',
+                   type=float, default=None,
+                   help="Dense-sample near-band threshold (default min(0.25*reliable,0.005)).")
+    p.add_argument('--udf-sampling-depth', dest='udf_sampling_depth', type=int, default=None,
+                   help="Dense-sampling octree depth.")
+    p.add_argument('--udf-cleanup', dest='udf_cleanup', action='store_true',
+                   help="Apply post-extraction cleanup (keep-largest, merge, fill holes, fix normals).")
+    p.add_argument('--udf-no-fill-holes', dest='udf_no_fill_holes', action='store_true',
+                   help="Disable hole-filling inside cleanup.")
 
     args = p.parse_args()
     opt = {
