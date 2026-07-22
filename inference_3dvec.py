@@ -23,7 +23,12 @@ device = torch.device('cuda:0')
 
 
 def start_inference1(opt):
-    agent = Agent()
+    #agent = Agent()
+    selected_agent = getattr(opt, 'agent', 'sdf')
+    _agent_cls = {'udf': AgentUDF, 'sdf_as_udf': AgentSDFasUDF}.get(
+        selected_agent, AgentSDF)
+    agent = _agent_cls()
+    print('[test] agent =', _agent_cls.__name__)
 
     config_path = op.join(opt.root_path, opt.config_path) # the config is yaml file path
     output_path = op.join(opt.root_path, 'inference', str(opt.num_samples), str(opt.out_path))
