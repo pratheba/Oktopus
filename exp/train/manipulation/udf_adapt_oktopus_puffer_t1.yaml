@@ -1,3 +1,18 @@
+udf_max_depth: 7
+udf_reliable: 0.002 
+udf_sample_threshold: 0.0005 
+udf_sampling_depth: 1
+
+udf_far_value: 0.1
+udf_domain_band: 0.05
+udf_domain_padding: 0.15
+udf_domain_min_points: 128
+ 
+udf_cleanup: true
+udf_export_near_points: true
+udf_batch_size: 150000
+
+adaptations:
 - target_key: oktopus_9_v1|t1
   accessory_key: puffer_3_v1|l_arm
   mode: direct
@@ -10,13 +25,6 @@
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
-
-  udf_local_zero_calibration: false
-
-  udf_extract_level: 0.0
-  udf_surface_band: 0.04
-  udf_reliable_threshold: 0.025
-  udf_sample_threshold: 0.002
 
 
   use_accessory_support_clamp: false 
@@ -50,13 +58,6 @@
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
-
-  udf_local_zero_calibration: false
-
-  udf_extract_level: 0.0
-  udf_surface_band: 0.04
-  udf_reliable_threshold: 0.025
-  udf_sample_threshold: 0.002
 
   use_accessory_support_clamp: false 
   support_rho_limit: 1.00
