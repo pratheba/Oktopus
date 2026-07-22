@@ -5,7 +5,7 @@ for _p in ('src', 'SDF', 'UDF'):
     _sys.path.insert(0, _os.path.join(_ROOT, _p))
 # --- end bootstrap ---
 from time import time
-from app import Agent
+from app import Agent, AgentSDF, AgentUDF, AgentSDFasUDF
 import os, pickle, yaml, argparse
 import os.path as op
 import torch
@@ -58,7 +58,10 @@ def start_inference1(opt):
         agent('ngcnet_inference', arg)
 
 def start_inference(opt):
-    agent = Agent()
+    _cls = {'udf': AgentUDF, 'sdf_as_udf': AgentSDFasUDF}.get(
+        getattr(opt, 'agent', 'sdf'), AgentSDF)
+    agent = _cls()
+    print('[inference] agent =', _cls.__name__)
 
     config_path = op.join(opt.root_path, opt.config_path) # the config is yaml file path
     output_path = op.join(opt.root_path, 'inference', str(opt.num_samples), str(opt.out_path))
