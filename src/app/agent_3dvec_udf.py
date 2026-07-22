@@ -728,3 +728,85 @@ class AgentUDF(AgentBase):
                 f"components={len(components)}",
                 f"faces_top10={component_faces[:10]}",
             )
+
+    @torch.no_grad()
+    def action_ngcnet_inference(self, arg):
+        """NATIVE direct UDF inference (overrides the grid-based base version).
+
+        Reconstruct each accessory in its OWN training coordinate frame via
+        direct model queries + DualMeshUDF -- no adaptation, no raster grid,
+        no EDT. Closest thing to extract_from_gt, and the clean test of whether
+        the checkpoint itself has usable UDF values/gradients. Slow (every
+        octree query runs localize + inference), but diagnostic.
+        """
+        data_root = arg['data_root']
+        data_path = arg['data_path']
+        self.load_data(data_root, data_path)
+        mc_grid = arg['mc_grid']
+        reso = int(mc_grid.reso)
+        size = float(mc_grid.size)
+        output_folder = arg['output_folder']
+        checkpoint = arg['checkpoint']
+        config = dict(arg)
+
+        far = float(config.get('udf_far_value', 0.1))
+        bs = int(config.get('udf_batch_size', 150000))
+        norm = float(config.get('udf_localize_norm', 1.0))
+        band = float(config.get('udf_domain_band', 0.05))
+        pad = float(config.get('udf_domain_padding', 0.15))
+        coarse = int(config.get('udf_domain_scan_reso', 48))
+        os.makedirs(output_folder, exist_ok=True)
+
+        for shape_name, handle in self.handles.items():
+            for curve in handle.curves:
+                key = self.encode_key(shape_name, curve.name)
+                if key not in self.feat_dict:
+                    continue
+
+                def native_raw(world_pts, _c=curve, _k=key):
+                    world_pts = np.asarray(
+                        world_pts, dtype=np.float64).reshape(-1, 3)
+                    out = np.full(world_pts.shape[0], far, dtype=np.float64)
+                    cd, inside = _c.core.localize_samples(
+                        world_pts, norm=norm, k_project=1)
+                    inside = np.asarray(inside, dtype=np.int64).reshape(-1)
+                    if inside.size:
+                        vals, _vb = self._inference_vals(cd, _k, batch_size=bs)
+                        out[inside] = self._udf_clamp(
+                            np.asarray(vals, dtype=np.float64).reshape(-1))
+                    return out
+
+                # coarse scan for the native near-surface bbox (the domain).
+                lin = np.linspace(-size, size, coarse)
+                gx, gy, gz = np.meshgrid(lin, lin, lin, indexing='ij')
+                gp = np.stack([gx.reshape(-1), gy.reshape(-1),
+                               gz.reshape(-1)], axis=1)
+                gu = native_raw(gp)
+                m = gu < band
+                print("[native udf]", key, "scan_reso=", coarse,
+                      "near(", band, ")=", int(m.sum()), "/", gp.shape[0])
+                if int(m.sum()) < 8:
+                    print("[native udf]", key,
+                          ": too few near-surface points, skipping")
+                    continue
+                pts = gp[m]
+                bmin = pts.min(0); bmax = pts.max(0)
+                center = 0.5 * (bmin + bmax)
+                half = 0.5 * float(np.max(bmax - bmin)) * (1.0 + pad)
+                print("[native udf]", key, "domain center=", center,
+                      "half=", round(half, 5))
+
+                mesh = self.extract_udf_mesh_from_model(
+                    native_raw,
+                    domain_center=center,
+                    domain_half_extent=half,
+                    resolution=reso,
+                    config=config,
+                )
+                mesh_file = op.join(
+                    output_folder, shape_name,
+                    f"{shape_name}_{curve.name}_{checkpoint}_native{reso}.ply")
+                os.makedirs(op.dirname(mesh_file), exist_ok=True)
+                mesh.export(mesh_file)
+                print("[native udf] saved", mesh_file,
+                      "V=", len(mesh.vertices), "F=", len(mesh.faces))
