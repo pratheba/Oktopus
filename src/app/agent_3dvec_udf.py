@@ -11,23 +11,17 @@ from agent_3dvec_base import AgentBase
 
 
 class AgentUDF(AgentBase):
-    """Minimal UDF adaptation agent.
+    """Minimal direct-query UDF adaptation agent.
 
     The trained model is queried directly at the points requested by
-    DualMesh-UDF.  There is no dense UDF raster, EDT continuation, positive
+    DualMesh-UDF. There is no dense UDF raster, EDT continuation, positive
     iso-level, local zero calibration, model-direct fallback grid, tiled
     detail, snug field, marching cubes, or RFTA.
 
-    Important: after geometric adaptation, the network output is an implicit
-    field with the correct zero set, but it is not necessarily a Euclidean
-    distance in adapted world space.  DualMesh-UDF requires distance magnitude,
-    not only the zero set.  We therefore apply the first-order correction
-
-        d_world ~= f / ||grad_world f||
-
-    using finite differences of the adapted model field.  For a uniform query
-    scaling by s, both f and ||grad f|| scale by s, so the correction removes
-    the scale factor automatically.
+    This diagnostic keeps the model's raw UDF values. World-space UDF values
+    are divided only by the extraction-domain half extent to convert them to
+    DualMesh cube units. Gradients are estimated with central differences at
+    one quarter of the finest octree-cell width.
     """
 
     _IGNORED_SDF_KEYS = {
@@ -205,19 +199,21 @@ class AgentUDF(AgentBase):
         max_depth,
         far_world,
     ):
-        """Build the API expected by DualMesh-UDF.
+        """Build the UDF and gradient callables expected by DualMesh-UDF.
 
-        DualMesh works in u in [-1, 1]^3, with
+        DualMesh uses coordinates ``u`` in ``[-1, 1]^3`` with
 
             world = center + half_extent * u.
 
-        Let g(u) be the raw adapted model output in source/world distance units.
-        The finite-difference gradient is dg/du.  The corrected distance in
-        DualMesh cube units is
+        The model output is treated as a raw world-space UDF. It is converted
+        to DualMesh cube units by dividing by ``half_extent``. The gradient
+        direction is estimated with validity-aware central differences using
+        one quarter of the finest octree-cell width.
 
-            d_cube = g / ||dg/du||.
-
-        This is equivalent to g/||grad_world g|| divided by half_extent.
+        No one-sided differences and no ``f / ||grad(f)||`` re-distance
+        correction are used. If any central-difference axis cannot be
+        localized, that gradient is marked invalid instead of using the
+        artificial far value to manufacture a tangent plane.
         """
         center = np.asarray(domain_center, dtype=np.float64).reshape(3)
         half = float(domain_half_extent)
@@ -226,24 +222,13 @@ class AgentUDF(AgentBase):
 
         cells_per_axis = float(2 ** int(max_depth))
         cell_width_u = 2.0 / cells_per_axis
+        eps_u = 0.25 * cell_width_u
 
-        # Use half of the finest-cell width as the default finite-difference
-        # radius.  This is derived entirely from the active octree resolution,
-        # so there is no per-run tuning knob.  Near localization boundaries we
-        # retry with progressively smaller radii before falling back to a
-        # one-sided derivative.
-        base_eps_u = 0.5 * cell_width_u
-        retry_eps_u = (
-            base_eps_u,
-            0.5 * base_eps_u,
-            0.25 * base_eps_u,
-        )
         far_cube = float(far_world) / half
         grad_floor = 1.0e-8
         stats = {
             "eval_points": 0,
-            "central": 0,
-            "one_sided": 0,
+            "central_axes": 0,
             "invalid_axes": 0,
             "invalid_gradients": 0,
         }
@@ -261,80 +246,62 @@ class AgentUDF(AgentBase):
             else:
                 values = self._udf_clamp(result).reshape(-1)
                 valid = np.ones(values.shape[0], dtype=bool)
+
+            if values.shape[0] != valid.shape[0]:
+                raise ValueError(
+                    "UDF oracle value/validity length mismatch: "
+                    f"values={values.shape[0]}, valid={valid.shape[0]}."
+                )
             return values, valid
 
         def evaluate(u):
             u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
             raw, center_valid = raw_u(u)
+            n_points = int(u.shape[0])
+
             grad_u = np.zeros_like(u)
             axis_valid = np.zeros_like(u, dtype=bool)
-            stats["eval_points"] += int(u.shape[0])
+            stats["eval_points"] += n_points
 
+            active = np.flatnonzero(center_valid)
             for axis in range(3):
-                unresolved = center_valid.copy()
-                fallback_grad = np.zeros(u.shape[0], dtype=np.float64)
-                fallback_valid = np.zeros(u.shape[0], dtype=bool)
+                if active.size == 0:
+                    stats["invalid_axes"] += n_points
+                    continue
 
-                for eps_u in retry_eps_u:
-                    active = np.flatnonzero(unresolved)
-                    if active.size == 0:
-                        break
+                plus = u[active].copy()
+                minus = u[active].copy()
+                plus[:, axis] += eps_u
+                minus[:, axis] -= eps_u
 
-                    plus = u[active].copy()
-                    minus = u[active].copy()
-                    plus[:, axis] += eps_u
-                    minus[:, axis] -= eps_u
-                    plus_value, plus_valid = raw_u(plus)
-                    minus_value, minus_valid = raw_u(minus)
+                plus_value, plus_valid = raw_u(plus)
+                minus_value, minus_valid = raw_u(minus)
+                both_valid = plus_valid & minus_valid
+                rows = active[both_valid]
 
-                    both_local = plus_valid & minus_valid
-                    if np.any(both_local):
-                        both = active[both_local]
-                        grad_u[both, axis] = (
-                            plus_value[both_local] - minus_value[both_local]
-                        ) / (2.0 * eps_u)
-                        axis_valid[both, axis] = True
-                        unresolved[both] = False
-                        stats["central"] += int(both.size)
+                if rows.size:
+                    grad_u[rows, axis] = (
+                        plus_value[both_valid] - minus_value[both_valid]
+                    ) / (2.0 * eps_u)
+                    axis_valid[rows, axis] = True
 
-                    # Save a valid one-sided estimate, but continue trying a
-                    # smaller radius in case it recovers a central difference.
-                    plus_only_local = plus_valid & ~minus_valid
-                    minus_only_local = minus_valid & ~plus_valid
-                    if np.any(plus_only_local):
-                        plus_only = active[plus_only_local]
-                        fallback_grad[plus_only] = (
-                            plus_value[plus_only_local] - raw[plus_only]
-                        ) / eps_u
-                        fallback_valid[plus_only] = True
-                    if np.any(minus_only_local):
-                        minus_only = active[minus_only_local]
-                        fallback_grad[minus_only] = (
-                            raw[minus_only] - minus_value[minus_only_local]
-                        ) / eps_u
-                        fallback_valid[minus_only] = True
-
-                if np.any(unresolved):
-                    use_fallback = unresolved & fallback_valid
-                    if np.any(use_fallback):
-                        grad_u[use_fallback, axis] = fallback_grad[use_fallback]
-                        axis_valid[use_fallback, axis] = True
-                        unresolved[use_fallback] = False
-                        stats["one_sided"] += int(np.sum(use_fallback))
-
-                stats["invalid_axes"] += int(np.sum(unresolved))
+                stats["central_axes"] += int(rows.size)
+                stats["invalid_axes"] += n_points - int(rows.size)
 
             grad_norm = np.linalg.norm(grad_u, axis=1)
-            safe_norm = np.maximum(grad_norm, grad_floor)
-            enough_axes = np.sum(axis_valid, axis=1) >= 2
-            valid_gradient = center_valid & enough_axes & (grad_norm > grad_floor)
-            stats["invalid_gradients"] += int(np.sum(~valid_gradient))
+            valid_gradient = (
+                center_valid
+                & np.all(axis_valid, axis=1)
+                & np.isfinite(grad_norm)
+                & (grad_norm > grad_floor)
+            )
+            stats["invalid_gradients"] += int(n_points - np.sum(valid_gradient))
 
-            # First-order re-distance correction.  Clip unsupported flat regions
-            # to the configured far value instead of letting division explode.
-            distance_cube = np.full(raw.shape[0], far_cube, dtype=np.float64)
-            distance_cube[valid_gradient] = np.minimum(
-                raw[valid_gradient] / safe_norm[valid_gradient],
+            # Distance and gradient now come from the same raw model field.
+            # Convert only from world-distance units to DualMesh cube units.
+            distance_cube = np.full(n_points, far_cube, dtype=np.float64)
+            distance_cube[center_valid] = np.minimum(
+                raw[center_valid] / half,
                 far_cube,
             )
             distance_cube = np.maximum(distance_cube, 0.0)
@@ -343,20 +310,20 @@ class AgentUDF(AgentBase):
             unit_grad[valid_gradient] = (
                 grad_u[valid_gradient] / grad_norm[valid_gradient, None]
             )
-            return distance_cube, unit_grad, raw, grad_norm
+            return distance_cube, unit_grad
 
         def udf_func(points):
-            distance, _gradient, _raw, _grad_norm = evaluate(points)
+            distance, _gradient = evaluate(points)
             return distance.reshape(-1, 1).astype(np.float32)
 
         def udf_grad_func(points):
-            distance, gradient, _raw, _grad_norm = evaluate(points)
+            distance, gradient = evaluate(points)
             return (
                 distance.reshape(-1, 1).astype(np.float32),
                 gradient.astype(np.float32),
             )
 
-        return udf_func, udf_grad_func, base_eps_u, stats
+        return udf_func, udf_grad_func, eps_u, stats
 
     # ------------------------------------------------------------------
     # DualMesh-UDF extraction
@@ -474,8 +441,8 @@ class AgentUDF(AgentBase):
             f"half={float(domain_half_extent):.6g}",
             f"fd_base_eps_u={eps_u:.6g}",
             f"fd_base_eps_world={float(domain_half_extent) * eps_u:.6g}",
-            "fd_mode=adaptive_half_cell",
-            "distance_correction=f/|grad(f)|",
+            "fd_mode=fixed_quarter_cell_central_only",
+            "distance=raw_udf/half_extent",
         )
 
         self._ensure_udf_igl_patch()
@@ -494,8 +461,7 @@ class AgentUDF(AgentBase):
         print(
             "[dualmeshudf fd]",
             f"eval_points={fd_stats['eval_points']}",
-            f"central={fd_stats['central']}",
-            f"one_sided={fd_stats['one_sided']}",
+            f"central_axes={fd_stats['central_axes']}",
             f"invalid_axes={fd_stats['invalid_axes']}",
             f"invalid_axis_pct={100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
             f"invalid_gradients={fd_stats['invalid_gradients']}",
