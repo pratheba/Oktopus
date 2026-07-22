@@ -405,6 +405,94 @@ class AgentUDF(AgentBase):
         igl.remove_unreferenced = unref
         igl._oktopus_udf_patched = True
 
+    def _dualmeshudf_extract(self, udf_func, udf_grad_func, *, batch_size,
+                             max_depth, reliable, sample_threshold, sampling_depth):
+        """Configurable DualMeshUDF octree loop.
+
+        Exposes the reliability threshold (used by adaptive_subdivide AND grid
+        validity) and a SEPARATE batch-solve `sample_threshold`, plus per-cell
+        `sampling_depth`. Stock extract_mesh hardcodes reliable=0.002; this lets
+        us match the learned UDF's positive floor. Logs projection statistics
+        for the GT-vs-learned threshold comparison.
+        """
+        import numpy as _np
+        import igl as _igl
+        from DualMeshUDF_core import Octree, triangulate_faces
+        from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
+        octree = Octree(max_depth=int(max_depth),
+                        min_corner=_np.array([[-1.], [-1.], [-1.]]),
+                        max_corner=_np.array([[1.], [1.], [1.]]),
+                        sampling_depth=int(sampling_depth))
+        cur = 0
+        while cur <= int(max_depth):
+            cen = octree.centroids_of_new_nodes().astype(_np.float32)
+            cu, cg = query_udf_and_grad(udf_grad_func, cen, batch_size)
+            octree.adaptive_subdivide(cu, cg, reliable)
+            cur += 1
+        gi, gc = octree.get_samples_of_new_nodes()
+        gu, gg = query_udf_and_grad(udf_grad_func, gc.astype(_np.float32), batch_size)
+        octree.set_new_grid_data(gi, gu, gg)
+        idx, proj = octree.get_projections_for_checking_validity()
+        pu = _np.asarray(query_udf(udf_func, proj, batch_size)).reshape(-1)
+        pv = pu < reliable
+        pct = (_np.percentile(pu, [0, 1, 5, 25, 50, 95]).tolist()
+               if pu.size else [])
+        print("[dmudf loop] reliable=", reliable,
+              "sample_threshold=", sample_threshold,
+              "sampling_depth=", int(sampling_depth),
+              "n_proj=", int(pu.size), "n_valid=", int(pv.sum()),
+              "valid_pct=", round(100.0 * float(pv.sum()) / max(pu.size, 1), 2),
+              "pu_pct[0,1,5,25,50,95]=",
+              [round(float(x), 6) for x in pct])
+        octree.set_grid_validity(idx, pv)
+        octree.batch_solve(float(sample_threshold), 1.0, 1.0, 0.15, 0.08)
+        octree.generate_mesh()
+        print("[dmudf loop] pre-triangulate mesh_v=", len(octree.mesh_v),
+              "mesh_f=", len(octree.mesh_f))
+        tri = triangulate_faces(octree.mesh_v, octree.mesh_f,
+                                octree.v_type, octree.mesh_v_dir)
+        v, _, _, f = _igl.remove_duplicate_vertices(
+            _np.array(octree.mesh_v), tri, 1e-7)
+        v, f, _, _ = _igl.remove_unreferenced(v, f)
+        return _np.asarray(v, dtype=_np.float64), _np.asarray(f, dtype=_np.int64)
+
+    @staticmethod
+    def _mesh_quality_stats(v, f):
+        """Boundary / non-manifold / largest-component / degenerate stats."""
+        import numpy as _np
+        import collections as _col
+        v = _np.asarray(v, dtype=_np.float64)
+        f = _np.asarray(f, dtype=_np.int64)
+        nv, nf = int(len(v)), int(len(f))
+        if nf == 0:
+            return {"V": nv, "F": 0, "boundary": 0, "nonmanifold": 0,
+                    "largest_face_pct": 0.0, "degenerate": 0}
+        ec = _col.Counter()
+        for tri in f:
+            for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+                ec[(int(min(a, b)), int(max(a, b)))] += 1
+        boundary = sum(1 for c in ec.values() if c == 1)
+        nonman = sum(1 for c in ec.values() if c > 2)
+        deg_idx = (f[:, 0] == f[:, 1]) | (f[:, 1] == f[:, 2]) | (f[:, 0] == f[:, 2])
+        e1 = v[f[:, 1]] - v[f[:, 0]]
+        e2 = v[f[:, 2]] - v[f[:, 0]]
+        area = 0.5 * _np.linalg.norm(_np.cross(e1, e2), axis=1)
+        degen = int((deg_idx | (area < 1e-12)).sum())
+        par = list(range(nv))
+        def _find(a):
+            while par[a] != a:
+                par[a] = par[par[a]]; a = par[a]
+            return a
+        for tri in f:
+            for a, b in ((tri[0], tri[1]), (tri[1], tri[2])):
+                ra, rb = _find(int(a)), _find(int(b))
+                if ra != rb:
+                    par[ra] = rb
+        roots = _col.Counter(_find(int(t[0])) for t in f)
+        largest = 100.0 * max(roots.values()) / nf if roots else 0.0
+        return {"V": nv, "F": nf, "boundary": boundary, "nonmanifold": nonman,
+                "largest_face_pct": round(largest, 2), "degenerate": degen}
+
     def extract_udf_mesh_from_model(
         self,
         raw_world_udf_fn,
@@ -414,9 +502,9 @@ class AgentUDF(AgentBase):
         resolution,
         config,
     ):
-        """Use the same public DualMesh-UDF extraction API as gt_reconstruct.py."""
-        from DualMeshUDF import extract_mesh
-
+        """Extract via the configurable DualMeshUDF octree loop (reliable /
+        sample_threshold / sampling_depth exposed; default reliable=0.002 keeps
+        stock behavior)."""
         max_depth = int(
             config.get(
                 "udf_max_depth",
@@ -425,6 +513,10 @@ class AgentUDF(AgentBase):
         )
         batch_size = int(config.get("udf_batch_size", 150000))
         far_world = float(config.get("udf_far_value", 0.1))
+        reliable = float(config.get("udf_reliable_threshold", 0.002))
+        sample_threshold = float(config.get(
+            "udf_sample_threshold", min(0.25 * reliable, 0.005)))
+        sampling_depth = int(config.get("udf_sampling_depth", 1))
         udf_func, udf_grad_func, eps_u, fd_stats = self._make_dualmesh_oracle(
             raw_world_udf_fn,
             domain_center=domain_center,
@@ -443,14 +535,17 @@ class AgentUDF(AgentBase):
             f"fd_base_eps_world={float(domain_half_extent) * eps_u:.6g}",
             "fd_mode=fixed_quarter_cell_central_only",
             "distance=raw_udf/half_extent",
+            f"reliable={reliable:.6g}",
+            f"sample_threshold={sample_threshold:.6g}",
+            f"sampling_depth={sampling_depth}",
         )
 
         self._ensure_udf_igl_patch()
-        vertices, faces = extract_mesh(
-            udf_func,
-            udf_grad_func,
-            batch_size=batch_size,
-            max_depth=max_depth,
+        vertices, faces = self._dualmeshudf_extract(
+            udf_func, udf_grad_func,
+            batch_size=batch_size, max_depth=max_depth,
+            reliable=reliable, sample_threshold=sample_threshold,
+            sampling_depth=sampling_depth,
         )
         vertices = np.asarray(vertices, dtype=np.float64)
         faces = np.asarray(faces, dtype=np.int64)
@@ -466,6 +561,7 @@ class AgentUDF(AgentBase):
             f"invalid_axis_pct={100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
             f"invalid_gradients={fd_stats['invalid_gradients']}",
         )
+        print("[dmudf quality]", self._mesh_quality_stats(vertices, faces))
         if len(vertices) == 0 or len(faces) == 0:
             return self._empty_mesh()
 
@@ -767,22 +863,29 @@ class AgentUDF(AgentBase):
                     world_pts = np.asarray(
                         world_pts, dtype=np.float64).reshape(-1, 3)
                     out = np.full(world_pts.shape[0], far, dtype=np.float64)
+                    valid = np.zeros(world_pts.shape[0], dtype=bool)
                     cd, inside = _c.core.localize_samples(
                         world_pts, norm=norm, k_project=1)
                     inside = np.asarray(inside, dtype=np.int64).reshape(-1)
                     if inside.size:
                         vals, _vb = self._inference_vals(cd, _k, batch_size=bs)
-                        out[inside] = self._udf_clamp(
+                        vals = self._udf_clamp(
                             np.asarray(vals, dtype=np.float64).reshape(-1))
-                    return out
+                        if vals.shape[0] != inside.shape[0]:
+                            raise ValueError(
+                                "Native UDF query length mismatch: "
+                                f"values={vals.shape[0]} inside={inside.shape[0]}")
+                        out[inside] = vals
+                        valid[inside] = True
+                    return out, valid
 
                 # coarse scan for the native near-surface bbox (the domain).
                 lin = np.linspace(-size, size, coarse)
                 gx, gy, gz = np.meshgrid(lin, lin, lin, indexing='ij')
                 gp = np.stack([gx.reshape(-1), gy.reshape(-1),
                                gz.reshape(-1)], axis=1)
-                gu = native_raw(gp)
-                m = gu < band
+                gu, gv = native_raw(gp)
+                m = gv & (gu < band)
                 print("[native udf]", key, "scan_reso=", coarse,
                       "near(", band, ")=", int(m.sum()), "/", gp.shape[0])
                 if int(m.sum()) < 8:

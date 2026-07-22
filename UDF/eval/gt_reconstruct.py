@@ -100,6 +100,93 @@ def make_udf_funcs(V: np.ndarray, F: np.ndarray):
     return udf_func, udf_grad_func
 
 
+def _configurable_extract(udf_func, udf_grad_func, *, batch_size, max_depth,
+                          reliable, sample_threshold, sampling_depth):
+    """Configurable DualMeshUDF octree loop (reliable / sample_threshold /
+    sampling_depth exposed), matching AgentUDF._dualmeshudf_extract so GT and
+    learned fields go through the SAME extractor. Logs projection stats."""
+    import numpy as _np
+    import igl as _igl
+    from DualMeshUDF_core import Octree, triangulate_faces
+    from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
+    if sample_threshold is None:
+        sample_threshold = min(0.25 * reliable, 0.005)
+    octree = Octree(max_depth=int(max_depth),
+                    min_corner=_np.array([[-1.], [-1.], [-1.]]),
+                    max_corner=_np.array([[1.], [1.], [1.]]),
+                    sampling_depth=int(sampling_depth))
+    cur = 0
+    while cur <= int(max_depth):
+        cen = octree.centroids_of_new_nodes().astype(_np.float32)
+        cu, cg = query_udf_and_grad(udf_grad_func, cen, batch_size)
+        octree.adaptive_subdivide(cu, cg, reliable)
+        cur += 1
+    gi, gc = octree.get_samples_of_new_nodes()
+    gu, gg = query_udf_and_grad(udf_grad_func, gc.astype(_np.float32), batch_size)
+    octree.set_new_grid_data(gi, gu, gg)
+    idx, proj = octree.get_projections_for_checking_validity()
+    pu = _np.asarray(query_udf(udf_func, proj, batch_size)).reshape(-1)
+    pv = pu < reliable
+    pct = _np.percentile(pu, [0, 1, 5, 25, 50, 95]).tolist() if pu.size else []
+    print("[dmudf loop] reliable=", reliable, "sample_threshold=", sample_threshold,
+          "sampling_depth=", int(sampling_depth), "n_proj=", int(pu.size),
+          "n_valid=", int(pv.sum()),
+          "valid_pct=", round(100.0 * float(pv.sum()) / max(pu.size, 1), 2),
+          "pu_pct[0,1,5,25,50,95]=", [round(float(x), 6) for x in pct])
+    octree.set_grid_validity(idx, pv)
+    octree.batch_solve(float(sample_threshold), 1.0, 1.0, 0.15, 0.08)
+    octree.generate_mesh()
+    print("[dmudf loop] pre-triangulate mesh_v=", len(octree.mesh_v),
+          "mesh_f=", len(octree.mesh_f))
+    tri = triangulate_faces(octree.mesh_v, octree.mesh_f,
+                            octree.v_type, octree.mesh_v_dir)
+    try:
+        v, _, _, f = _igl.remove_duplicate_vertices(
+            _np.ascontiguousarray(octree.mesh_v, dtype=_np.float64),
+            _np.ascontiguousarray(tri, dtype=_np.int64), 1e-7)
+        v, f, _, _ = _igl.remove_unreferenced(
+            _np.ascontiguousarray(v, dtype=_np.float64),
+            _np.ascontiguousarray(f, dtype=_np.int64))
+    except TypeError:
+        v = _np.asarray(octree.mesh_v, dtype=_np.float64)
+        f = _np.asarray(tri, dtype=_np.int64)
+    return _np.asarray(v, dtype=_np.float64), _np.asarray(f, dtype=_np.int64)
+
+
+def _quality_stats(v, f):
+    import numpy as _np
+    import collections as _col
+    v = _np.asarray(v, dtype=_np.float64); f = _np.asarray(f, dtype=_np.int64)
+    nv, nf = int(len(v)), int(len(f))
+    if nf == 0:
+        return {"V": nv, "F": 0, "boundary": 0, "nonmanifold": 0,
+                "largest_face_pct": 0.0, "degenerate": 0}
+    ec = _col.Counter()
+    for tri in f:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            ec[(int(min(a, b)), int(max(a, b)))] += 1
+    boundary = sum(1 for c in ec.values() if c == 1)
+    nonman = sum(1 for c in ec.values() if c > 2)
+    deg_idx = (f[:, 0] == f[:, 1]) | (f[:, 1] == f[:, 2]) | (f[:, 0] == f[:, 2])
+    e1 = v[f[:, 1]] - v[f[:, 0]]; e2 = v[f[:, 2]] - v[f[:, 0]]
+    area = 0.5 * _np.linalg.norm(_np.cross(e1, e2), axis=1)
+    degen = int((deg_idx | (area < 1e-12)).sum())
+    par = list(range(nv))
+    def _find(a):
+        while par[a] != a:
+            par[a] = par[par[a]]; a = par[a]
+        return a
+    for tri in f:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2])):
+            ra, rb = _find(int(a)), _find(int(b))
+            if ra != rb:
+                par[ra] = rb
+    roots = _col.Counter(_find(int(t[0])) for t in f)
+    largest = 100.0 * max(roots.values()) / nf if roots else 0.0
+    return {"V": nv, "F": nf, "boundary": boundary, "nonmanifold": nonman,
+            "largest_face_pct": round(largest, 2), "degenerate": degen}
+
+
 def clean_mesh(mesh):
     """Merge near-duplicate vertices and drop degenerate/duplicate faces.
     Returns (faces_before, faces_after). Version-tolerant across trimesh."""
@@ -118,7 +205,8 @@ def clean_mesh(mesh):
 
 
 def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
-                    pad=0.9, no_normalize=False, label="", clean=False):
+                    pad=0.9, no_normalize=False, label="", clean=False,
+                    reliable=0.002, sample_threshold=None, sampling_depth=1):
     """Reconstruct a single mesh's GT UDF via DualMeshUDF. Returns recon-to-input
     distance stats (mean, p95, max) in original units, or None on failure."""
     tag = f"[{label}] " if label else ""
@@ -137,7 +225,11 @@ def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
 
     udf_func, udf_grad_func = make_udf_funcs(Vn, F)
 
-    v, f = extract_mesh(udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth)
+    v, f = _configurable_extract(
+        udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth,
+        reliable=reliable, sample_threshold=sample_threshold,
+        sampling_depth=sampling_depth)
+    print(f"{tag}[dmudf quality]", _quality_stats(v, f))
     v = np.asarray(v, dtype=np.float64)
     f = np.asarray(f, dtype=np.int64)
     if len(v) == 0 or len(f) == 0:
@@ -176,6 +268,12 @@ def main():
                     help="assume mesh already lives in [-1,1]^3")
     ap.add_argument("--clean", action="store_true",
                     help="merge close vertices + drop degenerate/duplicate faces before export")
+    ap.add_argument("--reliable", type=float, default=0.002,
+                    help="DualMeshUDF reliability threshold (stock 0.002)")
+    ap.add_argument("--sample_threshold", type=float, default=None,
+                    help="batch-solve threshold (default min(0.25*reliable,0.005))")
+    ap.add_argument("--sampling_depth", type=int, default=1,
+                    help="per-cell sampling depth (1->27 pts/cell, 2->125)")
     args = ap.parse_args()
 
     if not args.parts_dir and not args.mesh:
@@ -192,7 +290,9 @@ def main():
             out_path = os.path.join(args.out_dir, f"recon_{stem}.ply")
             stats = reconstruct_one(
                 p, out_path, max_depth=args.max_depth, batch_size=args.batch_size,
-                pad=args.pad, no_normalize=args.no_normalize, label=stem, clean=args.clean)
+                pad=args.pad, no_normalize=args.no_normalize, label=stem, clean=args.clean,
+                reliable=args.reliable, sample_threshold=args.sample_threshold,
+                sampling_depth=args.sampling_depth)
             summary.append((stem, stats))
             print()
         print("==== per-curve summary (recon->input surface distance) ====")
@@ -204,7 +304,9 @@ def main():
     else:
         reconstruct_one(
             args.mesh, args.out, max_depth=args.max_depth, batch_size=args.batch_size,
-            pad=args.pad, no_normalize=args.no_normalize, clean=args.clean)
+            pad=args.pad, no_normalize=args.no_normalize, clean=args.clean,
+            reliable=args.reliable, sample_threshold=args.sample_threshold,
+            sampling_depth=args.sampling_depth)
 
 
 if __name__ == "__main__":

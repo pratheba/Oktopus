@@ -108,6 +108,12 @@ def start_inference(opt):
         'data_path': data_path,
         'data_root': data_root,
     }
+    for _k in ('udf_reliable_threshold', 'udf_sample_threshold',
+               'udf_sampling_depth', 'udf_max_depth', 'udf_domain_padding',
+               'udf_domain_band', 'udf_far_value'):
+        _v = opt.get(_k, None) if hasattr(opt, 'get') else None
+        if _v is not None:
+            arg[_k] = _v
     agent('ngcnet_inference', arg)
 
 
@@ -172,6 +178,12 @@ if __name__ == '__main__':
                    help="Finite-difference step as a fraction of one octree cell.")
     p.add_argument('--udf-far-value', dest='udf_far_value', type=float, default=None,
                    help="Raw UDF returned outside adaptation support (default 0.1).")
+    p.add_argument('--udf-reliable', dest='udf_reliable', type=float, default=None,
+                   help="DualMeshUDF reliability threshold, cube units (stock=0.002).")
+    p.add_argument('--udf-sample-threshold', dest='udf_sample_threshold', type=float, default=None,
+                   help="Separate batch-solve threshold (default min(0.25*reliable,0.005)).")
+    p.add_argument('--udf-sampling-depth', dest='udf_sampling_depth', type=int, default=None,
+                   help="Per-cell sampling depth (1->27 pts/cell, 2->125).")
 
     args = p.parse_args()
     opt = {
@@ -196,6 +208,16 @@ if __name__ == '__main__':
     
 
     opt = DotDict(opt)
+    for _k, _v in [
+        ('udf_reliable_threshold', args.udf_reliable),
+        ('udf_sample_threshold', args.udf_sample_threshold),
+        ('udf_sampling_depth', args.udf_sampling_depth),
+        ('udf_max_depth', args.udf_max_depth),
+        ('udf_domain_padding', args.udf_domain_padding),
+        ('udf_domain_band', args.udf_domain_band),
+        ('udf_far_value', args.udf_far_value),
+    ]:
+        opt[_k] = _v
     
     print(opt)
     start_inference(opt)
