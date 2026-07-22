@@ -174,7 +174,7 @@ if __name__ == '__main__':
             'out_path': args.out_path,
             'test_file': args.test_file,
             'shape_name': args.shape_name,
-            'resolution': args.resolution
+            'resolution': args.resolution,
             'extractor': args.extractor,
             'agent': args.agent
     }
