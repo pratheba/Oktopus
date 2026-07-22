@@ -427,10 +427,21 @@ class AgentUDF(AgentBase):
                 step()
             except Exception:
                 pass
+        # Keep the largest VERTEX-connected component. DualMeshUDF emits many
+        # non-manifold edges; trimesh.split() builds its component graph from
+        # FACE adjacency, which excludes non-manifold edges and therefore
+        # shatters one coherent surface into thousands of tiny islands (a
+        # 31k-vertex arm collapsed to 244). Union over ALL triangle edges so
+        # non-manifold junctions still count as connections.
         try:
-            comps = m.split(only_watertight=False)
-            if len(comps) > 0:
-                m = max(comps, key=lambda c: len(c.faces))
+            from trimesh.graph import connected_components as _cc
+            comps = _cc(m.edges, nodes=np.arange(len(m.vertices)))
+            if len(comps) > 1:
+                largest = max(comps, key=len)
+                keep = np.zeros(len(m.vertices), dtype=bool)
+                keep[largest] = True
+                m.update_faces(keep[m.faces].all(axis=1))
+                m.remove_unreferenced_vertices()
         except Exception:
             pass
         if bool(config.get("udf_fill_holes", True)):
