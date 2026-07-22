@@ -405,8 +405,51 @@ class AgentUDF(AgentBase):
         igl.remove_unreferenced = unref
         igl._oktopus_udf_patched = True
 
+    def _cleanup_mesh(self, mesh, config):
+        """Post-process a DualMeshUDF mesh into a clean shape: keep-largest
+        component, weld coincident vertices, drop degenerate/duplicate faces,
+        optionally fill holes + fix orientation. Does NOT guarantee 2-manifold
+        (DualMeshUDF emits real non-manifold junctions on any field, GT
+        included); it removes debris + degenerates + closes small gaps. Logs
+        before/after quality stats."""
+        import trimesh as _tm
+        if mesh is None or len(mesh.faces) == 0:
+            return mesh
+        before = self._mesh_quality_stats(mesh.vertices, mesh.faces)
+        m = mesh.copy()
+        for step in (
+            lambda: m.merge_vertices(),
+            lambda: m.update_faces(m.nondegenerate_faces(height=1e-8)),
+            lambda: m.update_faces(m.unique_faces()),
+            lambda: m.remove_unreferenced_vertices(),
+        ):
+            try:
+                step()
+            except Exception:
+                pass
+        try:
+            comps = m.split(only_watertight=False)
+            if len(comps) > 0:
+                m = max(comps, key=lambda c: len(c.faces))
+        except Exception:
+            pass
+        if bool(config.get("udf_fill_holes", True)):
+            try:
+                _tm.repair.fill_holes(m)
+            except Exception:
+                pass
+        if bool(config.get("udf_fix_normals", True)):
+            try:
+                m.fix_normals()
+            except Exception:
+                pass
+        after = self._mesh_quality_stats(m.vertices, m.faces)
+        print("[dmudf cleanup] before", before, "-> after", after)
+        return m
+
     def _dualmeshudf_extract(self, udf_func, udf_grad_func, *, batch_size,
-                             max_depth, reliable, sample_threshold, sampling_depth):
+                             max_depth, reliable, sample_threshold, sampling_depth,
+                             subdivide_threshold=None, projection_threshold=None):
         """Configurable DualMeshUDF octree loop.
 
         Exposes the reliability threshold (used by adaptive_subdivide AND grid
@@ -419,6 +462,10 @@ class AgentUDF(AgentBase):
         import igl as _igl
         from DualMeshUDF_core import Octree, triangulate_faces
         from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
+        subdivide_threshold = (reliable if subdivide_threshold is None
+                               else float(subdivide_threshold))
+        projection_threshold = (reliable if projection_threshold is None
+                                else float(projection_threshold))
         octree = Octree(max_depth=int(max_depth),
                         min_corner=_np.array([[-1.], [-1.], [-1.]]),
                         max_corner=_np.array([[1.], [1.], [1.]]),
@@ -427,17 +474,18 @@ class AgentUDF(AgentBase):
         while cur <= int(max_depth):
             cen = octree.centroids_of_new_nodes().astype(_np.float32)
             cu, cg = query_udf_and_grad(udf_grad_func, cen, batch_size)
-            octree.adaptive_subdivide(cu, cg, reliable)
+            octree.adaptive_subdivide(cu, cg, subdivide_threshold)
             cur += 1
         gi, gc = octree.get_samples_of_new_nodes()
         gu, gg = query_udf_and_grad(udf_grad_func, gc.astype(_np.float32), batch_size)
         octree.set_new_grid_data(gi, gu, gg)
         idx, proj = octree.get_projections_for_checking_validity()
         pu = _np.asarray(query_udf(udf_func, proj, batch_size)).reshape(-1)
-        pv = pu < reliable
+        pv = pu < projection_threshold
         pct = (_np.percentile(pu, [0, 1, 5, 25, 50, 95]).tolist()
                if pu.size else [])
         print("[dmudf loop] reliable=", reliable,
+              "subdivide=", subdivide_threshold, "projection=", projection_threshold,
               "sample_threshold=", sample_threshold,
               "sampling_depth=", int(sampling_depth),
               "n_proj=", int(pu.size), "n_valid=", int(pv.sum()),
@@ -517,6 +565,8 @@ class AgentUDF(AgentBase):
         sample_threshold = float(config.get(
             "udf_sample_threshold", min(0.25 * reliable, 0.005)))
         sampling_depth = int(config.get("udf_sampling_depth", 1))
+        subdivide_threshold = config.get("udf_subdivide_threshold", None)
+        projection_threshold = config.get("udf_projection_threshold", None)
         udf_func, udf_grad_func, eps_u, fd_stats = self._make_dualmesh_oracle(
             raw_world_udf_fn,
             domain_center=domain_center,
@@ -546,6 +596,8 @@ class AgentUDF(AgentBase):
             batch_size=batch_size, max_depth=max_depth,
             reliable=reliable, sample_threshold=sample_threshold,
             sampling_depth=sampling_depth,
+            subdivide_threshold=subdivide_threshold,
+            projection_threshold=projection_threshold,
         )
         vertices = np.asarray(vertices, dtype=np.float64)
         faces = np.asarray(faces, dtype=np.int64)
@@ -567,11 +619,10 @@ class AgentUDF(AgentBase):
 
         center = np.asarray(domain_center, dtype=np.float64).reshape(3)
         world_vertices = center[None, :] + vertices * float(domain_half_extent)
-        return trimesh.Trimesh(
-            vertices=world_vertices,
-            faces=faces,
-            process=False,
-        )
+        mesh = trimesh.Trimesh(vertices=world_vertices, faces=faces, process=False)
+        if bool(config.get("udf_cleanup", False)):
+            mesh = self._cleanup_mesh(mesh, config)
+        return mesh
 
     # Deliberately reject the old raster route.  This prevents another caller
     # from silently reintroducing EDT/band/iso-level extraction.

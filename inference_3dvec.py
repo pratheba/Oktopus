@@ -110,7 +110,8 @@ def start_inference(opt):
     }
     for _k in ('udf_reliable_threshold', 'udf_sample_threshold',
                'udf_sampling_depth', 'udf_max_depth', 'udf_domain_padding',
-               'udf_domain_band', 'udf_far_value'):
+               'udf_domain_band', 'udf_far_value', 'udf_subdivide_threshold',
+               'udf_projection_threshold', 'udf_cleanup', 'udf_fill_holes'):
         _v = opt.get(_k, None) if hasattr(opt, 'get') else None
         if _v is not None:
             arg[_k] = _v
@@ -184,6 +185,14 @@ if __name__ == '__main__':
                    help="Separate batch-solve threshold (default min(0.25*reliable,0.005)).")
     p.add_argument('--udf-sampling-depth', dest='udf_sampling_depth', type=int, default=None,
                    help="Per-cell sampling depth (1->27 pts/cell, 2->125).")
+    p.add_argument('--udf-subdivide-threshold', dest='udf_subdivide_threshold', type=float, default=None,
+                   help="octree adaptive_subdivide threshold (default = reliable).")
+    p.add_argument('--udf-projection-threshold', dest='udf_projection_threshold', type=float, default=None,
+                   help="grid-validity projection threshold (default = reliable).")
+    p.add_argument('--udf-cleanup', dest='udf_cleanup', action='store_true',
+                   help="post-process: keep-largest, weld, drop degenerate, fill holes, fix normals.")
+    p.add_argument('--udf-no-fill-holes', dest='udf_no_fill_holes', action='store_true',
+                   help="with --udf-cleanup: skip hole filling (keep open boundaries).")
 
     args = p.parse_args()
     opt = {
@@ -216,6 +225,10 @@ if __name__ == '__main__':
         ('udf_domain_padding', args.udf_domain_padding),
         ('udf_domain_band', args.udf_domain_band),
         ('udf_far_value', args.udf_far_value),
+        ('udf_subdivide_threshold', args.udf_subdivide_threshold),
+        ('udf_projection_threshold', args.udf_projection_threshold),
+        ('udf_cleanup', args.udf_cleanup),
+        ('udf_fill_holes', (not args.udf_no_fill_holes)),
     ]:
         opt[_k] = _v
     

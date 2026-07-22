@@ -101,7 +101,8 @@ def make_udf_funcs(V: np.ndarray, F: np.ndarray):
 
 
 def _configurable_extract(udf_func, udf_grad_func, *, batch_size, max_depth,
-                          reliable, sample_threshold, sampling_depth):
+                          reliable, sample_threshold, sampling_depth,
+                          subdivide_threshold=None, projection_threshold=None):
     """Configurable DualMeshUDF octree loop (reliable / sample_threshold /
     sampling_depth exposed), matching AgentUDF._dualmeshudf_extract so GT and
     learned fields go through the SAME extractor. Logs projection stats."""
@@ -111,6 +112,8 @@ def _configurable_extract(udf_func, udf_grad_func, *, batch_size, max_depth,
     from DualMeshUDF.extract_mesh import query_udf, query_udf_and_grad
     if sample_threshold is None:
         sample_threshold = min(0.25 * reliable, 0.005)
+    subdivide_threshold = reliable if subdivide_threshold is None else float(subdivide_threshold)
+    projection_threshold = reliable if projection_threshold is None else float(projection_threshold)
     octree = Octree(max_depth=int(max_depth),
                     min_corner=_np.array([[-1.], [-1.], [-1.]]),
                     max_corner=_np.array([[1.], [1.], [1.]]),
@@ -119,16 +122,17 @@ def _configurable_extract(udf_func, udf_grad_func, *, batch_size, max_depth,
     while cur <= int(max_depth):
         cen = octree.centroids_of_new_nodes().astype(_np.float32)
         cu, cg = query_udf_and_grad(udf_grad_func, cen, batch_size)
-        octree.adaptive_subdivide(cu, cg, reliable)
+        octree.adaptive_subdivide(cu, cg, subdivide_threshold)
         cur += 1
     gi, gc = octree.get_samples_of_new_nodes()
     gu, gg = query_udf_and_grad(udf_grad_func, gc.astype(_np.float32), batch_size)
     octree.set_new_grid_data(gi, gu, gg)
     idx, proj = octree.get_projections_for_checking_validity()
     pu = _np.asarray(query_udf(udf_func, proj, batch_size)).reshape(-1)
-    pv = pu < reliable
+    pv = pu < projection_threshold
     pct = _np.percentile(pu, [0, 1, 5, 25, 50, 95]).tolist() if pu.size else []
-    print("[dmudf loop] reliable=", reliable, "sample_threshold=", sample_threshold,
+    print("[dmudf loop] reliable=", reliable, "subdivide=", subdivide_threshold,
+          "projection=", projection_threshold, "sample_threshold=", sample_threshold,
           "sampling_depth=", int(sampling_depth), "n_proj=", int(pu.size),
           "n_valid=", int(pv.sum()),
           "valid_pct=", round(100.0 * float(pv.sum()) / max(pu.size, 1), 2),
@@ -206,7 +210,8 @@ def clean_mesh(mesh):
 
 def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
                     pad=0.9, no_normalize=False, label="", clean=False,
-                    reliable=0.002, sample_threshold=None, sampling_depth=1):
+                    reliable=0.002, sample_threshold=None, sampling_depth=1,
+                    subdivide_threshold=None, projection_threshold=None):
     """Reconstruct a single mesh's GT UDF via DualMeshUDF. Returns recon-to-input
     distance stats (mean, p95, max) in original units, or None on failure."""
     tag = f"[{label}] " if label else ""
@@ -228,7 +233,8 @@ def reconstruct_one(mesh_path, out_path, max_depth=7, batch_size=150000,
     v, f = _configurable_extract(
         udf_func, udf_grad_func, batch_size=batch_size, max_depth=max_depth,
         reliable=reliable, sample_threshold=sample_threshold,
-        sampling_depth=sampling_depth)
+        sampling_depth=sampling_depth, subdivide_threshold=subdivide_threshold,
+        projection_threshold=projection_threshold)
     print(f"{tag}[dmudf quality]", _quality_stats(v, f))
     v = np.asarray(v, dtype=np.float64)
     f = np.asarray(f, dtype=np.int64)
@@ -274,6 +280,10 @@ def main():
                     help="batch-solve threshold (default min(0.25*reliable,0.005))")
     ap.add_argument("--sampling_depth", type=int, default=1,
                     help="per-cell sampling depth (1->27 pts/cell, 2->125)")
+    ap.add_argument("--subdivide_threshold", type=float, default=None,
+                    help="octree adaptive_subdivide threshold (default = reliable)")
+    ap.add_argument("--projection_threshold", type=float, default=None,
+                    help="grid-validity projection threshold (default = reliable)")
     args = ap.parse_args()
 
     if not args.parts_dir and not args.mesh:
@@ -292,7 +302,9 @@ def main():
                 p, out_path, max_depth=args.max_depth, batch_size=args.batch_size,
                 pad=args.pad, no_normalize=args.no_normalize, label=stem, clean=args.clean,
                 reliable=args.reliable, sample_threshold=args.sample_threshold,
-                sampling_depth=args.sampling_depth)
+                sampling_depth=args.sampling_depth,
+                subdivide_threshold=args.subdivide_threshold,
+                projection_threshold=args.projection_threshold)
             summary.append((stem, stats))
             print()
         print("==== per-curve summary (recon->input surface distance) ====")
@@ -306,7 +318,9 @@ def main():
             args.mesh, args.out, max_depth=args.max_depth, batch_size=args.batch_size,
             pad=args.pad, no_normalize=args.no_normalize, clean=args.clean,
             reliable=args.reliable, sample_threshold=args.sample_threshold,
-            sampling_depth=args.sampling_depth)
+            sampling_depth=args.sampling_depth,
+            subdivide_threshold=args.subdivide_threshold,
+            projection_threshold=args.projection_threshold)
 
 
 if __name__ == "__main__":
