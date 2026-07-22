@@ -950,3 +950,118 @@ class AgentBase():
         template["local_points"][0] = np.zeros(3, dtype=np.float64)
         return template
 
+
+    @torch.no_grad()
+    def action_ngcnet_inference(self, arg):
+        data_root = arg['data_root']
+        data_path = arg['data_path']
+        self.load_data(data_root, data_path)
+        mc_grid = arg['mc_grid']
+        output_folder = arg['output_folder']
+        checkpoint = arg['checkpoint']
+
+        num_shapes = len(self.handles)
+        err_res = {}
+        reso = mc_grid.reso
+        shapes = os.listdir(data_root)
+        # max number of query points for Marching Cubes
+        batch_size = 16**3
+
+
+        output_folder = arg['output_folder']
+        exp_name = arg['exp_name']
+        mc_grid = arg['mc_grid']
+        shape_name = arg['shape']
+        #config = utils.load_yaml_file(arg['adapt_file'])
+
+        data_root = arg['data_root']
+        handle = self.load_shape_handle(data_root, shape_name, 'avatar')
+
+        out_name = f'{shape_name}_{exp_name}'
+        os.makedirs(output_folder, exist_ok=True)
+
+        batch_size = 64**3
+        #mc_grid.clear_grid(val=10.0)
+        mc_grid.clear_grid()
+
+        adapted_support_cache = {}
+        all_acc_grids = []
+        blend_groups = {}
+        cc = 0
+
+
+        with tqdm(total=num_shapes) as pbar:
+            for shape_name,handle in self.handles.items():
+                if shape_name not in shapes:
+                    print("shape_name")
+                    pbar.update(1)
+                    continue
+
+                temp_grid = utils.create_grid_like(mc_grid)
+                temp_grid_base = utils.create_grid_like(mc_grid)
+                #context_input = self.model_input[shape_name]
+
+                for curve in handle.curves:
+                    #print("curve_name = ", curve.name)
+                    #print("shape name = ", shape_name)
+                    key = self.encode_key(shape_name, curve.name)
+                    #print("key = ", key)
+                    #print("feat dict = ", self.feat_dict[key])
+                    curve_data, kidx = curve.filter_grid(mc_grid)
+                    #print(curve_data)
+                    #context_data = context_input[self.feat_dict[key]]
+
+
+                    #trimesh.Trimesh(vertices=curve_data['samples'], process=False).export(shape_name+'_'+curve.name+'mc_grid.ply')
+                    #trimesh.Trimesh(vertices=curve_data['samples_local'], process=False).export(shape_name+'_'+curve.name+'_query.ply')
+                    #trimesh.Trimesh(vertices=context_data['samples'].numpy(), process=False).export(shape_name+'_'+curve.name+'context.ply')
+                    
+                    #vals = self._inference_vals(curve_data, context_data, key, batch_size=batch_size)
+                    vals, vals_base = self._inference_vals(curve_data, key, batch_size=batch_size)
+
+#                    vals, valid_support = self.clamp_pred_sdf_by_support(
+#                        vals,
+#                        curve_data,
+#                        positive_value=1.0,
+#                        w_limit=arg.get("support_w_limit", 1.2),
+#                        rho_limit=arg.get("support_rho_limit", 1.3),
+#                        end_margin=arg.get("support_end_margin", 0.0),
+#                        verbose=arg.get("support_clamp_verbose", False),
+#                        min_valid_ratio=0.60,
+#                        name=key,
+#                    )
+#
+#                    vals_base, _ = self.clamp_pred_sdf_by_support(
+#                        vals_base,
+#                        curve_data,
+#                        positive_value=1.0,
+#                        w_limit=arg.get("support_w_limit", 1.2),
+#                        rho_limit=arg.get("support_rho_limit", 1.3),
+#                        end_margin=arg.get("support_end_margin", 0.0),
+#                        verbose=False,
+#                        min_valid_ratio=0.60,
+#                        name=key + "_base",
+#                    )
+
+                    temp_grid.update_grid(vals, kidx, mode='minimum')
+                    temp_grid_base.update_grid(vals_base, kidx, mode='minimum')
+                
+                mesh = self.extract_surface_mesh(
+                    temp_grid, arg, context=f"ngcnet:{shape_name}"
+                )
+                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_{checkpoint}_mesh{reso}.ply')
+                os.makedirs(op.dirname(mesh_file), exist_ok=True)
+                mesh.export(mesh_file)
+                temp_grid = None
+
+#                mesh = temp_grid_base.extract_mesh()
+#                mesh_file = op.join(output_folder, shape_name, f'{shape_name}_base_{checkpoint}_mesh{reso}.ply')
+#                os.makedirs(op.dirname(mesh_file), exist_ok=True)
+#                mesh.export(mesh_file)
+#                temp_grid_base = None
+
+                # gt_file = op.join(data_root, shape_name, 'mesh.ply')
+                # err = utils.eval_shape(mesh_file, gt_file)
+                # err_res[shape_name] = err
+
+                pbar.update(1)
