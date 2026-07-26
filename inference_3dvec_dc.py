@@ -20,7 +20,7 @@ Build the C++ bindings once (see RECON_BENCH_README.md) before running.
 # --- project path bootstrap (same as inference_3dvec.py) ---
 import os as _os, sys as _sys
 _ROOT = _os.path.dirname(_os.path.abspath(__file__))
-for _p in ('src', 'SDF', 'UDF'):
+for _p in ('src', 'src/app', 'SDF', 'UDF'):
     _sys.path.insert(0, _os.path.join(_ROOT, _p))
 # --- end bootstrap ---
 

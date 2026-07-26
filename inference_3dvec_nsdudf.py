@@ -18,7 +18,7 @@ Extract the uploaded nsdudf zip and build its custom_mc extension once
 # --- project path bootstrap (same as inference_3dvec.py) ---
 import os as _os, sys as _sys
 _ROOT = _os.path.dirname(_os.path.abspath(__file__))
-for _p in ('src', 'SDF', 'UDF'):
+for _p in ('src', 'src/app', 'SDF', 'UDF'):
     _sys.path.insert(0, _os.path.join(_ROOT, _p))
 # --- end bootstrap ---
 
@@ -76,11 +76,21 @@ def start_inference(opt):
         'checkpoint': checkpoint,
         'data_path': data_path,
     }
+
+    for _k in (
+        'nsdudf_repo',
+        'nsdudf_model',
+        'nsdudf_grid',
+        'nsdudf_normalize_udf',
+        'nsdudf_oracle_chunk_size',
+        'udf_far_value',
+        'udf_batch_size',
+        'udf_domain_band',
+        'udf_domain_padding',
+        'udf_domain_scan_reso',
+        'udf_cleanup',
+    ):
     # Pass through NSDUDF + shared UDF-domain controls.
-    for _k in ('nsdudf_repo', 'nsdudf_model', 'nsdudf_grid',
-               'nsdudf_normalize_udf', 'nsdudf_use_grads', 'nsdudf_out7',
-               'udf_far_value', 'udf_batch_size', 'udf_domain_band',
-               'udf_domain_padding', 'udf_domain_scan_reso', 'udf_cleanup'):
         _v = opt.get(_k, None) if hasattr(opt, 'get') else None
         if _v is not None:
             arg[_k] = _v
@@ -104,6 +114,16 @@ if __name__ == '__main__':
                    help="path to the trained NSDUDF model.pt (default <repo>/model.pt)")
     p.add_argument('--nsdudf-grid', dest='nsdudf_grid', type=int, default=None,
                    help="pseudo-SDF grid samples/axis (129 or 257 for the dual-mesh variant)")
+    p.add_argument(
+        '--nsdudf-oracle-chunk-size',
+        dest='nsdudf_oracle_chunk_size',
+        type=int,
+        default=32768,
+        help=(
+            "number of dense NSDUDF query points processed per finite-"
+            "difference oracle chunk"
+        ),
+    )
     p.add_argument('--nsdudf-no-normalize', dest='nsdudf_no_normalize', action='store_true',
                    help="disable UDF/voxel normalization (only if the model was trained that way)")
     p.add_argument('--nsdudf-no-grads', dest='nsdudf_no_grads', action='store_true',
@@ -142,6 +162,10 @@ if __name__ == '__main__':
         ('udf_domain_band', args.udf_domain_band),
         ('udf_domain_padding', args.udf_domain_padding),
         ('udf_cleanup', (True if args.udf_cleanup else None)),
+        (
+            'nsdudf_oracle_chunk_size',
+            args.nsdudf_oracle_chunk_size,
+        ),
     ]:
         if _v is not None:
             opt[_k] = _v

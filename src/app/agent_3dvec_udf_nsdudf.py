@@ -138,7 +138,7 @@ class AgentUDFNsdudf(AgentUDF):
 
         # Finite-difference gradient scale ~ quarter of a voxel.
         cells = max(n - 1, 2)
-        max_depth = max(1, int(round(math.log2(cells))))
+        max_depth = max(1, int(math.ceil(math.log2(cells))))
         # Points outside the localization support get UDF = far_world; using the
         # half-extent makes far_cube = 1.0 so they're pruned by NSDUDF's
         # near-surface cell thresholds.
@@ -155,16 +155,57 @@ class AgentUDFNsdudf(AgentUDF):
 
         # Adapter to NSDUDF's expected signature: takes grid query points in
         # [-1,1]^3 (torch), returns (udf, grads) as torch tensors.
+                # Important:
+        # NSDUDF initially requests the complete dense grid. Our UDF gradient
+        # oracle uses six finite-difference offset queries per point, so passing
+        # the whole grid at once creates a very large temporary array.
+        #
+        # Chunking here does not change the mathematical result. It only limits
+        # peak memory.
+        oracle_chunk_size = int(
+            cget("nsdudf_oracle_chunk_size", min(batch_size, 32768))
+        )
+        oracle_chunk_size = max(1, oracle_chunk_size)
+
         def udf_and_grad_f(query_points):
-            pts = (
-                query_points.detach().cpu().numpy()
-                if torch.is_tensor(query_points)
-                else np.asarray(query_points)
-            ).astype(np.float64).reshape(-1, 3)
-            dist, grad = udf_grad_func(pts)  # (N,1) float32, (N,3) float32
-            udf_t = torch.from_numpy(np.asarray(dist, dtype=np.float32).reshape(-1))
-            grad_t = torch.from_numpy(np.asarray(grad, dtype=np.float32).reshape(-1, 3))
-            return udf_t, grad_t
+            if torch.is_tensor(query_points):
+                pts = query_points.detach().cpu().numpy()
+            else:
+                pts = np.asarray(query_points)
+
+            pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+
+            all_dist = []
+            all_grad = []
+
+            for start in range(0, len(pts), oracle_chunk_size):
+                end = min(start + oracle_chunk_size, len(pts))
+                chunk = pts[start:end]
+
+                dist_chunk, grad_chunk = udf_grad_func(chunk)
+
+                all_dist.append(
+                    np.asarray(
+                        dist_chunk,
+                        dtype=np.float32,
+                    ).reshape(-1)
+                )
+                all_grad.append(
+                    np.asarray(
+                        grad_chunk,
+                        dtype=np.float32,
+                    ).reshape(-1, 3)
+                )
+
+            if all_dist:
+                dist = np.concatenate(all_dist, axis=0)
+                grad = np.concatenate(all_grad, axis=0)
+            else:
+                dist = np.zeros((0,), dtype=np.float32)
+                grad = np.zeros((0, 3), dtype=np.float32)
+
+            return torch.from_numpy(dist), torch.from_numpy(grad)
+
 
         print(
             "[nsdudf]",
@@ -182,8 +223,19 @@ class AgentUDFNsdudf(AgentUDF):
             n_grid_samples=n,
             batch_size=batch_size,
             normalize_udf=bool(cget("nsdudf_normalize_udf", True)),
-            use_grads=bool(cget("nsdudf_use_grads", True)),
-            out7=bool(cget("nsdudf_out7", False)),
+            use_grads=True,
+            out7=False,
+        )
+        total_axes = max(1, int(fd_stats["eval_points"]) * 3)
+
+        print(
+            "[nsdudf fd]",
+            f"eval_points={fd_stats['eval_points']}",
+            f"central_axes={fd_stats['central_axes']}",
+            f"invalid_axes={fd_stats['invalid_axes']}",
+            f"invalid_axis_pct="
+            f"{100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
+            f"invalid_gradients={fd_stats['invalid_gradients']}",
         )
 
         mesh = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
