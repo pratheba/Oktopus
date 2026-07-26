@@ -31,6 +31,7 @@ import numpy as np
 import torch
 import yaml
 
+import app
 from agent_3dvec_udf_nsdudf import AgentUDFNsdudf
 from utils import MCGrid, process_options, DotDict
 
