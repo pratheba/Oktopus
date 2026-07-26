@@ -164,15 +164,12 @@ class AgentSDFDC(AgentSDF):
 
         S = raw_S[flat]
 
-        if hasattr(sdf_grid, "empty_marks"):
-            raw_unevaluated = np.asarray(
-                sdf_grid.empty_marks,
-                dtype=bool,
-            ).reshape(-1)
-            unevaluated = raw_unevaluated[flat]
-        else:
-            # We should normally have empty_marks, but keep the adapter runnable.
-            unevaluated = np.isclose(S, 10.0, rtol=0.0, atol=1e-12)
+           
+        # In the current Oktopus field construction, untouched grid samples
+        # retain the explicit background sentinel +10. empty_marks is stale in
+        # this inference path, so diagnose the field using the actual values.
+        unevaluated = np.isclose(S, 10.0, rtol=0.0, atol=1e-12)
+
 
         return S, U, unevaluated, N1
 
