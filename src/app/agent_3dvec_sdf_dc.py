@@ -341,19 +341,43 @@ class AgentSDFDC(AgentSDF):
             )
 
     def _active_cloud(self, sdf_grid):
-        """Only the cells the network actually filled (finite, not background),
-        as an (M,3) world point cloud + (M,) SDF. Used by the point-based
-        methods (RFTA / Kohlbrenner) for which the +10 background fill would be
-        interpreted as a huge sphere radius."""
-        vals = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(-1)
-        if hasattr(sdf_grid, "empty_marks"):
-            active = ~np.asarray(sdf_grid.empty_marks).reshape(-1)
-        else:
-            active = np.ones_like(vals, dtype=bool)
-        active &= np.isfinite(vals)
+        """Return actually evaluated Oktopus samples for point-based methods.
+
+        Unevaluated grid points retain the explicit +10 sentinel in the
+        current field-construction path. empty_marks is stale here, so use
+        the stored values themselves.
+        """
+        vals = np.asarray(
+            sdf_grid.val_grid,
+            dtype=np.float64,
+        ).reshape(-1)
+
+        active = np.isfinite(vals)
+        active &= ~np.isclose(
+            vals,
+            10.0,
+            rtol=0.0,
+            atol=1e-12,
+        )
+
         rows = np.flatnonzero(active)
-        pts = np.asarray(sdf_grid.idx2pts(rows), dtype=np.float64).reshape(-1, 3)
-        return pts, vals[rows]
+
+        pts = np.asarray(
+            sdf_grid.idx2pts(rows),
+            dtype=np.float64,
+        ).reshape(-1, 3)
+
+        active_vals = vals[rows]
+
+        print(
+            f"[dcsdd:cloud] samples={len(active_vals)} "
+            f"negative={int(np.count_nonzero(active_vals < 0.0))} "
+            f"positive={int(np.count_nonzero(active_vals > 0.0))} "
+            f"zero={int(np.count_nonzero(active_vals == 0.0))}"
+        )
+
+        return pts, active_vals
+
 
     # ------------------------------------------------------------------
     # The run_ours.py method suite
