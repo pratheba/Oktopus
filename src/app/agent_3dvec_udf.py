@@ -198,6 +198,7 @@ class AgentUDF(AgentBase):
         domain_half_extent,
         max_depth,
         far_world,
+        gradient_band_cube=None,
     ):
         """Build the UDF and gradient callables expected by DualMesh-UDF.
 
@@ -263,7 +264,16 @@ class AgentUDF(AgentBase):
             axis_valid = np.zeros_like(u, dtype=bool)
             stats["eval_points"] += n_points
 
-            active = np.flatnonzero(center_valid)
+            if gradient_band_cube is None:
+                gradient_active = center_valid
+            else:
+                gradient_active = (
+                    center_valid
+                    & np.isfinite(raw)
+                    & ((raw / half) < float(gradient_band_cube))
+                )
+
+            active = np.flatnonzero(gradient_active)
             if active.size == 0:
                 stats["invalid_axes"] += n_points * 3
             else:
@@ -589,12 +599,16 @@ class AgentUDF(AgentBase):
         sampling_depth = int(config.get("udf_sampling_depth", 1))
         subdivide_threshold = config.get("udf_subdivide_threshold", None)
         projection_threshold = config.get("udf_projection_threshold", None)
+        gradient_band_cube = float(
+            cget("nsdudf_gradient_band_cube", 4.0 * (2.0 / (n - 1)))
+        )
         udf_func, udf_grad_func, eps_u, fd_stats = self._make_dualmesh_oracle(
             raw_world_udf_fn,
             domain_center=domain_center,
             domain_half_extent=domain_half_extent,
             max_depth=max_depth,
             far_world=far_world,
+            gradient_band_cube=gradient_band_cube,
         )
 
         print(
@@ -610,6 +624,7 @@ class AgentUDF(AgentBase):
             f"reliable={reliable:.6g}",
             f"sample_threshold={sample_threshold:.6g}",
             f"sampling_depth={sampling_depth}",
+            f"gradient_band_cube={gradient_band_cube:.6g}",
         )
 
         self._ensure_udf_igl_patch()
