@@ -106,6 +106,197 @@ class AgentUDFNsdudf(AgentUDF):
         self._nsdudf_cache = (nsd_meshing, nsd_utils, model)
         return self._nsdudf_cache
 
+    def _make_nsdudf_oracle_from_udf(
+        self,
+        raw_world_udf_fn,
+        *,
+        domain_center,
+        domain_half_extent,
+        n_grid_samples,
+        far_world,
+        oracle_chunk_size,
+    ):
+        """Build the NSDUDF oracle from an arbitrary world-space UDF callable.
+
+        This is the generic NSDUDF path. The supplied callable returns UDF
+        values at arbitrary world points. Gradients are estimated with central
+        finite differences.
+
+        Parameters
+        ----------
+        raw_world_udf_fn
+            Callable accepting world-space points of shape (N, 3). It may
+            return either values or ``(values, validity_mask)``.
+        domain_center
+            Center of the NSDUDF extraction cube in world coordinates.
+        domain_half_extent
+            Half extent mapping NSDUDF coordinates ``u in [-1, 1]^3`` to
+
+                world = center + half_extent * u.
+
+        n_grid_samples
+            Number of NSDUDF samples per axis. For example, 65 samples means
+            64 cells, and 129 samples means 128 cells.
+        far_world
+            UDF value assigned outside the localization support, in world
+            units.
+        oracle_chunk_size
+            Maximum number of NSDUDF grid points processed at once.
+
+        Returns
+        -------
+        udf_and_grad_f
+            Callable expected by ``nsdudf.core.meshing.compute_pseudo_sdf``.
+        stats
+            Finite-difference diagnostics dictionary.
+        metadata
+            Dictionary containing spacing and normalization information.
+        """
+        center = np.asarray(domain_center, dtype=np.float64).reshape(3)
+        half = float(domain_half_extent)
+        n = int(n_grid_samples)
+
+        if not np.isfinite(half) or half <= 0.0:
+            raise ValueError(
+                f"Invalid NSDUDF domain half extent: {half}"
+            )
+        if n < 2:
+            raise ValueError(
+                f"NSDUDF needs at least 2 grid samples, got {n}"
+            )
+
+        cells = n - 1
+
+        # The existing generic oracle chooses its central-difference spacing
+        # from an octree depth. Using ceil(log2(cells)) ensures that the
+        # finite-difference step is no larger than one quarter of the NSDUDF
+        # voxel width. It is exact for power-of-two cell counts such as
+        # 64 and 128.
+        fd_depth = max(
+            1,
+            int(math.ceil(math.log2(max(cells, 2)))),
+        )
+
+        _udf_func, udf_grad_func, eps_u, fd_stats = (
+            self._make_dualmesh_oracle(
+                raw_world_udf_fn,
+                domain_center=center,
+                domain_half_extent=half,
+                max_depth=fd_depth,
+                far_world=float(far_world),
+            )
+        )
+
+        chunk_size = max(1, int(oracle_chunk_size))
+
+        def udf_and_grad_f(query_points):
+            """Return normalized UDF values and unit world gradients.
+
+            NSDUDF supplies points in its normalized ``[-1, 1]^3`` cube.
+            ``udf_grad_func`` already performs the cube-to-world conversion and
+            returns distances divided by ``half``.
+            """
+            if torch.is_tensor(query_points):
+                points_np = query_points.detach().cpu().numpy()
+            else:
+                points_np = np.asarray(query_points)
+
+            points_np = np.asarray(
+                points_np,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+
+            n_points = int(points_np.shape[0])
+            if n_points == 0:
+                return (
+                    torch.zeros((0,), dtype=torch.float32),
+                    torch.zeros((0, 3), dtype=torch.float32),
+                )
+
+            distances = np.empty(n_points, dtype=np.float32)
+            gradients = np.empty((n_points, 3), dtype=np.float32)
+
+            for start in range(0, n_points, chunk_size):
+                end = min(start + chunk_size, n_points)
+
+                distance_chunk, gradient_chunk = udf_grad_func(
+                    points_np[start:end]
+                )
+
+                distances[start:end] = np.asarray(
+                    distance_chunk,
+                    dtype=np.float32,
+                ).reshape(-1)
+
+                gradients[start:end] = np.asarray(
+                    gradient_chunk,
+                    dtype=np.float32,
+                ).reshape(-1, 3)
+
+            return (
+                torch.from_numpy(distances),
+                torch.from_numpy(gradients),
+            )
+
+        metadata = {
+            "gradient_mode": "finite_difference",
+            "n_grid_samples": n,
+            "cells_per_axis": cells,
+            "fd_depth": fd_depth,
+            "fd_eps_u": float(eps_u),
+            "fd_eps_world": float(eps_u) * half,
+            "far_cube": float(far_world) / half,
+            "oracle_chunk_size": chunk_size,
+        }
+
+        return udf_and_grad_f, fd_stats, metadata
+
+    def _make_nsdudf_oracle_from_model_direct(
+        self,
+        *,
+        curve,
+        curve_key,
+        domain_center,
+        domain_half_extent,
+        n_grid_samples,
+        far_world,
+        oracle_chunk_size,
+        localize_norm=1.0,
+    ):
+        """Build an NSDUDF oracle by differentiating the Oktopus model directly.
+
+        This method is intentionally not implemented yet.
+
+        Oktopus does not evaluate its neural UDF directly from world xyz.
+        World points are first converted by NumPy curve localization into
+        several coupled inputs:
+
+            samples_local
+            coords
+            rho
+            rho_n
+            angles
+            radius
+            frame_mat
+
+        Differentiating only with respect to ``samples_local`` would omit the
+        dependence of the prediction on the other localized quantities and
+        would therefore not produce the true world-space UDF gradient.
+
+        A correct implementation needs either:
+
+          1. a differentiable Torch implementation of curve localization, or
+          2. an explicit complete Jacobian from world coordinates to every
+             model input used by the network.
+
+        Until that is implemented and verified, use
+        ``_make_nsdudf_oracle_from_udf``.
+        """
+        raise NotImplementedError(
+            "Direct NSDUDF autograd requires differentiable Oktopus curve "
+            "localization. Use gradient mode 'finite_difference' for now."
+        )
+
     def _cleanup_nsdudf_mesh(self, mesh, config):
         """Conservative cleanup for NSDUDF + Marching Cubes.
 
@@ -309,86 +500,63 @@ class AgentUDFNsdudf(AgentUDF):
         n = max(int(n), 8)
 
         # Finite-difference gradient scale ~ quarter of a voxel.
-        cells = max(n - 1, 2)
-        max_depth = max(1, int(math.ceil(math.log2(cells))))
-        # Points outside the localization support get UDF = far_world; using the
-        # half-extent makes far_cube = 1.0 so they're pruned by NSDUDF's
-        # near-surface cell thresholds.
         far_world = float(cget("udf_far_value", half))
         batch_size = int(cget("udf_batch_size", 150000))
 
-        udf_func, udf_grad_func, eps_u, fd_stats = self._make_dualmesh_oracle(
-            raw_world_udf_fn,
-            domain_center=center,
-            domain_half_extent=half,
-            max_depth=max_depth,
-            far_world=far_world,
-        )
-
-        # Adapter to NSDUDF's expected signature: takes grid query points in
-        # [-1,1]^3 (torch), returns (udf, grads) as torch tensors.
-                # Important:
-        # NSDUDF initially requests the complete dense grid. Our UDF gradient
-        # oracle uses six finite-difference offset queries per point, so passing
-        # the whole grid at once creates a very large temporary array.
-        #
-        # Chunking here does not change the mathematical result. It only limits
-        # peak memory.
         oracle_chunk_size = int(
-            cget("nsdudf_oracle_chunk_size", min(batch_size, 32768))
+            cget(
+                "nsdudf_oracle_chunk_size",
+                min(batch_size, 32768),
+            )
         )
-        oracle_chunk_size = max(1, oracle_chunk_size)
 
-        def udf_and_grad_f(query_points):
-            if torch.is_tensor(query_points):
-                pts = query_points.detach().cpu().numpy()
-            else:
-                pts = np.asarray(query_points)
+        gradient_mode = str(
+            cget("nsdudf_gradient_mode", "finite_difference")
+        ).strip().lower()
 
-            pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        if gradient_mode not in {
+            "finite_difference",
+            "model_direct",
+        }:
+            raise ValueError(
+                "Unknown nsdudf_gradient_mode "
+                f"{gradient_mode!r}. Expected 'finite_difference' or "
+                "'model_direct'."
+            )
 
-            all_dist = []
-            all_grad = []
+        if gradient_mode == "model_direct":
+            raise NotImplementedError(
+                "nsdudf_gradient_mode='model_direct' is not enabled yet. "
+                "The Oktopus curve localization must first be made "
+                "differentiable with respect to world coordinates."
+            )
 
-            for start in range(0, len(pts), oracle_chunk_size):
-                end = min(start + oracle_chunk_size, len(pts))
-                chunk = pts[start:end]
-
-                dist_chunk, grad_chunk = udf_grad_func(chunk)
-
-                all_dist.append(
-                    np.asarray(
-                        dist_chunk,
-                        dtype=np.float32,
-                    ).reshape(-1)
-                )
-                all_grad.append(
-                    np.asarray(
-                        grad_chunk,
-                        dtype=np.float32,
-                    ).reshape(-1, 3)
-                )
-
-            if all_dist:
-                dist = np.concatenate(all_dist, axis=0)
-                grad = np.concatenate(all_grad, axis=0)
-            else:
-                dist = np.zeros((0,), dtype=np.float32)
-                grad = np.zeros((0, 3), dtype=np.float32)
-
-            return torch.from_numpy(dist), torch.from_numpy(grad)
-
+        udf_and_grad_f, fd_stats, oracle_meta = (
+            self._make_nsdudf_oracle_from_udf(
+                raw_world_udf_fn,
+                domain_center=center,
+                domain_half_extent=half,
+                n_grid_samples=n,
+                far_world=far_world,
+                oracle_chunk_size=oracle_chunk_size,
+            )
+        )
 
         print(
             "[nsdudf]",
-            f"grid={n}",
+            f"gradient_mode={oracle_meta['gradient_mode']}",
+            f"grid_samples={oracle_meta['n_grid_samples']}",
+            f"cells={oracle_meta['cells_per_axis']}",
             f"center={center}",
             f"half={half:.6g}",
-            f"fd_base_eps_u={eps_u:.6g}",
-            f"far_cube={far_world / half:.4g}",
-            f"batch={batch_size}",
+            f"fd_depth={oracle_meta['fd_depth']}",
+            f"fd_eps_u={oracle_meta['fd_eps_u']:.6g}",
+            f"fd_eps_world={oracle_meta['fd_eps_world']:.6g}",
+            f"far_cube={oracle_meta['far_cube']:.6g}",
+            f"oracle_chunk={oracle_meta['oracle_chunk_size']}",
+            f"nsdudf_batch={batch_size}",
         )
-
+      
         pseudo_sdf = nsd_meshing.compute_pseudo_sdf(
             model,
             udf_and_grad_f,

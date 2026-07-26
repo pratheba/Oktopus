@@ -136,6 +136,16 @@ if __name__ == '__main__':
     p.add_argument('--udf-domain-band', dest='udf_domain_band', type=float, default=None)
     p.add_argument('--udf-domain-padding', dest='udf_domain_padding', type=float, default=None)
     p.add_argument('--udf-cleanup', dest='udf_cleanup', action='store_true')
+    p.add_argument(
+        "--nsdudf-gradient-mode",
+        choices=("finite_difference", "model_direct"),
+        default="finite_difference",
+        help=(
+            "NSDUDF gradient source. 'finite_difference' is currently "
+            "implemented. 'model_direct' is reserved for the differentiable "
+            "Oktopus-localization path."
+        ),
+    )
 
     args = p.parse_args()
     opt = {
@@ -156,6 +166,7 @@ if __name__ == '__main__':
         ('nsdudf_grid', args.nsdudf_grid),
         ('nsdudf_normalize_udf', (False if args.nsdudf_no_normalize else None)),
         ('nsdudf_use_grads', (False if args.nsdudf_no_grads else None)),
+        ('nsdudf_gradient_mode', args.nsdudf_gradient_mode),
         ('nsdudf_out7', (True if args.nsdudf_out7 else None)),
         ('udf_far_value', args.udf_far_value),
         ('udf_batch_size', args.udf_batch_size),
