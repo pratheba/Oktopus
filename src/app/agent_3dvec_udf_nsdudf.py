@@ -106,6 +106,178 @@ class AgentUDFNsdudf(AgentUDF):
         self._nsdudf_cache = (nsd_meshing, nsd_utils, model)
         return self._nsdudf_cache
 
+    def _cleanup_nsdudf_mesh(self, mesh, config):
+        """Conservative cleanup for NSDUDF + Marching Cubes.
+
+        Removes numerical/triangulation debris while preserving intentional
+        open boundaries and multiple meaningful surface components.
+
+        This deliberately does NOT:
+          - fill holes,
+          - force watertightness,
+          - keep only the largest component,
+          - smooth vertices.
+        """
+        if mesh is None or len(mesh.faces) == 0:
+            return mesh
+
+        def cget(key, default):
+            value = config.get(key) if hasattr(config, "get") else None
+            return default if value is None else value
+
+        min_component_faces = int(
+            cget("nsdudf_min_component_faces", 20)
+        )
+        min_component_faces = max(min_component_faces, 0)
+
+        # Relative tolerance based on the current mesh scale.
+        bounds = np.asarray(mesh.bounds, dtype=np.float64)
+        diagonal = float(np.linalg.norm(bounds[1] - bounds[0]))
+        merge_digits = int(cget("nsdudf_merge_digits", 10))
+        area_epsilon = float(
+            cget(
+                "nsdudf_degenerate_area_epsilon",
+                max(diagonal * diagonal * 1.0e-14, 1.0e-16),
+            )
+        )
+
+        before = self._mesh_quality_stats(mesh.vertices, mesh.faces)
+
+        cleaned = trimesh.Trimesh(
+            vertices=np.asarray(mesh.vertices, dtype=np.float64).copy(),
+            faces=np.asarray(mesh.faces, dtype=np.int64).copy(),
+            process=False,
+        )
+
+        # 1. Merge coincident / nearly coincident vertices.
+        try:
+            cleaned.merge_vertices(digits_vertex=merge_digits)
+        except TypeError:
+            # Compatibility with older trimesh versions.
+            cleaned.merge_vertices()
+        except Exception as exc:
+            print("[nsdudf cleanup] merge_vertices failed:", exc)
+
+        # 2. Remove explicit repeated-index and near-zero-area triangles.
+        if len(cleaned.faces):
+            faces = np.asarray(cleaned.faces, dtype=np.int64)
+            vertices = np.asarray(cleaned.vertices, dtype=np.float64)
+
+            repeated_index = (
+                (faces[:, 0] == faces[:, 1])
+                | (faces[:, 1] == faces[:, 2])
+                | (faces[:, 2] == faces[:, 0])
+            )
+
+            edge_1 = vertices[faces[:, 1]] - vertices[faces[:, 0]]
+            edge_2 = vertices[faces[:, 2]] - vertices[faces[:, 0]]
+            double_area = np.linalg.norm(
+                np.cross(edge_1, edge_2),
+                axis=1,
+            )
+
+            keep = (
+                (~repeated_index)
+                & np.isfinite(double_area)
+                & (0.5 * double_area > area_epsilon)
+            )
+            cleaned.update_faces(keep)
+
+        # 3. Remove duplicate triangles.
+        try:
+            cleaned.update_faces(cleaned.unique_faces())
+        except Exception as exc:
+            print("[nsdudf cleanup] unique_faces failed:", exc)
+
+        try:
+            cleaned.remove_unreferenced_vertices()
+        except Exception:
+            pass
+
+        # 4. Remove only tiny vertex-connected fragments.
+        #
+        # Do not use trimesh.split() here. NSDUDF output can contain
+        # non-manifold edges, and face-adjacency splitting may incorrectly
+        # break one surface into many pieces.
+        if min_component_faces > 0 and len(cleaned.faces):
+            try:
+                faces = np.asarray(cleaned.faces, dtype=np.int64)
+                n_vertices = len(cleaned.vertices)
+
+                parent = np.arange(n_vertices, dtype=np.int64)
+                rank = np.zeros(n_vertices, dtype=np.int8)
+
+                def find(x):
+                    x = int(x)
+                    while parent[x] != x:
+                        parent[x] = parent[parent[x]]
+                        x = int(parent[x])
+                    return x
+
+                def union(a, b):
+                    ra = find(a)
+                    rb = find(b)
+                    if ra == rb:
+                        return
+                    if rank[ra] < rank[rb]:
+                        parent[ra] = rb
+                    elif rank[ra] > rank[rb]:
+                        parent[rb] = ra
+                    else:
+                        parent[rb] = ra
+                        rank[ra] += 1
+
+                for tri in faces:
+                    union(tri[0], tri[1])
+                    union(tri[1], tri[2])
+                    union(tri[2], tri[0])
+
+                face_roots = np.asarray(
+                    [find(tri[0]) for tri in faces],
+                    dtype=np.int64,
+                )
+
+                roots, face_counts = np.unique(
+                    face_roots,
+                    return_counts=True,
+                )
+                keep_roots = roots[
+                    face_counts >= min_component_faces
+                ]
+
+                keep_faces = np.isin(face_roots, keep_roots)
+
+                removed_components = int(
+                    np.sum(face_counts < min_component_faces)
+                )
+                removed_faces = int(np.sum(~keep_faces))
+
+                cleaned.update_faces(keep_faces)
+                cleaned.remove_unreferenced_vertices()
+
+                print(
+                    "[nsdudf cleanup components]",
+                    f"min_faces={min_component_faces}",
+                    f"removed_components={removed_components}",
+                    f"removed_faces={removed_faces}",
+                )
+
+            except Exception as exc:
+                print("[nsdudf cleanup] component filtering failed:", exc)
+
+        after = self._mesh_quality_stats(
+            cleaned.vertices,
+            cleaned.faces,
+        )
+
+        print(
+            "[nsdudf cleanup]",
+            "before=", before,
+            "after=", after,
+        )
+
+        return cleaned
+
     # ------------------------------------------------------------------
     # Replace the DualMesh-UDF extractor with NSDUDF pseudo-SDF meshing
     # ------------------------------------------------------------------
@@ -253,5 +425,12 @@ class AgentUDFNsdudf(AgentUDF):
         print(f"[nsdudf] extracted V={len(mesh.vertices)} F={len(mesh.faces)}")
 
         if bool(cget("udf_cleanup", False)):
-            mesh = self._cleanup_mesh(mesh, config)
+            mesh = self._cleanup_nsdudf_mesh(mesh, config)
+
+        print(
+            "[nsdudf final]",
+            f"V={len(mesh.vertices)}",
+            f"F={len(mesh.faces)}",
+            self._mesh_quality_stats(mesh.vertices, mesh.faces),
+        )
         return mesh
