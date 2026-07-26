@@ -586,7 +586,15 @@ class AgentSDFDC(AgentSDF):
             else:
                 try:
                     t0 = time.time()
-                    Vr, Fr = gpy.reach_for_the_arcs(Ua, Sa - level, verbose=False)
+                    S_rfta = -(Sa - level)
+
+                    print(
+                        f"[dcsdd:rfta] sign-flipped Oktopus SDF: "
+                        f"negative_inside={int(np.count_nonzero(S_rfta < 0.0))} "
+                        f"positive_outside={int(np.count_nonzero(S_rfta > 0.0))} "
+                        f"range=[{S_rfta.min():.6g}, {S_rfta.max():.6g}]"
+                    )
+                    Vr, Fr = gpy.reach_for_the_arcs(Ua, -(Sa - level), verbose=False)
                     timings["rfta"] = time.time() - t0
                     _save("rfta", Vr, Fr)
                 except Exception as exc:
