@@ -586,15 +586,64 @@ class AgentSDFDC(AgentSDF):
             else:
                 try:
                     t0 = time.time()
-                    S_rfta = -(Sa - level)
+                    S_rfta = Sa - level
+
+# Oktopus learned SDF is strongly saturated near +0.1.
+# RFTA interprets |S| as an actual sphere radius, so retain only
+# a near-surface metric band for this method.
+                    rfta_max_abs_sdf = float(
+                        config.get("dcsdd_rfta_max_abs_sdf", 0.05)
+                    )
+
+                    rfta_keep = (
+                        np.isfinite(S_rfta)
+                        & (np.abs(S_rfta) <= rfta_max_abs_sdf)
+                    )
+
+                    U_rfta = np.ascontiguousarray(
+                        Ua[rfta_keep],
+                        dtype=np.float64,
+                    )
+                    S_rfta = np.ascontiguousarray(
+                        S_rfta[rfta_keep],
+                        dtype=np.float64,
+                    )
+
+                    n_neg = int(np.count_nonzero(S_rfta < 0.0))
+                    n_pos = int(np.count_nonzero(S_rfta > 0.0))
 
                     print(
-                        f"[dcsdd:rfta] sign-flipped Oktopus SDF: "
-                        f"negative_inside={int(np.count_nonzero(S_rfta < 0.0))} "
-                        f"positive_outside={int(np.count_nonzero(S_rfta > 0.0))} "
+                        f"[dcsdd:rfta] near-surface samples={len(S_rfta)} "
+                        f"removed={int(np.count_nonzero(~rfta_keep))} "
+                        f"negative={n_neg} positive={n_pos} "
+                        f"max_abs_sdf={rfta_max_abs_sdf:.6g} "
                         f"range=[{S_rfta.min():.6g}, {S_rfta.max():.6g}]"
                     )
-                    Vr, Fr = gpy.reach_for_the_arcs(Ua, S_rfta, verbose=False)
+
+                    if len(S_rfta) < 128:
+                        raise RuntimeError(
+                            f"Too few RFTA samples after near-surface filtering: "
+                            f"{len(S_rfta)}"
+                        )
+
+                    if n_neg == 0 or n_pos == 0:
+                        raise RuntimeError(
+                            "RFTA near-surface input does not contain both signs"
+                        )
+
+                    Vr, Fr = gpy.reach_for_the_arcs(
+                        U_rfta,
+                        S_rfta,
+                        rng_seed=3452,
+                        fine_tune_iters=3,
+                        batch_size=10000,
+                        screening_weight=10.0,
+                        max_points_per_sphere=3,
+                        local_search_iters=20,
+                        local_search_t=0.01,
+                        tol=1e-4,
+                        verbose=True,
+                    )
                     timings["rfta"] = time.time() - t0
                     _save("rfta", Vr, Fr)
                 except Exception as exc:

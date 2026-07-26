@@ -116,6 +116,15 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-dc-weight', dest='dcsdd_dc_weight', type=float, default=None)
     p.add_argument('--dcsdd-batch-size', dest='dcsdd_batch_size', type=int, default=None)
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')
+    parser.add_argument(
+        "--dcsdd-rfta-max-abs-sdf",
+        type=float,
+        default=0.05,
+        help=(
+            "Keep only RFTA samples with |S-level| at or below this "
+            "metric distance. Removes Oktopus's saturated SDF plateau."
+        ),
+    )
 
     args = p.parse_args()
     opt = {
