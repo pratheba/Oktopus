@@ -232,6 +232,7 @@ class AgentUDF(AgentBase):
             "central_axes": 0,
             "invalid_axes": 0,
             "invalid_gradients": 0,
+            "near_surface_points": 0
         }
 
         def to_world(u):
@@ -258,6 +259,12 @@ class AgentUDF(AgentBase):
         def evaluate(u):
             u = np.asarray(u, dtype=np.float64).reshape(-1, 3)
             raw, center_valid = raw_u(u)
+            near_surface = (
+                center_valid
+                & np.isfinite(raw)
+                & ((raw / half) < 0.05)
+            )
+
             n_points = int(u.shape[0])
 
             grad_u = np.zeros_like(u)
@@ -317,6 +324,7 @@ class AgentUDF(AgentBase):
                 & (grad_norm > grad_floor)
             )
             stats["invalid_gradients"] += int(n_points - np.sum(valid_gradient))
+            stats["near_surface_points"] += int(np.count_nonzero(near_surface))
 
             # Distance and gradient now come from the same raw model field.
             # Convert only from world-distance units to DualMesh cube units.

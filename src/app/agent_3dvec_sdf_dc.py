@@ -125,11 +125,9 @@ class AgentSDFDC(AgentSDF):
     # ------------------------------------------------------------------
     # Format bridge: MCGrid  ->  (S, U, res) in the reference's convention
     # ------------------------------------------------------------------
+
     def _grid_to_S_U(self, sdf_grid, contouring):
-        """Return ``(S, U, N1)`` where ``U`` is built by the reference itself
-        (``contouring.build_grid``) at the agent's world extent and ``S`` is
-        the network SDF reindexed onto ``U``'s ordering.
-        """
+        """Return DCSDD-ordered S, U, unevaluated mask and samples/axis."""
         cfg = sdf_grid.grid_config
         N = int(sdf_grid.reso)
         N1 = N + 1
@@ -138,7 +136,6 @@ class AgentSDFDC(AgentSDF):
         step = float(cfg["step"])
         k_basis = np.asarray(cfg["k_basis"], dtype=np.int64)
 
-        # Reference grid at the agent's own world cube [-size, size]^3.
         U = np.asarray(
             contouring.build_grid((N1, N1, N1), -size, size),
             dtype=np.float64,
@@ -148,12 +145,203 @@ class AgentSDFDC(AgentSDF):
                 f"build_grid returned {U.shape}, expected {(N1 ** 3, 3)}"
             )
 
-        # Recover integer cell coordinates (exact: both sides use -size + i*step).
+        # Map DCSDD/grid ordering back to MCGrid's x-fast ordering.
         ijk = np.rint((U - origin[None, :]) / step).astype(np.int64)
-        ijk = np.clip(ijk, 0, N)
+
+        if np.any(ijk < 0) or np.any(ijk > N):
+            lo = ijk.min(axis=0)
+            hi = ijk.max(axis=0)
+            raise ValueError(
+                f"Recovered grid indices outside [0, {N}]: min={lo}, max={hi}"
+            )
+
         flat = ijk @ k_basis
-        S = np.asarray(sdf_grid.val_grid, dtype=np.float64)[flat]
-        return S, U, N1
+
+        raw_S = np.asarray(
+            sdf_grid.val_grid,
+            dtype=np.float64,
+        ).reshape(-1)
+
+        S = raw_S[flat]
+
+        if hasattr(sdf_grid, "empty_marks"):
+            raw_unevaluated = np.asarray(
+                sdf_grid.empty_marks,
+                dtype=bool,
+            ).reshape(-1)
+            unevaluated = raw_unevaluated[flat]
+        else:
+            # We should normally have empty_marks, but keep the adapter runnable.
+            unevaluated = np.isclose(S, 10.0, rtol=0.0, atol=1e-12)
+
+        return S, U, unevaluated, N1
+
+
+    def _print_dcsdd_grid_diagnostics(
+        self,
+        S,
+        U,
+        unevaluated,
+        N1,
+        level,
+    ):
+        """Print diagnostics for exactly the grid that DCSDD will receive."""
+        S = np.asarray(S, dtype=np.float64).reshape(-1)
+        U = np.asarray(U, dtype=np.float64).reshape(-1, 3)
+        unevaluated = np.asarray(unevaluated, dtype=bool).reshape(-1)
+
+        expected = N1 ** 3
+        if len(S) != expected or len(U) != expected:
+            raise ValueError(
+                f"Diagnostic grid mismatch: len(S)={len(S)}, "
+                f"len(U)={len(U)}, expected={expected}"
+            )
+
+        if len(unevaluated) != expected:
+            raise ValueError(
+                f"Unevaluated-mask mismatch: {len(unevaluated)} != {expected}"
+            )
+
+        finite = np.isfinite(S)
+        evaluated = (~unevaluated) & finite
+
+        def _percentile_string(values):
+            values = np.asarray(values, dtype=np.float64)
+            values = values[np.isfinite(values)]
+            if len(values) == 0:
+                return "no finite values"
+
+            qs = [0, 1, 5, 25, 50, 75, 95, 99, 100]
+            vals = np.percentile(values, qs)
+            return " ".join(
+                f"p{q}={v:.6g}"
+                for q, v in zip(qs, vals)
+            )
+
+        print(
+            f"[dcsdd:grid] samples={len(S)} "
+            f"shape={N1}x{N1}x{N1} "
+            f"level={level:.9g}"
+        )
+        print(
+            f"[dcsdd:grid] finite={int(finite.sum())} "
+            f"evaluated={int(evaluated.sum())} "
+            f"unevaluated={int(unevaluated.sum())} "
+            f"exact_plus10={int(np.count_nonzero(S == 10.0))}"
+        )
+        print(f"[dcsdd:grid] S all: {_percentile_string(S)}")
+        print(
+            f"[dcsdd:grid] S evaluated: "
+            f"{_percentile_string(S[evaluated])}"
+        )
+
+        # DCSDD/C++ flat index is:
+        # i + N1 * (j + N1 * k), i.e. x is fastest.
+        # order='F' gives A[i, j, k] from that flat layout.
+        G = S.reshape((N1, N1, N1), order="F")
+        E = unevaluated.reshape((N1, N1, N1), order="F")
+
+        below = G < level
+        above = G > level
+
+        # Exact C++ edge rule is strict opposite signs:
+        # (S0 - level) * (S1 - level) < 0.
+        sign_x = (
+            (below[:-1, :, :] & above[1:, :, :])
+            | (above[:-1, :, :] & below[1:, :, :])
+        )
+        sign_y = (
+            (below[:, :-1, :] & above[:, 1:, :])
+            | (above[:, :-1, :] & below[:, 1:, :])
+        )
+        sign_z = (
+            (below[:, :, :-1] & above[:, :, 1:])
+            | (above[:, :, :-1] & below[:, :, 1:])
+        )
+
+        touch_x = sign_x & (E[:-1, :, :] | E[1:, :, :])
+        touch_y = sign_y & (E[:, :-1, :] | E[:, 1:, :])
+        touch_z = sign_z & (E[:, :, :-1] | E[:, :, 1:])
+
+        n_sign_edges = (
+            int(sign_x.sum())
+            + int(sign_y.sum())
+            + int(sign_z.sum())
+        )
+        n_touch_unevaluated = (
+            int(touch_x.sum())
+            + int(touch_y.sum())
+            + int(touch_z.sum())
+        )
+
+        # Same criterion as Cell::Cell:
+        # at least one strictly negative and one strictly positive corner.
+        cell_below = (
+            below[:-1, :-1, :-1]
+            | below[1:, :-1, :-1]
+            | below[:-1, 1:, :-1]
+            | below[1:, 1:, :-1]
+            | below[:-1, :-1, 1:]
+            | below[1:, :-1, 1:]
+            | below[:-1, 1:, 1:]
+            | below[1:, 1:, 1:]
+        )
+        cell_above = (
+            above[:-1, :-1, :-1]
+            | above[1:, :-1, :-1]
+            | above[:-1, 1:, :-1]
+            | above[1:, 1:, :-1]
+            | above[:-1, :-1, 1:]
+            | above[1:, :-1, 1:]
+            | above[:-1, 1:, 1:]
+            | above[1:, 1:, 1:]
+        )
+        interesting = cell_below & cell_above
+
+        cell_touches_unevaluated = (
+            E[:-1, :-1, :-1]
+            | E[1:, :-1, :-1]
+            | E[:-1, 1:, :-1]
+            | E[1:, 1:, :-1]
+            | E[:-1, :-1, 1:]
+            | E[1:, :-1, 1:]
+            | E[:-1, 1:, 1:]
+            | E[1:, 1:, 1:]
+        )
+
+        print(
+            f"[dcsdd:grid] sign_changing_edges={n_sign_edges} "
+            f"x={int(sign_x.sum())} "
+            f"y={int(sign_y.sum())} "
+            f"z={int(sign_z.sum())}"
+        )
+        print(
+            "[dcsdd:grid] sign_changing_edges_touching_unevaluated="
+            f"{n_touch_unevaluated} "
+            f"x={int(touch_x.sum())} "
+            f"y={int(touch_y.sum())} "
+            f"z={int(touch_z.sum())}"
+        )
+        print(
+            f"[dcsdd:grid] interesting_cells={int(interesting.sum())} "
+            "interesting_cells_touching_unevaluated="
+            f"{int((interesting & cell_touches_unevaluated).sum())}"
+        )
+
+        grid_min = U.min(axis=0)
+        grid_max = U.max(axis=0)
+        print(
+            f"[dcsdd:grid] U bbox min={grid_min.tolist()} "
+            f"max={grid_max.tolist()}"
+        )
+
+        if np.any(evaluated):
+            evaluated_U = U[evaluated]
+            print(
+                "[dcsdd:grid] evaluated-sample bbox "
+                f"min={evaluated_U.min(axis=0).tolist()} "
+                f"max={evaluated_U.max(axis=0).tolist()}"
+            )
 
     def _active_cloud(self, sdf_grid):
         """Only the cells the network actually filled (finite, not background),
@@ -221,7 +409,26 @@ class AgentSDFDC(AgentSDF):
         default_methods = ["mc", "dc", "ours", "rfta", "mnm1", "mnm2"]
         methods = list(requested) if requested else default_methods
 
-        S, U, N1 = self._grid_to_S_U(sdf_grid, contouring)
+
+        S_raw, U, unevaluated, N1 = self._grid_to_S_U(
+            sdf_grid,
+            contouring,
+        )
+
+        self._print_dcsdd_grid_diagnostics(
+            S=S_raw,
+            U=U,
+            unevaluated=unevaluated,
+            N1=N1,
+            level=level,
+        )
+
+# Marching Cubes accepts isoValue, but the current DC/DCSDD C++ paths
+# internally use zero when detecting cells and generating quads.
+# Shift all methods to a common zero level.
+        S = S_raw - level
+        contour_iso = 0.0
+
         cc = contouring._contouring_cpp_module
 
         results = {}
@@ -231,21 +438,95 @@ class AgentSDFDC(AgentSDF):
             if V is None or F is None or len(V) == 0 or len(F) == 0:
                 print(f"[dcsdd:{method}] empty result, not saved")
                 return
+
+            V = np.asarray(V, dtype=np.float64)
+            F = np.asarray(F, dtype=np.int64)
+
+            if not np.all(np.isfinite(V)):
+                bad = int(np.count_nonzero(~np.isfinite(V)))
+                raise ValueError(
+                    f"{method} returned {bad} non-finite vertex coordinates"
+                )
+
             mesh = trimesh.Trimesh(
-                vertices=np.asarray(V, dtype=np.float64),
-                faces=np.asarray(F, dtype=np.int64),
+                vertices=V,
+                faces=F,
                 process=False,
             )
-            path = op.join(out_dir, f"{name}_{method}_{checkpoint}_mesh{reso}.ply")
+
+            path = op.join(
+                out_dir,
+                f"{name}_{method}_{checkpoint}_mesh{reso}.ply",
+            )
             mesh.export(path)
             results[method] = mesh
-            print(f"[dcsdd:{method}] saved {path}  V={len(V)} F={len(F)}  "
-                  f"time={timings.get(method, float('nan')):.4f}s")
+
+            mesh_min = V.min(axis=0)
+            mesh_max = V.max(axis=0)
+            mesh_extent = mesh_max - mesh_min
+
+            grid_min = U.min(axis=0)
+            grid_max = U.max(axis=0)
+
+            evaluated = ~unevaluated
+            if np.any(evaluated):
+                eval_min = U[evaluated].min(axis=0)
+                eval_max = U[evaluated].max(axis=0)
+            else:
+                eval_min = np.full(3, np.nan)
+                eval_max = np.full(3, np.nan)
+
+            # trimesh triangulates returned DCSDD quads when constructing the mesh.
+            signed_volume = float(mesh.volume)
+            if not mesh.is_watertight:
+                orientation = "undetermined_nonwatertight"
+            elif signed_volume > 0.0:
+                orientation = "outward_positive_signed_volume"
+            elif signed_volume < 0.0:
+                orientation = "inward_negative_signed_volume"
+            else:
+                orientation = "degenerate_zero_signed_volume"
+
+            print(
+                f"[dcsdd:{method}] saved {path} "
+                f"V={len(mesh.vertices)} F={len(mesh.faces)} "
+                f"time={timings.get(method, float('nan')):.4f}s"
+            )
+            print(
+                f"[dcsdd:{method}] mesh bbox "
+                f"min={mesh_min.tolist()} "
+                f"max={mesh_max.tolist()} "
+                f"extent={mesh_extent.tolist()}"
+            )
+            print(
+                f"[dcsdd:{method}] reference grid bbox "
+                f"min={grid_min.tolist()} "
+                f"max={grid_max.tolist()}"
+            )
+            print(
+                f"[dcsdd:{method}] evaluated-sample bbox "
+                f"min={eval_min.tolist()} "
+                f"max={eval_max.tolist()}"
+            )
+            print(
+                f"[dcsdd:{method}] watertight={mesh.is_watertight} "
+                f"winding_consistent={mesh.is_winding_consistent} "
+                f"signed_volume={signed_volume:.9g} "
+                f"orientation={orientation}"
+            )
 
         def _contour(method_name, opts):
             t0 = time.time()
             V, F = contouring.py_contouring(
-                S, U, N1, N1, N1, level, opts, None, None
+                S,
+                U,
+                N1,
+                N1,
+                N1,
+                contour_iso,
+                opts,
+                None,
+                None,
             )
             timings[method_name] = time.time() - t0
             _save(method_name, V, F)

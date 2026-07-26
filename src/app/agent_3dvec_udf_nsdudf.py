@@ -403,6 +403,8 @@ class AgentUDFNsdudf(AgentUDF):
         print(
             "[nsdudf fd]",
             f"eval_points={fd_stats['eval_points']}",
+            f"near_surface={fd_stats.get('near_surface_points',0)}",
+            f"near_invalid={fd_stats.get('near_surface_invalid_gradients',0)}",
             f"central_axes={fd_stats['central_axes']}",
             f"invalid_axes={fd_stats['invalid_axes']}",
             f"invalid_axis_pct="
