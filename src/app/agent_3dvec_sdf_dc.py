@@ -131,7 +131,7 @@ class AgentSDFDC(AgentSDF):
         cfg = sdf_grid.grid_config
         N = int(sdf_grid.reso)
         N1 = N + 1
-        size = float(cfg["size"])
+        size = float(getattr(sdf_grid, "size", -float(cfg["origin"][0])))
         origin = np.asarray(cfg["origin"], dtype=np.float64).reshape(3)
         step = float(cfg["step"])
         k_basis = np.asarray(cfg["k_basis"], dtype=np.int64)
