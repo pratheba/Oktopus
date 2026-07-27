@@ -525,22 +525,41 @@ class AgentUDFNsdudf(AgentUDF):
             )
 
         if gradient_mode == "model_direct":
-            raise NotImplementedError(
-                "nsdudf_gradient_mode='model_direct' is not enabled yet. "
-                "The Oktopus curve localization must first be made "
-                "differentiable with respect to world coordinates."
-            )
-
-        udf_and_grad_f, fd_stats, oracle_meta = (
-            self._make_nsdudf_oracle_from_udf(
+            model_context = getattr(
                 raw_world_udf_fn,
-                domain_center=center,
-                domain_half_extent=half,
-                n_grid_samples=n,
-                far_world=far_world,
-                oracle_chunk_size=oracle_chunk_size,
+                "_oktopus_model_context",
+                None,
             )
-        )
+            if model_context is None:
+                raise ValueError(
+                    "nsdudf_gradient_mode='model_direct' requires an "
+                    "Oktopus-native model query carrying "
+                    "_oktopus_model_context. This mode cannot be used with "
+                    "an arbitrary external UDF callable."
+                )
+
+            udf_and_grad_f, fd_stats, oracle_meta = (
+                self._make_nsdudf_oracle_from_model_direct(
+                    raw_world_udf_fn=raw_world_udf_fn,
+                    model_context=model_context,
+                    domain_center=center,
+                    domain_half_extent=half,
+                    n_grid_samples=n,
+                    far_world=far_world,
+                    oracle_chunk_size=oracle_chunk_size,
+                )
+            )
+        else:
+            udf_and_grad_f, fd_stats, oracle_meta = (
+                self._make_nsdudf_oracle_from_udf(
+                    raw_world_udf_fn,
+                    domain_center=center,
+                    domain_half_extent=half,
+                    n_grid_samples=n,
+                    far_world=far_world,
+                    oracle_chunk_size=oracle_chunk_size,
+                )
+            )
 
         print(
             "[nsdudf]",

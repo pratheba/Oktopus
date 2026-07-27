@@ -974,6 +974,19 @@ class AgentUDF(AgentBase):
                         out[inside] = vals
                         valid[inside] = True
                     return out, valid
+                # Expose the underlying Oktopus model context to extraction
+                # backends that can evaluate the neural model directly.
+                #
+                # Ordinary callers can continue treating native_raw as a plain
+                # callable. NSDUDF's model-direct oracle can inspect this
+                # metadata without changing the generic extractor signature.
+                native_raw._oktopus_model_context = {
+                    "curve": curve,
+                    "curve_key": key,
+                    "localize_norm": norm,
+                    "model_batch_size": bs,
+                    "far_world": far,
+                }
 
                 # coarse scan for the native near-surface bbox (the domain).
                 lin = np.linspace(-size, size, coarse)
