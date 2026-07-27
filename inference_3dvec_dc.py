@@ -102,11 +102,11 @@ if __name__ == '__main__':
     p.add_argument('-r', '--resolution', type=int, default=64)
     # DC-SDD suite controls
     p.add_argument('--surface-extraction', dest='surface_extraction', default='run_ours',
-                   help="run_ours (all methods, default) or a single: mc|dc|ours|rfta|mnm1|mnm2")
+                   help="run_ours (all methods, default) or a single: mc|mc_ref|dc|ours|rfta|mnm1|mnm2")
     p.add_argument('--dcsdd-repo', dest='dcsdd_repo', default=None,
                    help="path to the dual-contouring-of-signed-distance-data checkout")
     p.add_argument('--dcsdd-methods', dest='dcsdd_methods', default=None,
-                   help="comma list subset of mc,dc,ours,rfta,mnm1,mnm2")
+                   help="comma list subset of mc,mc_ref,dc,ours,rfta,mnm1,mnm2")
     p.add_argument('--dcsdd-gt-mesh', dest='dcsdd_gt_mesh', default=None,
                    help="GT mesh (.obj/.ply) required only for the Kohlbrenner RC (mnm2) method")
     p.add_argument('--level', dest='level', type=float, default=0.0)
@@ -116,15 +116,6 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-dc-weight', dest='dcsdd_dc_weight', type=float, default=None)
     p.add_argument('--dcsdd-batch-size', dest='dcsdd_batch_size', type=int, default=None)
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')
-    p.add_argument(
-        "--dcsdd-rfta-max-abs-sdf",
-        type=float,
-        default=0.05,
-        help=(
-            "Keep only RFTA samples with |S-level| at or below this "
-            "metric distance. Removes Oktopus's saturated SDF plateau."
-        ),
-    )
 
     args = p.parse_args()
     opt = {
