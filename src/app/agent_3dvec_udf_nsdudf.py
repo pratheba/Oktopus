@@ -74,7 +74,19 @@ class AgentUDFNsdudf(AgentUDF):
         # core.meshing does `sys.path.append('custom_mc')` relative to CWD and
         # then `from _marching_cubes_lewiner import ...`; make that resolve no
         # matter the CWD by putting the absolute paths first.
-        for p in (repo, op.join(repo, "custom_mc")):
+        #for p in (repo, op.join(repo, "custom_mc")):
+        #    if p not in sys.path:
+        #        sys.path.insert(0, p)
+        # NSDUDF ships a modified DualMesh-UDF containing extract_mesh_mod.
+        # It must take precedence over a separately installed stock
+        # DualMesh-UDF, which contains only extract_mesh.
+        import_paths = (
+            op.join(repo, "DualMesh-UDF"),
+            op.join(repo, "custom_mc"),
+            repo,
+        )
+
+        for p in reversed(import_paths):
             if p not in sys.path:
                 sys.path.insert(0, p)
 
@@ -177,7 +189,7 @@ class AgentUDFNsdudf(AgentUDF):
             int(math.ceil(math.log2(max(cells, 2)))),
         )
 
-        _udf_func, udf_grad_func, eps_u, fd_stats = (
+        udf_func, udf_grad_func, eps_u, fd_stats = (
             self._make_dualmesh_oracle(
                 raw_world_udf_fn,
                 domain_center=center,
@@ -249,7 +261,13 @@ class AgentUDFNsdudf(AgentUDF):
             "oracle_chunk_size": chunk_size,
         }
 
-        return udf_and_grad_f, fd_stats, metadata
+        #return udf_and_grad_f, fd_stats, metadata
+        dmudf_oracles = {
+            "udf_func": udf_func,
+            "udf_grad_func": udf_grad_func,
+        }
+
+        return udf_and_grad_f, dmudf_oracles, fd_stats, metadata
 
     def _make_nsdudf_oracle_from_model_direct(
         self,
@@ -514,6 +532,26 @@ class AgentUDFNsdudf(AgentUDF):
             cget("nsdudf_gradient_mode", "finite_difference")
         ).strip().lower()
 
+        mesher = str(
+            cget("nsdudf_mesher", "marching_cubes")
+        ).strip().lower()
+
+        mesher_aliases = {
+            "mc": "marching_cubes",
+            "marching_cubes": "marching_cubes",
+            "dualmesh": "dual_mesh_udf",
+            "dmudf": "dual_mesh_udf",
+            "dual_mesh_udf": "dual_mesh_udf",
+        }
+
+        if mesher not in mesher_aliases:
+            raise ValueError(
+                f"Unknown nsdudf_mesher={mesher!r}. Expected one of "
+                "'marching_cubes' or 'dual_mesh_udf'."
+            )
+
+        mesher = mesher_aliases[mesher]
+
         if gradient_mode not in {
             "finite_difference",
             "model_direct",
@@ -550,7 +588,7 @@ class AgentUDFNsdudf(AgentUDF):
                 )
             )
         else:
-            udf_and_grad_f, fd_stats, oracle_meta = (
+            udf_and_grad_f, dmudf_oracles, fd_stats, oracle_meta = (
                 self._make_nsdudf_oracle_from_udf(
                     raw_world_udf_fn,
                     domain_center=center,
@@ -574,6 +612,7 @@ class AgentUDFNsdudf(AgentUDF):
             f"far_cube={oracle_meta['far_cube']:.6g}",
             f"oracle_chunk={oracle_meta['oracle_chunk_size']}",
             f"nsdudf_batch={batch_size}",
+            f"mesher={mesher}",
         )
       
         pseudo_sdf = nsd_meshing.compute_pseudo_sdf(
@@ -599,18 +638,102 @@ class AgentUDFNsdudf(AgentUDF):
             f"invalid_gradients={fd_stats['invalid_gradients']}",
         )
 
-        mesh = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
-        if mesh is None or len(mesh.faces) == 0:
-            print("[nsdudf] marching cubes produced an empty mesh")
-            return self._empty_mesh()
+        if mesher == "marching_cubes":
+            mesh_cube = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
 
-        # NSDUDF mesh lives in [-1,1] (voxel origin -1); map back to world.
-        world_vertices = center[None, :] + np.asarray(
-            mesh.vertices, dtype=np.float64
-        ) * half
-        mesh = trimesh.Trimesh(
-            vertices=world_vertices, faces=np.asarray(mesh.faces), process=False
+            if mesh_cube is None or len(mesh_cube.faces) == 0:
+                print("[nsdudf] marching cubes produced an empty mesh")
+                return self._empty_mesh()
+
+            print(
+                "[nsdudf mc cube]",
+                self._mesh_quality_stats(
+                    mesh_cube.vertices,
+                    mesh_cube.faces,
+                ),
+            )
+
+        else:
+            # The reference NSDUDF+DualMesh implementation requires the
+            # pseudo-SDF to contain 2^depth cells:
+            #
+            #   65 samples  -> 64 cells  -> depth 6
+            #   129 samples -> 128 cells -> depth 7
+            cells_per_axis = n - 1
+            depth_float = math.log2(cells_per_axis)
+
+            if not depth_float.is_integer():
+                raise ValueError(
+                    "NSDUDF + DualMesh-UDF requires n_grid_samples - 1 "
+                    "to be a power of two. Use 65, 129, or 257 samples. "
+                    f"Got n_grid_samples={n}, cells={cells_per_axis}."
+                )
+
+            dualmesh_batch_size = int(
+                cget("nsdudf_dualmesh_batch_size", batch_size)
+            )
+
+            print(
+                "[nsdudf+dmudf]",
+                f"grid_samples={n}",
+                f"cells={cells_per_axis}",
+                f"depth={int(depth_float)}",
+                f"batch={dualmesh_batch_size}",
+            )
+
+            # NSDUDF's bundled DualMesh implementation uses libigl's older
+            # NumPy signatures. Apply the compatibility wrapper already used
+            # by the plain DualMesh path.
+            self._ensure_udf_igl_patch()
+
+            plain_dmudf_cube, combined_cube = (
+                nsd_meshing.mesh_dual_mesh_udf(
+                    pseudo_sdf,
+                    dmudf_oracles["udf_func"],
+                    dmudf_oracles["udf_grad_func"],
+                    batch_size=dualmesh_batch_size,
+
+                    # Keep this on CPU. The upstream helper creates its
+                    # pseudo-SDF lookup tensor on CPU, so passing "cuda"
+                    # creates a device mismatch.
+                    device="cpu",
+                )
+            )
+
+            print(
+                "[nsdudf+dmudf plain cube]",
+                self._mesh_quality_stats(
+                    plain_dmudf_cube.vertices,
+                    plain_dmudf_cube.faces,
+                ),
+            )
+            print(
+                "[nsdudf+dmudf combined cube]",
+                self._mesh_quality_stats(
+                    combined_cube.vertices,
+                    combined_cube.faces,
+                ),
+            )
+
+            mesh_cube = combined_cube
+
+            if mesh_cube is None or len(mesh_cube.faces) == 0:
+                print("[nsdudf+dmudf] produced an empty mesh")
+                return self._empty_mesh()
+
+        # Both NSDUDF+MC and NSDUDF+DualMesh return vertices in the
+        # normalized extraction cube [-1, 1]^3.
+        world_vertices = (
+            center[None, :]
+            + np.asarray(mesh_cube.vertices, dtype=np.float64) * half
         )
+
+        mesh = trimesh.Trimesh(
+            vertices=world_vertices,
+            faces=np.asarray(mesh_cube.faces, dtype=np.int64),
+            process=False,
+        )
+
         print(f"[nsdudf] extracted V={len(mesh.vertices)} F={len(mesh.faces)}")
 
         if bool(cget("udf_cleanup", False)):

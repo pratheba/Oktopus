@@ -147,6 +147,23 @@ if __name__ == '__main__':
             "Oktopus-localization path."
         ),
     )
+    p.add_argument(
+        "--nsdudf-mesher",
+        choices=("marching_cubes", "dual_mesh_udf"),
+        default="marching_cubes",
+        help=(
+            "Final meshing backend after NSDUDF pseudo-sign prediction. "
+            "'marching_cubes' is the current path; 'dual_mesh_udf' uses "
+            "NSDUDF's relaxed DualMesh-UDF integration."
+        ),
+    )
+
+    p.add_argument(
+        "--nsdudf-dualmesh-batch-size",
+        type=int,
+        default=150000,
+        help="Batch size for the NSDUDF + DualMesh-UDF backend.",
+    )
 
     args = p.parse_args()
     opt = {
@@ -178,6 +195,8 @@ if __name__ == '__main__':
             'nsdudf_oracle_chunk_size',
             args.nsdudf_oracle_chunk_size,
         ),
+        ('nsdudf_mesher', args.nsdudf_mesher),
+        ('nsdudf_dualmesh_batch_size', args.nsdudf_dualmesh_batch_size),
     ]:
         if _v is not None:
             opt[_k] = _v
