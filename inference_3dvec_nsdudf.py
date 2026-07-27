@@ -90,6 +90,8 @@ def start_inference(opt):
         'udf_domain_padding',
         'udf_domain_scan_reso',
         'udf_cleanup',
+        'nsdudf_mesher',
+        'nsdudf_dualmesh_batch_size',
     ):
     # Pass through NSDUDF + shared UDF-domain controls.
         _v = opt.get(_k, None) if hasattr(opt, 'get') else None
@@ -149,6 +151,7 @@ if __name__ == '__main__':
     )
     p.add_argument(
         "--nsdudf-mesher",
+        dest='nsdudf_mesher',
         choices=("marching_cubes", "dual_mesh_udf"),
         default="marching_cubes",
         help=(
@@ -160,6 +163,7 @@ if __name__ == '__main__':
 
     p.add_argument(
         "--nsdudf-dualmesh-batch-size",
+        dest='nsdudf_dualmesh_batch_size',
         type=int,
         default=150000,
         help="Batch size for the NSDUDF + DualMesh-UDF backend.",
