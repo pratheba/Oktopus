@@ -127,6 +127,7 @@ class AgentUDFNsdudf(AgentUDF):
         n_grid_samples,
         far_world,
         oracle_chunk_size,
+        offset_world=0.0,
     ):
         """Build the NSDUDF oracle from an arbitrary world-space UDF callable.
 
@@ -227,6 +228,8 @@ class AgentUDFNsdudf(AgentUDF):
 
             distances = np.empty(n_points, dtype=np.float32)
             gradients = np.empty((n_points, 3), dtype=np.float32)
+            offset_world = max(0.0, float(offset_world))
+            offset_cube = offset_world / half
 
             for start in range(0, n_points, chunk_size):
                 end = min(start + chunk_size, n_points)
@@ -234,16 +237,49 @@ class AgentUDFNsdudf(AgentUDF):
                 distance_chunk, gradient_chunk = udf_grad_func(
                     points_np[start:end]
                 )
-
-                distances[start:end] = np.asarray(
+                distance_chunk = np.asarray(
                     distance_chunk,
                     dtype=np.float32,
                 ).reshape(-1)
 
-                gradients[start:end] = np.asarray(
+                gradient_chunk = np.asarray(
                     gradient_chunk,
                     dtype=np.float32,
                 ).reshape(-1, 3)
+
+                # Optional UDF offset shell.
+                #
+                # Original surface:
+                #     d(x) = 0
+                #
+                # Offset shell:
+                #     |d(x) - offset| = 0
+                #
+                # The sign multiplier updates the gradient direction on
+                # either side of the offset level set.
+                #offset_world = float(
+                #    config.get("nsdudf_offset_world", 0.0)
+                #)
+                #offset_cube = offset_world / half
+
+                if offset_cube > 0.0:
+                    signed_offset = distance_chunk - offset_cube
+
+                    gradient_sign = np.where(
+                        signed_offset >= 0.0,
+                        1.0,
+                        -1.0,
+                    ).astype(np.float32)
+
+                    distance_chunk = np.abs(signed_offset)
+                    gradient_chunk = (
+                        gradient_chunk
+                        * gradient_sign[:, None]
+                    )
+
+                distances[start:end] = distance_chunk
+                gradients[start:end] = gradient_chunk
+
 
             return (
                 torch.from_numpy(distances),
@@ -259,6 +295,8 @@ class AgentUDFNsdudf(AgentUDF):
             "fd_eps_world": float(eps_u) * half,
             "far_cube": float(far_world) / half,
             "oracle_chunk_size": chunk_size,
+            "offset_world": offset_world,
+            "offset_cube": offset_cube,
         }
 
         #return udf_and_grad_f, fd_stats, metadata
@@ -596,6 +634,7 @@ class AgentUDFNsdudf(AgentUDF):
                     n_grid_samples=n,
                     far_world=far_world,
                     oracle_chunk_size=oracle_chunk_size,
+                    offset_world=float(cget("nsdudf_offset_world", 0.0)),
                 )
             )
 
@@ -613,6 +652,8 @@ class AgentUDFNsdudf(AgentUDF):
             f"oracle_chunk={oracle_meta['oracle_chunk_size']}",
             f"nsdudf_batch={batch_size}",
             f"mesher={mesher}",
+            f"offset_world={oracle_meta['offset_world']:.6g}",
+            f"offset_cube={oracle_meta['offset_cube']:.6g}",
         )
       
         pseudo_sdf = nsd_meshing.compute_pseudo_sdf(

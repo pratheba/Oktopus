@@ -306,6 +306,16 @@ def build_parser():
         type=int,
         default=10,
     )
+    parser.add_argument(
+        "--nsdudf-offset-world",
+        dest="nsdudf_offset_world",
+        type=float,
+        default=0.0,
+        help=(
+            "Extract an offset UDF shell. Total approximate thickness "
+            "is twice this value."
+        ),
+    )
 
     return parser
 
@@ -347,6 +357,7 @@ if __name__ == "__main__":
         "udf_cleanup": True if args.udf_cleanup else None,
         "nsdudf_min_component_faces": args.nsdudf_min_component_faces,
         "nsdudf_merge_digits": args.nsdudf_merge_digits,
+        "nsdudf_offset_world": args.nsdudf_offset_world,
     }
 
     for key, value in forwarded.items():
