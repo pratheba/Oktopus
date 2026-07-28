@@ -201,6 +201,22 @@ class AgentUDFNsdudf(AgentUDF):
         )
 
         chunk_size = max(1, int(oracle_chunk_size))
+        offset_world = max(0.0, float(offset_world))
+        offset_cube = offset_world / half
+
+        if offset_world >= float(far_world):
+            raise ValueError(
+                "nsdudf_offset_world must be smaller than udf_far_value. "
+                f"Got offset_world={offset_world}, far_world={far_world}."
+            )
+
+        if offset_world > 0.5 * float(far_world):
+            print(
+                "[nsdudf offset warning]",
+                f"offset_world={offset_world:.6g}",
+                f"far_world={float(far_world):.6g}",
+                "The offset is large relative to the artificial far field.",
+            )
 
         def udf_and_grad_f(query_points):
             """Return normalized UDF values and unit world gradients.
@@ -228,8 +244,6 @@ class AgentUDFNsdudf(AgentUDF):
 
             distances = np.empty(n_points, dtype=np.float32)
             gradients = np.empty((n_points, 3), dtype=np.float32)
-            offset_world = max(0.0, float(offset_world))
-            offset_cube = offset_world / half
 
             for start in range(0, n_points, chunk_size):
                 end = min(start + chunk_size, n_points)
@@ -590,6 +604,17 @@ class AgentUDFNsdudf(AgentUDF):
 
         mesher = mesher_aliases[mesher]
 
+        offset_world = float(
+            cget("nsdudf_offset_world", 0.0)
+        )
+
+        if offset_world > 0.0 and mesher == "dual_mesh_udf":
+            raise ValueError(
+                "nsdudf_offset_world is currently supported only with "
+                "nsdudf_mesher='marching_cubes'. The DualMesh backend still "
+                "queries the original, unshifted UDF."
+            )
+
         if gradient_mode not in {
             "finite_difference",
             "model_direct",
@@ -601,29 +626,9 @@ class AgentUDFNsdudf(AgentUDF):
             )
 
         if gradient_mode == "model_direct":
-            model_context = getattr(
-                raw_world_udf_fn,
-                "_oktopus_model_context",
-                None,
-            )
-            if model_context is None:
-                raise ValueError(
-                    "nsdudf_gradient_mode='model_direct' requires an "
-                    "Oktopus-native model query carrying "
-                    "_oktopus_model_context. This mode cannot be used with "
-                    "an arbitrary external UDF callable."
-                )
-
-            udf_and_grad_f, fd_stats, oracle_meta = (
-                self._make_nsdudf_oracle_from_model_direct(
-                    raw_world_udf_fn=raw_world_udf_fn,
-                    model_context=model_context,
-                    domain_center=center,
-                    domain_half_extent=half,
-                    n_grid_samples=n,
-                    far_world=far_world,
-                    oracle_chunk_size=oracle_chunk_size,
-                )
+            raise NotImplementedError(
+                "nsdudf_gradient_mode='model_direct' is not implemented yet. "
+                "Use 'finite_difference'."
             )
         else:
             udf_and_grad_f, dmudf_oracles, fd_stats, oracle_meta = (
@@ -634,7 +639,7 @@ class AgentUDFNsdudf(AgentUDF):
                     n_grid_samples=n,
                     far_world=far_world,
                     oracle_chunk_size=oracle_chunk_size,
-                    offset_world=float(cget("nsdudf_offset_world", 0.0)),
+                    offset_world=offset_world,
                 )
             )
 
