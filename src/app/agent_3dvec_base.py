@@ -1043,8 +1043,15 @@ class AgentBase():
 #                        name=key + "_base",
 #                    )
 
-                    temp_grid.update_grid(vals, kidx, mode='minimum')
-                    temp_grid_base.update_grid(vals_base, kidx, mode='minimum')
+                    # These samples were actually evaluated by the network.
+                    # MCGrid.extract_mesh() and the DC adapter use empty_marks to
+                    # crop/diagnose the active support, so mark them explicitly.
+                    temp_grid.update_grid(
+                        vals, kidx, mode='minimum', mark=True
+                    )
+                    temp_grid_base.update_grid(
+                        vals_base, kidx, mode='minimum', mark=True
+                    )
                 
                 mesh = self.extract_surface_mesh(
                     temp_grid, arg, context=f"ngcnet:{shape_name}"

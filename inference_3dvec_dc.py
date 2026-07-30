@@ -83,7 +83,8 @@ def start_inference(opt):
     }
     for _k in ('dcsdd_repo', 'dcsdd_methods', 'dcsdd_gt_mesh',
                'dcsdd_outer_iters', 'dcsdd_inner_iters', 'dcsdd_mu',
-               'dcsdd_dc_weight', 'dcsdd_batch_size', 'dcsdd_verbose'):
+               'dcsdd_dc_weight', 'dcsdd_batch_size', 'dcsdd_verbose',
+               'dcsdd_sdf_band'):
         _v = opt.get(_k, None) if hasattr(opt, 'get') else None
         if _v is not None:
             arg[_k] = _v
@@ -116,6 +117,14 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-dc-weight', dest='dcsdd_dc_weight', type=float, default=None)
     p.add_argument('--dcsdd-batch-size', dest='dcsdd_batch_size', type=int, default=None)
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')
+    p.add_argument(
+        '--dcsdd-sdf-band', dest='dcsdd_sdf_band', type=float, default=None,
+        help=(
+            'World-space truncation band used only by DC/DC-SDD. The default '
+            'is four grid-cell diagonals. Native and reference MC still use '
+            'the original Oktopus scalar field.'
+        ),
+    )
 
     args = p.parse_args()
     opt = {
@@ -142,6 +151,7 @@ if __name__ == '__main__':
         ('dcsdd_dc_weight', args.dcsdd_dc_weight),
         ('dcsdd_batch_size', args.dcsdd_batch_size),
         ('dcsdd_verbose', args.dcsdd_verbose),
+        ('dcsdd_sdf_band', args.dcsdd_sdf_band),
     ]:
         opt[_k] = _v
     print(opt)
