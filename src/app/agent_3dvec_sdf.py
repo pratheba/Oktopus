@@ -1862,27 +1862,35 @@ class AgentSDF(AgentBase):
                 # The output prefix is the concrete adaptation order:
                 #   first run -> 0_..., second run -> 1_..., etc.
                 # This is independent of any later union/blending task.
+                individual_extraction_config = dict(extraction_config)
+                if hasattr(self, "run_all_reconstructions"):
+                    accessory_label = accessory_key.replace("|", "_")
+                    individual_extraction_config["dcsdd_output_pattern"] = (
+                        f"{item_index}_{{method}}_{mode}_{accessory_label}.ply"
+                    )
+
                 mesh_acc = self.extract_surface_mesh(
                     acc_grid,
-                    extraction_config,
-                    context=(
-                        f"part_adapt[{item_index}] "
-                        f"target={target_key} accessory={accessory_key}"
-                    ),
+                    individual_extraction_config,
+                    context=f"adapt_{item_index}",
                 )
                 if len(mesh_acc.faces) > 0:
                     parts = mesh_acc.split(only_watertight=False)
                     if len(parts) > 0:
                         mesh_acc = max(parts, key=lambda m: len(m.faces))
-                    individual_mesh_file = op.join(
-                        output_folder,
-                        f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
-                    )
-                    mesh_acc.export(individual_mesh_file)
-                    print(
-                        f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
-                        f"saved individual mesh: {individual_mesh_file}"
-                    )
+
+                    # AgentSDFDC already saved every requested method under
+                    # output_folder/<method>/. Avoid a duplicate root-level mesh.
+                    if "dcsdd_output_pattern" not in individual_extraction_config:
+                        individual_mesh_file = op.join(
+                            output_folder,
+                            f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+                        )
+                        mesh_acc.export(individual_mesh_file)
+                        print(
+                            f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
+                            f"saved individual mesh: {individual_mesh_file}"
+                        )
 
 #                mesh_acc_base = acc_grid_base.extract_mesh()
 #                if len(mesh_acc_base.faces) > 0:
@@ -1985,14 +1993,21 @@ class AgentSDF(AgentBase):
                 "merged, so surface extraction cannot run."
             )
 
+        combined_extraction_config = dict(extraction_config)
+        if hasattr(self, "run_all_reconstructions"):
+            combined_extraction_config["dcsdd_output_pattern"] = (
+                f"combined_{{method}}_{out_name}.ply"
+            )
+
         mesh = self.extract_surface_mesh(
             mc_grid,
-            extraction_config,
-            context="part_adapt final combined mesh",
+            combined_extraction_config,
+            context="combined",
         )
-        mesh_file = op.join(output_folder, f'{out_name}.ply')
-        os.makedirs(op.dirname(mesh_file), exist_ok=True)
-        mesh.export(mesh_file)
+        if "dcsdd_output_pattern" not in combined_extraction_config:
+            mesh_file = op.join(output_folder, f'{out_name}.ply')
+            os.makedirs(op.dirname(mesh_file), exist_ok=True)
+            mesh.export(mesh_file)
 
     @torch.no_grad()
     def action_part_mixing(self, arg):

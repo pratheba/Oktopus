@@ -129,24 +129,7 @@ class AgentSDFDC(AgentSDF):
 
         S = np.ascontiguousarray(S_native[order], dtype=np.float64)
         U = np.ascontiguousarray(U_native[order], dtype=np.float64)
-
-        # Use MCGrid's bookkeeping instead of guessing from the value +10.
-        # A predicted value can in principle equal the sentinel, while an
-        # unmarked point is unambiguously unevaluated.
-        if hasattr(sdf_grid, "empty_marks"):
-            unevaluated_native = np.asarray(
-                sdf_grid.empty_marks, dtype=bool
-            ).reshape(-1)
-            if unevaluated_native.size != expected_count:
-                raise ValueError(
-                    "empty_marks and val_grid have different sizes: "
-                    f"{unevaluated_native.size} vs {expected_count}"
-                )
-            unevaluated = np.ascontiguousarray(
-                unevaluated_native[order], dtype=bool
-            )
-        else:
-            unevaluated = np.isclose(S, 10.0, rtol=0.0, atol=1e-12)
+        unevaluated = np.isclose(S, 10.0, rtol=0.0, atol=1e-12)
 
         # Verify that reordering produced exactly x-fast indexing.
         if not np.array_equal(expected_flat[order], np.arange(expected_count)):
@@ -159,19 +142,10 @@ class AgentSDFDC(AgentSDF):
         return S, U, unevaluated, N1
 
     def _active_cloud(self, sdf_grid):
-        """Return finite evaluated Oktopus samples for point-based methods."""
+        """Return finite non-sentinel Oktopus samples for point-based methods."""
         vals = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(-1)
         active = np.isfinite(vals)
-        if hasattr(sdf_grid, "empty_marks"):
-            empty = np.asarray(sdf_grid.empty_marks, dtype=bool).reshape(-1)
-            if empty.size != vals.size:
-                raise ValueError(
-                    "empty_marks and val_grid have different sizes: "
-                    f"{empty.size} vs {vals.size}"
-                )
-            active &= ~empty
-        else:
-            active &= ~np.isclose(vals, 10.0, rtol=0.0, atol=1e-12)
+        active &= ~np.isclose(vals, 10.0, rtol=0.0, atol=1e-12)
         rows = np.flatnonzero(active)
         pts = np.asarray(sdf_grid.idx2pts(rows), dtype=np.float64).reshape(-1, 3)
         active_vals = vals[rows]
@@ -181,85 +155,6 @@ class AgentSDFDC(AgentSDF):
             f"positive={int(np.count_nonzero(active_vals > 0.0))}"
         )
         return pts, active_vals
-
-    @staticmethod
-    def _prepare_dcsdd_field(S_raw, unevaluated, N1, step, level, config):
-        """Create a finite, bounded negative-inside SDF for DC/DC-SDD.
-
-        Oktopus stores +10 at grid points that were never evaluated. Marching
-        Cubes can treat that as a generic outside value, but DC-SDD interprets
-        ``abs(S)`` as a geometric sphere radius. Therefore +10 must never be
-        passed to the DC-SDD optimizer.
-
-        We keep every evaluated network prediction, fill only unevaluated
-        background points with a positive distance-to-inside estimate, and
-        truncate the field to a narrow metric band measured in world units.
-        The zero set and the signs of all evaluated samples are unchanged.
-        """
-        from scipy.ndimage import distance_transform_edt
-
-        field = np.asarray(S_raw, dtype=np.float64).reshape(-1) - float(level)
-        empty = np.asarray(unevaluated, dtype=bool).reshape(-1)
-        if field.size != N1 ** 3 or empty.size != field.size:
-            raise ValueError(
-                f"Unexpected DCSDD grid sizes: S={field.size}, "
-                f"empty={empty.size}, expected={N1 ** 3}"
-            )
-
-        finite = np.isfinite(field)
-        evaluated = finite & ~empty
-        if not np.any(evaluated):
-            raise RuntimeError(
-                "No evaluated SDF samples. Ensure update_grid(..., mark=True) "
-                "is used during Oktopus inference."
-            )
-
-        neg = int(np.count_nonzero(field[evaluated] < 0.0))
-        pos = int(np.count_nonzero(field[evaluated] > 0.0))
-        if neg == 0:
-            raise RuntimeError(
-                "No negative evaluated samples after sign conversion. The "
-                "current pipeline requires negative=inside. For the old "
-                "positive-inside checkpoint, set "
-                "AgentSDF.invert_trained_sdf_sign=True."
-            )
-
-        G = field.reshape((N1, N1, N1), order="F")
-        E = (~evaluated).reshape((N1, N1, N1), order="F")
-        inside = (~E) & (G < 0.0)
-
-        # distance_transform_edt(~inside) is zero on inside samples and gives
-        # the world-space distance to the nearest inside sample elsewhere.
-        dist_to_inside = distance_transform_edt(
-            ~inside, sampling=(float(step),) * 3
-        )
-
-        G_safe = G.copy()
-        G_safe[E] = dist_to_inside[E]
-
-        cell_diag = float(np.sqrt(3.0) * step)
-        configured_band = (
-            config.get("dcsdd_sdf_band")
-            if hasattr(config, "get") else None
-        )
-        band = 4.0 * cell_diag if configured_band is None else float(configured_band)
-        if not np.isfinite(band) or band <= cell_diag:
-            raise ValueError(
-                "dcsdd_sdf_band must be finite and greater than one cell "
-                f"diagonal ({cell_diag:.9g}); got {band}"
-            )
-
-        G_safe = np.clip(G_safe, -band, band)
-        safe = np.ascontiguousarray(G_safe.reshape(-1, order="F"))
-
-        print(
-            f"[dcsdd:safe-field] evaluated={int(evaluated.sum())} "
-            f"negative={neg} positive={pos} "
-            f"filled_background={int(E.sum())} "
-            f"cell_diag={cell_diag:.9g} band={band:.9g} "
-            f"range=[{safe.min():.9g},{safe.max():.9g}]"
-        )
-        return safe
 
     def _ours_options(self, contouring, config):
         cc = contouring._contouring_cpp_module
@@ -372,8 +267,12 @@ class AgentSDFDC(AgentSDF):
         checkpoint = config.get("checkpoint", "eval")
         level = float(config.get("level", sdf_grid.grid_config.get("level", 0.0)))
 
-        out_dir = op.join(output_folder, name)
-        os.makedirs(out_dir, exist_ok=True)
+        output_pattern = config.get("dcsdd_output_pattern")
+        if output_pattern is None:
+            out_dir = op.join(output_folder, name)
+            os.makedirs(out_dir, exist_ok=True)
+        else:
+            out_dir = None
         reso = int(sdf_grid.reso)
 
         requested = config.get("dcsdd_methods")
@@ -386,22 +285,9 @@ class AgentSDFDC(AgentSDF):
         S_raw, U, unevaluated, N1 = self._grid_to_S_U(sdf_grid)
         self._print_grid_diagnostics(S_raw, U, unevaluated, N1, level)
 
-        # MC can use Oktopus's positive +10 outside sentinel because it only
-        # needs the zero crossing. DC/DC-SDD cannot: the reference code treats
-        # abs(S) as a physical sphere radius. Give those methods a separately
-        # filled and bounded field while preserving the same evaluated zero set.
-        S_mc = np.ascontiguousarray(S_raw - level, dtype=np.float64)
-        S_dc = None
-        if any(method in methods for method in ("dc", "ours")):
-            step = float(sdf_grid.grid_config["step"])
-            S_dc = self._prepare_dcsdd_field(
-                S_raw=S_raw,
-                unevaluated=unevaluated,
-                N1=N1,
-                step=step,
-                level=level,
-                config=config,
-            )
+        # Current DC/DCSDD C++ paths use zero internally; shift the requested
+        # level into the samples and contour zero for every reference method.
+        S = np.ascontiguousarray(S_raw - level, dtype=np.float64)
         contour_iso = 0.0
         cc = contouring._contouring_cpp_module
 
@@ -417,7 +303,15 @@ class AgentSDFDC(AgentSDF):
                 faces=np.asarray(F, dtype=np.int64),
                 process=False,
             )
-            path = op.join(out_dir, f"{name}_{method}_{checkpoint}_mesh{reso}.ply")
+            if output_pattern is not None:
+                method_dir = op.join(output_folder, method)
+                os.makedirs(method_dir, exist_ok=True)
+                filename = str(output_pattern).format(method=method)
+                path = op.join(method_dir, filename)
+            else:
+                path = op.join(
+                    out_dir, f"{name}_{method}_{checkpoint}_mesh{reso}.ply"
+                )
             mesh.export(path)
             results[method] = mesh
             orientation = "undetermined_nonwatertight"
@@ -440,10 +334,10 @@ class AgentSDFDC(AgentSDF):
                 f"signed_volume={float(mesh.volume):.9g} orientation={orientation}"
             )
 
-        def contour(method_name, opts, samples):
+        def contour(method_name, opts):
             t0 = time.time()
             V, F = contouring.py_contouring(
-                samples, U, N1, N1, N1, contour_iso, opts, None, None
+                S, U, N1, N1, N1, contour_iso, opts, None, None
             )
             timings[method_name] = time.time() - t0
             save(method_name, V, F)
@@ -461,19 +355,19 @@ class AgentSDFDC(AgentSDF):
         # Reference repository MC, retained as a diagnostic only.
         if "mc_ref" in methods:
             try:
-                contour("mc_ref", {"method": cc.ContouringMethod.MarchingCubes}, S_mc)
+                contour("mc_ref", {"method": cc.ContouringMethod.MarchingCubes})
             except Exception as exc:
                 print(f"[dcsdd:mc_ref] FAILED: {exc}")
 
         if "dc" in methods:
             try:
-                contour("dc", {"method": cc.ContouringMethod.DualContouring}, S_dc)
+                contour("dc", {"method": cc.ContouringMethod.DualContouring})
             except Exception as exc:
                 print(f"[dcsdd:dc] FAILED: {exc}")
 
         if "ours" in methods:
             try:
-                contour("ours", self._ours_options(contouring, config), S_dc)
+                contour("ours", self._ours_options(contouring, config))
             except Exception as exc:
                 print(f"[dcsdd:ours] FAILED: {exc}")
 
