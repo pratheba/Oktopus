@@ -142,6 +142,11 @@ def start_test(opt):
         "nsdudf_consistency_weight",
         "nsdudf_consistency_sweeps",
         "nsdudf_offset_world",
+        "udf_shell_wall_max_normal_dot",
+        "udf_shell_wall_max_distance_world",
+        "udf_shell_wall_min_faces",
+        "udf_shell_wall_min_span_world",
+        "udf_shell_wall_max_components",
         "udf_far_value",
         "udf_batch_size",
         "udf_domain_band",
@@ -249,11 +254,18 @@ def build_parser():
     parser.add_argument(
         "--nsdudf-mesher",
         dest="nsdudf_mesher",
-        choices=("marching_cubes", "dual_mesh_udf", "udf_band_shell"),
+        choices=(
+            "marching_cubes",
+            "dual_mesh_udf",
+            "udf_band_shell",
+            "udf_band_shell_open",
+        ),
         default="marching_cubes",
         help=(
-            "'udf_band_shell' bypasses NSDUDF classification and extracts "
-            "the positive UDF level supplied by --nsdudf-offset-world."
+            "'udf_band_shell' extracts the closed positive UDF level. "
+            "'udf_band_shell_open' also runs NSDUDF in the same domain and "
+            "removes large shell patches whose normals are perpendicular to "
+            "the open NSDUDF reference."
         ),
     )
     parser.add_argument(
@@ -374,6 +386,51 @@ def build_parser():
         ),
     )
 
+    parser.add_argument(
+        "--udf-shell-wall-max-normal-dot",
+        dest="udf_shell_wall_max_normal_dot",
+        type=float,
+        default=0.30,
+        help=(
+            "Maximum absolute normal dot product for a shell face to be a "
+            "closure-wall candidate."
+        ),
+    )
+    parser.add_argument(
+        "--udf-shell-wall-max-distance-world",
+        dest="udf_shell_wall_max_distance_world",
+        type=float,
+        default=None,
+        help=(
+            "Maximum shell-face to NSDUDF-reference distance. By default this "
+            "is chosen from the shell level and voxel spacing."
+        ),
+    )
+    parser.add_argument(
+        "--udf-shell-wall-min-faces",
+        dest="udf_shell_wall_min_faces",
+        type=int,
+        default=50,
+        help="Minimum connected candidate-patch face count to remove.",
+    )
+    parser.add_argument(
+        "--udf-shell-wall-min-span-world",
+        dest="udf_shell_wall_min_span_world",
+        type=float,
+        default=0.08,
+        help="Minimum world-space diagonal span of a wall patch to remove.",
+    )
+    parser.add_argument(
+        "--udf-shell-wall-max-components",
+        dest="udf_shell_wall_max_components",
+        type=int,
+        default=8,
+        help=(
+            "Maximum number of largest accepted closure-wall components to "
+            "remove. Use 0 for no limit."
+        ),
+    )
+
     return parser
 
 
@@ -426,6 +483,19 @@ if __name__ == "__main__":
         ),
         "nsdudf_merge_digits": args.nsdudf_merge_digits,
         "nsdudf_offset_world": args.nsdudf_offset_world,
+        "udf_shell_wall_max_normal_dot": (
+            args.udf_shell_wall_max_normal_dot
+        ),
+        "udf_shell_wall_max_distance_world": (
+            args.udf_shell_wall_max_distance_world
+        ),
+        "udf_shell_wall_min_faces": args.udf_shell_wall_min_faces,
+        "udf_shell_wall_min_span_world": (
+            args.udf_shell_wall_min_span_world
+        ),
+        "udf_shell_wall_max_components": (
+            args.udf_shell_wall_max_components
+        ),
     }
 
     for key, value in forwarded.items():

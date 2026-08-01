@@ -559,6 +559,7 @@ class AgentUDFNsdudf(AgentUDF):
         far_world,
         query_chunk_size,
         config,
+        apply_cleanup=True,
     ):
         """Extract the positive UDF isosurface ``UDF(x)=shell_level_world``.
 
@@ -683,7 +684,7 @@ class AgentUDFNsdudf(AgentUDF):
             value = config.get(key) if hasattr(config, "get") else None
             return default if value is None else value
 
-        if bool(cget("udf_cleanup", False)):
+        if apply_cleanup and bool(cget("udf_cleanup", False)):
             mesh = self._cleanup_nsdudf_mesh(mesh, config)
 
         print(
@@ -693,6 +694,352 @@ class AgentUDFNsdudf(AgentUDF):
             self._mesh_quality_stats(mesh.vertices, mesh.faces),
         )
         return mesh
+
+    def _open_udf_band_shell_from_nsdudf_reference(
+        self,
+        shell_mesh,
+        reference_mesh,
+        *,
+        shell_level_world,
+        voxel_world,
+        config,
+    ):
+        """Remove likely closure-wall triangles from a positive UDF shell.
+
+        The shell and NSDUDF reference are generated from the same adapted UDF
+        domain.  Valid offset faces are approximately parallel to the open
+        center-surface reference.  The rounded walls that close true openings
+        are approximately perpendicular to that reference.
+
+        This is deliberately conservative: only sufficiently large connected
+        low-alignment seed patches are removed.  No neighborhood growth is
+        performed by default, because growth can spill onto the garment body.
+        """
+        import json
+        from scipy.spatial import cKDTree
+
+        def cget(key, default):
+            value = config.get(key) if hasattr(config, "get") else None
+            return default if value is None else value
+
+        if shell_mesh is None or len(shell_mesh.faces) == 0:
+            return shell_mesh
+        if reference_mesh is None or len(reference_mesh.faces) == 0:
+            raise RuntimeError(
+                "udf_band_shell_open needs a non-empty NSDUDF reference mesh."
+            )
+
+        shell_centers = np.asarray(
+            shell_mesh.triangles_center, dtype=np.float64
+        )
+        shell_normals = np.asarray(
+            shell_mesh.face_normals, dtype=np.float64
+        )
+        ref_centers = np.asarray(
+            reference_mesh.triangles_center, dtype=np.float64
+        )
+        ref_normals = np.asarray(
+            reference_mesh.face_normals, dtype=np.float64
+        )
+
+        ref_ok = (
+            np.isfinite(ref_centers).all(axis=1)
+            & np.isfinite(ref_normals).all(axis=1)
+            & (np.linalg.norm(ref_normals, axis=1) > 1.0e-12)
+        )
+        if not np.any(ref_ok):
+            raise RuntimeError(
+                "NSDUDF reference has no finite non-zero face normals."
+            )
+
+        ref_centers = ref_centers[ref_ok]
+        ref_normals = ref_normals[ref_ok]
+        tree = cKDTree(ref_centers)
+        nearest_distance, nearest_index = tree.query(shell_centers, k=1)
+        nearest_normals = ref_normals[nearest_index]
+        normal_alignment = np.abs(
+            np.einsum("ij,ij->i", shell_normals, nearest_normals)
+        )
+
+        max_normal_dot = float(
+            cget("udf_shell_wall_max_normal_dot", 0.30)
+        )
+        automatic_distance = max(
+            2.5 * float(shell_level_world),
+            2.5 * float(voxel_world),
+        )
+        max_distance_world = float(
+            cget(
+                "udf_shell_wall_max_distance_world",
+                automatic_distance,
+            )
+        )
+        min_faces = max(1, int(cget("udf_shell_wall_min_faces", 50)))
+        min_span_world = max(
+            0.0, float(cget("udf_shell_wall_min_span_world", 0.08))
+        )
+        max_components = max(
+            0, int(cget("udf_shell_wall_max_components", 8))
+        )
+
+        finite = (
+            np.isfinite(nearest_distance)
+            & np.isfinite(normal_alignment)
+        )
+        seed_mask = (
+            finite
+            & (nearest_distance <= max_distance_world)
+            & (normal_alignment <= max_normal_dot)
+        )
+
+        candidate_ids = np.flatnonzero(seed_mask)
+        accepted = []
+        if candidate_ids.size:
+            adjacency = np.asarray(
+                shell_mesh.face_adjacency, dtype=np.int64
+            )
+            if adjacency.size:
+                local_adjacency = adjacency[
+                    seed_mask[adjacency[:, 0]]
+                    & seed_mask[adjacency[:, 1]]
+                ]
+            else:
+                local_adjacency = np.empty((0, 2), dtype=np.int64)
+
+            components = trimesh.graph.connected_components(
+                local_adjacency,
+                nodes=candidate_ids,
+                min_len=1,
+            )
+            for component in components:
+                face_ids = np.asarray(list(component), dtype=np.int64)
+                if face_ids.size < min_faces:
+                    continue
+                points = shell_centers[face_ids]
+                span = float(
+                    np.linalg.norm(points.max(axis=0) - points.min(axis=0))
+                )
+                if span < min_span_world:
+                    continue
+                accepted.append(
+                    {
+                        "faces": face_ids,
+                        "face_count": int(face_ids.size),
+                        "span_world": span,
+                        "median_normal_alignment": float(
+                            np.median(normal_alignment[face_ids])
+                        ),
+                        "median_reference_distance_world": float(
+                            np.median(nearest_distance[face_ids])
+                        ),
+                    }
+                )
+
+        accepted.sort(key=lambda item: item["face_count"], reverse=True)
+        if max_components > 0:
+            accepted = accepted[:max_components]
+
+        remove_mask = np.zeros(len(shell_mesh.faces), dtype=bool)
+        for item in accepted:
+            remove_mask[item["faces"]] = True
+
+        def submesh_from_mask(mask):
+            if not np.any(mask):
+                return trimesh.Trimesh(
+                    vertices=np.empty((0, 3), dtype=np.float64),
+                    faces=np.empty((0, 3), dtype=np.int64),
+                    process=False,
+                )
+            result = trimesh.Trimesh(
+                vertices=np.asarray(shell_mesh.vertices, dtype=np.float64).copy(),
+                faces=np.asarray(shell_mesh.faces, dtype=np.int64)[mask].copy(),
+                process=False,
+            )
+            result.remove_unreferenced_vertices()
+            return result
+
+        all_candidates = submesh_from_mask(seed_mask)
+        removed_walls = submesh_from_mask(remove_mask)
+        opened = trimesh.Trimesh(
+            vertices=np.asarray(shell_mesh.vertices, dtype=np.float64).copy(),
+            faces=np.asarray(shell_mesh.faces, dtype=np.int64)[~remove_mask].copy(),
+            process=False,
+        )
+        opened.remove_unreferenced_vertices()
+
+        report = {
+            "shell_level_world": float(shell_level_world),
+            "voxel_world": float(voxel_world),
+            "max_normal_dot": max_normal_dot,
+            "max_distance_world": max_distance_world,
+            "min_faces": min_faces,
+            "min_span_world": min_span_world,
+            "max_components": max_components,
+            "candidate_faces": int(seed_mask.sum()),
+            "removed_faces": int(remove_mask.sum()),
+            "accepted_components": [
+                {k: v for k, v in item.items() if k != "faces"}
+                for item in accepted
+            ],
+            "shell_before": self._mesh_quality_stats(
+                shell_mesh.vertices, shell_mesh.faces
+            ),
+            "shell_after": self._mesh_quality_stats(
+                opened.vertices, opened.faces
+            ),
+        }
+
+        print(
+            "[udf shell open]",
+            f"candidate_faces={report['candidate_faces']}",
+            f"removed_faces={report['removed_faces']}",
+            f"components={len(accepted)}",
+            f"max_dot={max_normal_dot:.4g}",
+            f"max_distance={max_distance_world:.6g}",
+            f"min_faces={min_faces}",
+            f"min_span={min_span_world:.6g}",
+        )
+        for index, item in enumerate(report["accepted_components"]):
+            print(f"[udf shell wall {index}]", item)
+
+        output_folder = cget("output_folder", None)
+        if output_folder:
+            debug_dir = op.join(str(output_folder), "udf_shell_open_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            shell_mesh.export(op.join(debug_dir, "udf_shell_closed.ply"))
+            reference_mesh.export(
+                op.join(debug_dir, "nsdudf_open_reference.ply")
+            )
+            if len(all_candidates.faces):
+                all_candidates.export(
+                    op.join(debug_dir, "udf_shell_wall_candidates.ply")
+                )
+            if len(removed_walls.faces):
+                removed_walls.export(
+                    op.join(debug_dir, "udf_shell_removed_walls.ply")
+                )
+            opened.export(op.join(debug_dir, "udf_shell_open.ply"))
+            np.savez_compressed(
+                op.join(debug_dir, "udf_shell_wall_scores.npz"),
+                nearest_distance_world=nearest_distance.astype(np.float32),
+                normal_alignment=normal_alignment.astype(np.float32),
+                seed_mask=seed_mask,
+                remove_mask=remove_mask,
+            )
+            with open(
+                op.join(debug_dir, "udf_shell_wall_report.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(report, handle, indent=2)
+
+        return opened
+
+    def _extract_udf_band_shell_open(
+        self,
+        raw_world_udf_fn,
+        *,
+        domain_center,
+        domain_half_extent,
+        n_grid_samples,
+        shell_level_world,
+        far_world,
+        query_chunk_size,
+        batch_size,
+        config,
+    ):
+        """Generate a closed UDF shell and open it using NSDUDF normals."""
+        def cget(key, default):
+            value = config.get(key) if hasattr(config, "get") else None
+            return default if value is None else value
+
+        center = np.asarray(domain_center, dtype=np.float64).reshape(3)
+        half = float(domain_half_extent)
+        n = max(8, int(n_grid_samples))
+
+        shell = self._extract_udf_band_shell(
+            raw_world_udf_fn,
+            domain_center=center,
+            domain_half_extent=half,
+            n_grid_samples=n,
+            shell_level_world=shell_level_world,
+            far_world=far_world,
+            query_chunk_size=query_chunk_size,
+            config=config,
+            apply_cleanup=False,
+        )
+
+        nsd_meshing, _nsd_utils, model = self._load_nsdudf(config)
+        udf_and_grad_f, _dmudf_oracles, fd_stats, oracle_meta = (
+            self._make_nsdudf_oracle_from_udf(
+                raw_world_udf_fn,
+                domain_center=center,
+                domain_half_extent=half,
+                n_grid_samples=n,
+                far_world=far_world,
+                oracle_chunk_size=query_chunk_size,
+                offset_world=0.0,
+            )
+        )
+
+        pseudo_sdf = nsd_meshing.compute_pseudo_sdf(
+            model,
+            udf_and_grad_f,
+            n_grid_samples=n,
+            batch_size=batch_size,
+            normalize_udf=bool(cget("nsdudf_normalize_udf", True)),
+            use_grads=True,
+            out7=False,
+            max_avg_factor=float(cget("nsdudf_max_avg_factor", 1.2)),
+            max_max_factor=float(cget("nsdudf_max_max_factor", 2.0)),
+            neighbor_consistency=bool(
+                cget("nsdudf_neighbor_consistency", False)
+            ),
+            consistency_top_k=int(
+                cget("nsdudf_consistency_top_k", 8)
+            ),
+            consistency_weight=float(
+                cget("nsdudf_consistency_weight", 1.0)
+            ),
+            consistency_sweeps=int(
+                cget("nsdudf_consistency_sweeps", 5)
+            ),
+        )
+        reference_cube = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
+        if reference_cube is None or len(reference_cube.faces) == 0:
+            raise RuntimeError(
+                "NSDUDF produced an empty reference for udf_band_shell_open."
+            )
+
+        reference = trimesh.Trimesh(
+            vertices=(
+                center[None, :]
+                + np.asarray(reference_cube.vertices, dtype=np.float64) * half
+            ),
+            faces=np.asarray(reference_cube.faces, dtype=np.int64),
+            process=False,
+        )
+        voxel_world = 2.0 * half / float(n - 1)
+        total_axes = max(1, int(fd_stats["eval_points"]) * 3)
+        print(
+            "[udf shell open reference]",
+            f"V={len(reference.vertices)}",
+            f"F={len(reference.faces)}",
+            f"fd_eps_world={oracle_meta['fd_eps_world']:.6g}",
+            f"invalid_axis_pct="
+            f"{100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
+        )
+
+        opened = self._open_udf_band_shell_from_nsdudf_reference(
+            shell,
+            reference,
+            shell_level_world=shell_level_world,
+            voxel_world=voxel_world,
+            config=config,
+        )
+        if bool(cget("udf_cleanup", False)):
+            opened = self._cleanup_nsdudf_mesh(opened, config)
+        return opened
 
     # ------------------------------------------------------------------
     # Replace the DualMesh-UDF extractor with NSDUDF pseudo-SDF meshing
@@ -749,12 +1096,15 @@ class AgentUDFNsdudf(AgentUDF):
             "dual_mesh_udf": "dual_mesh_udf",
             "band_shell": "udf_band_shell",
             "udf_band_shell": "udf_band_shell",
+            "band_shell_open": "udf_band_shell_open",
+            "udf_band_shell_open": "udf_band_shell_open",
         }
 
         if mesher not in mesher_aliases:
             raise ValueError(
                 f"Unknown nsdudf_mesher={mesher!r}. Expected one of "
-                "'marching_cubes', 'dual_mesh_udf', or 'udf_band_shell'."
+                "'marching_cubes', 'dual_mesh_udf', 'udf_band_shell', "
+                "or 'udf_band_shell_open'."
             )
 
         mesher = mesher_aliases[mesher]
@@ -772,6 +1122,24 @@ class AgentUDFNsdudf(AgentUDF):
                 shell_level_world=offset_world,
                 far_world=far_world,
                 query_chunk_size=oracle_chunk_size,
+                config=config,
+            )
+
+        if mesher == "udf_band_shell_open":
+            if offset_world <= 0.0:
+                raise ValueError(
+                    "udf_band_shell_open requires "
+                    "--nsdudf-offset-world > 0."
+                )
+            return self._extract_udf_band_shell_open(
+                raw_world_udf_fn,
+                domain_center=center,
+                domain_half_extent=half,
+                n_grid_samples=n,
+                shell_level_world=offset_world,
+                far_world=far_world,
+                query_chunk_size=oracle_chunk_size,
+                batch_size=batch_size,
                 config=config,
             )
 
