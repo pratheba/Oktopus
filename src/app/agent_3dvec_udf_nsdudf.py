@@ -546,6 +546,155 @@ class AgentUDFNsdudf(AgentUDF):
         return cleaned
 
     # ------------------------------------------------------------------
+    # Direct positive-level UDF shell extraction
+    # ------------------------------------------------------------------
+    def _extract_udf_band_shell(
+        self,
+        raw_world_udf_fn,
+        *,
+        domain_center,
+        domain_half_extent,
+        n_grid_samples,
+        shell_level_world,
+        far_world,
+        query_chunk_size,
+        config,
+    ):
+        """Extract the positive UDF isosurface ``UDF(x)=shell_level_world``.
+
+        This bypasses the NSDUDF classifier entirely.  For a zero-thickness
+        open surface, a positive UDF level produces a closed offset shell with
+        approximate total thickness ``2 * shell_level_world``.
+        """
+        from skimage import measure
+
+        center = np.asarray(domain_center, dtype=np.float64).reshape(3)
+        half = float(domain_half_extent)
+        n = max(8, int(n_grid_samples))
+        level = float(shell_level_world)
+        far = float(far_world)
+        chunk = max(1, int(query_chunk_size))
+
+        if not np.isfinite(level) or level <= 0.0:
+            raise ValueError(
+                "udf_band_shell requires --nsdudf-offset-world > 0. "
+                f"Got {level}."
+            )
+        if level >= far:
+            raise ValueError(
+                "The shell level must be smaller than udf_far_value. "
+                f"Got shell_level={level}, udf_far_value={far}."
+            )
+
+        total = int(n ** 3)
+        values = np.empty(total, dtype=np.float32)
+        valid_total = 0
+        denom = float(n - 1)
+        n2 = int(n * n)
+
+        for start in range(0, total, chunk):
+            end = min(start + chunk, total)
+            flat = np.arange(start, end, dtype=np.int64)
+
+            ix = flat // n2
+            rem = flat - ix * n2
+            iy = rem // n
+            iz = rem - iy * n
+
+            cube_points = np.stack((ix, iy, iz), axis=1).astype(np.float64)
+            cube_points = -1.0 + (2.0 / denom) * cube_points
+            world_points = center[None, :] + half * cube_points
+
+            result = raw_world_udf_fn(world_points)
+            if isinstance(result, tuple):
+                distance_chunk, valid_chunk = result
+                valid_chunk = np.asarray(valid_chunk, dtype=bool).reshape(-1)
+            else:
+                distance_chunk = result
+                valid_chunk = np.ones(end - start, dtype=bool)
+
+            distance_chunk = np.asarray(
+                distance_chunk, dtype=np.float64
+            ).reshape(-1)
+            if distance_chunk.shape[0] != end - start:
+                raise ValueError(
+                    "UDF band-shell query length mismatch: "
+                    f"expected={end-start}, got={distance_chunk.shape[0]}."
+                )
+            if valid_chunk.shape[0] != end - start:
+                raise ValueError(
+                    "UDF band-shell validity length mismatch: "
+                    f"expected={end-start}, got={valid_chunk.shape[0]}."
+                )
+
+            finite = np.isfinite(distance_chunk)
+            valid_chunk = valid_chunk & finite
+            out = np.full(end - start, far, dtype=np.float32)
+            out[valid_chunk] = np.maximum(
+                distance_chunk[valid_chunk], 0.0
+            ).astype(np.float32)
+            values[start:end] = out
+            valid_total += int(valid_chunk.sum())
+
+        grid = values.reshape((n, n, n), order="C")
+        grid_min = float(np.min(grid))
+        grid_max = float(np.max(grid))
+        if not (grid_min <= level <= grid_max):
+            raise RuntimeError(
+                "The requested UDF shell level is outside the sampled field "
+                f"range: level={level}, range=[{grid_min}, {grid_max}]."
+            )
+
+        voxel_world = 2.0 * half / float(n - 1)
+        print(
+            "[udf band shell]",
+            f"grid_samples={n}",
+            f"cells={n-1}",
+            f"level_world={level:.6g}",
+            f"approx_total_thickness={2.0 * level:.6g}",
+            f"voxel_world={voxel_world:.6g}",
+            f"valid={valid_total}/{total}",
+            f"range=[{grid_min:.6g},{grid_max:.6g}]",
+        )
+
+        vertices_local, faces, _normals, _mc_values = measure.marching_cubes(
+            grid,
+            level=level,
+            spacing=(voxel_world, voxel_world, voxel_world),
+            allow_degenerate=False,
+        )
+
+        lower_world = center - half
+        world_vertices = lower_world[None, :] + np.asarray(
+            vertices_local, dtype=np.float64
+        )
+        mesh = trimesh.Trimesh(
+            vertices=world_vertices,
+            faces=np.asarray(faces, dtype=np.int64),
+            process=False,
+        )
+
+        print(
+            "[udf band shell raw]",
+            self._mesh_quality_stats(mesh.vertices, mesh.faces),
+        )
+
+        def cget(key, default):
+            value = config.get(key) if hasattr(config, "get") else None
+            return default if value is None else value
+
+        if bool(cget("udf_cleanup", False)):
+            mesh = self._cleanup_nsdudf_mesh(mesh, config)
+
+        print(
+            "[udf band shell final]",
+            f"V={len(mesh.vertices)}",
+            f"F={len(mesh.faces)}",
+            self._mesh_quality_stats(mesh.vertices, mesh.faces),
+        )
+        return mesh
+
+    # ------------------------------------------------------------------
     # Replace the DualMesh-UDF extractor with NSDUDF pseudo-SDF meshing
     # ------------------------------------------------------------------
     def extract_udf_mesh_from_model(
@@ -559,8 +708,6 @@ class AgentUDFNsdudf(AgentUDF):
     ):
         """Extract via NSDUDF: build the pseudo-SDF from the model's UDF+grad
         oracle, marching-cube it, and map back into world coordinates."""
-        nsd_meshing, _nsd_utils, model = self._load_nsdudf(config)
-
         def cget(key, default):
             v = config.get(key) if hasattr(config, "get") else None
             return default if v is None else v
@@ -600,12 +747,14 @@ class AgentUDFNsdudf(AgentUDF):
             "dualmesh": "dual_mesh_udf",
             "dmudf": "dual_mesh_udf",
             "dual_mesh_udf": "dual_mesh_udf",
+            "band_shell": "udf_band_shell",
+            "udf_band_shell": "udf_band_shell",
         }
 
         if mesher not in mesher_aliases:
             raise ValueError(
                 f"Unknown nsdudf_mesher={mesher!r}. Expected one of "
-                "'marching_cubes' or 'dual_mesh_udf'."
+                "'marching_cubes', 'dual_mesh_udf', or 'udf_band_shell'."
             )
 
         mesher = mesher_aliases[mesher]
@@ -614,12 +763,26 @@ class AgentUDFNsdudf(AgentUDF):
             cget("nsdudf_offset_world", 0.0)
         )
 
+        if mesher == "udf_band_shell":
+            return self._extract_udf_band_shell(
+                raw_world_udf_fn,
+                domain_center=center,
+                domain_half_extent=half,
+                n_grid_samples=n,
+                shell_level_world=offset_world,
+                far_world=far_world,
+                query_chunk_size=oracle_chunk_size,
+                config=config,
+            )
+
         if offset_world > 0.0 and mesher == "dual_mesh_udf":
             raise ValueError(
                 "nsdudf_offset_world is currently supported only with "
                 "nsdudf_mesher='marching_cubes'. The DualMesh backend still "
                 "queries the original, unshifted UDF."
             )
+
+        nsd_meshing, _nsd_utils, model = self._load_nsdudf(config)
 
         if gradient_mode not in {
             "finite_difference",

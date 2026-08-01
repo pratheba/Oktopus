@@ -249,8 +249,12 @@ def build_parser():
     parser.add_argument(
         "--nsdudf-mesher",
         dest="nsdudf_mesher",
-        choices=("marching_cubes", "dual_mesh_udf"),
+        choices=("marching_cubes", "dual_mesh_udf", "udf_band_shell"),
         default="marching_cubes",
+        help=(
+            "'udf_band_shell' bypasses NSDUDF classification and extracts "
+            "the positive UDF level supplied by --nsdudf-offset-world."
+        ),
     )
     parser.add_argument(
         "--nsdudf-dualmesh-batch-size",
