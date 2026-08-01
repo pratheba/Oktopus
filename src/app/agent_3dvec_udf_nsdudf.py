@@ -387,13 +387,16 @@ class AgentUDFNsdudf(AgentUDF):
             return default if value is None else value
 
         min_component_faces = int(
-            cget("nsdudf_min_component_faces", 20)
+            cget("nsdudf_min_component_faces", 0)
         )
         min_component_faces = max(min_component_faces, 0)
 
         # Relative tolerance based on the current mesh scale.
         bounds = np.asarray(mesh.bounds, dtype=np.float64)
         diagonal = float(np.linalg.norm(bounds[1] - bounds[0]))
+        merge_vertices_enabled = bool(
+            cget("nsdudf_merge_vertices", False)
+        )
         merge_digits = int(cget("nsdudf_merge_digits", 10))
         area_epsilon = float(
             cget(
@@ -410,14 +413,17 @@ class AgentUDFNsdudf(AgentUDF):
             process=False,
         )
 
-        # 1. Merge coincident / nearly coincident vertices.
-        try:
-            cleaned.merge_vertices(digits_vertex=merge_digits)
-        except TypeError:
-            # Compatibility with older trimesh versions.
-            cleaned.merge_vertices()
-        except Exception as exc:
-            print("[nsdudf cleanup] merge_vertices failed:", exc)
+        # 1. Optional vertex merge. Disabled by default because NSDUDF's
+        # custom MC can emit distinct cell-local vertices at the same position.
+        # Merging those first can turn valid triangles into degenerate faces.
+        if merge_vertices_enabled:
+            try:
+                cleaned.merge_vertices(digits_vertex=merge_digits)
+            except TypeError:
+                # Compatibility with older trimesh versions.
+                cleaned.merge_vertices()
+            except Exception as exc:
+                print("[nsdudf cleanup] merge_vertices failed:", exc)
 
         # 2. Remove explicit repeated-index and near-zero-area triangles.
         if len(cleaned.faces):

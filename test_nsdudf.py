@@ -135,6 +135,13 @@ def start_test(opt):
         "nsdudf_gradient_mode",
         "nsdudf_mesher",
         "nsdudf_dualmesh_batch_size",
+        "nsdudf_max_avg_factor",
+        "nsdudf_max_max_factor",
+        "nsdudf_neighbor_consistency",
+        "nsdudf_consistency_top_k",
+        "nsdudf_consistency_weight",
+        "nsdudf_consistency_sweeps",
+        "nsdudf_offset_world",
         "udf_far_value",
         "udf_batch_size",
         "udf_domain_band",
@@ -142,6 +149,7 @@ def start_test(opt):
         "udf_domain_scan_reso",
         "udf_cleanup",
         "nsdudf_min_component_faces",
+        "nsdudf_merge_vertices",
         "nsdudf_merge_digits",
     )
 
@@ -337,7 +345,13 @@ def build_parser():
         "--nsdudf-min-component-faces",
         dest="nsdudf_min_component_faces",
         type=int,
-        default=20,
+        default=0,
+    )
+    parser.add_argument(
+        "--nsdudf-merge-vertices",
+        dest="nsdudf_merge_vertices",
+        action="store_true",
+        help="Explicitly merge coincident NSDUDF vertices during cleanup.",
     )
     parser.add_argument(
         "--nsdudf-merge-digits",
@@ -403,6 +417,9 @@ if __name__ == "__main__":
         "udf_domain_scan_reso": args.udf_domain_scan_reso,
         "udf_cleanup": True if args.udf_cleanup else None,
         "nsdudf_min_component_faces": args.nsdudf_min_component_faces,
+        "nsdudf_merge_vertices": (
+            True if args.nsdudf_merge_vertices else False
+        ),
         "nsdudf_merge_digits": args.nsdudf_merge_digits,
         "nsdudf_offset_world": args.nsdudf_offset_world,
     }
