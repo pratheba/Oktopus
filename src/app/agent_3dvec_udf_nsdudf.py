@@ -669,6 +669,20 @@ class AgentUDFNsdudf(AgentUDF):
             normalize_udf=bool(cget("nsdudf_normalize_udf", True)),
             use_grads=True,
             out7=False,
+            max_avg_factor=float(cget("nsdudf_max_avg_factor", 1.2)),
+            max_max_factor=float(cget("nsdudf_max_max_factor", 2.0)),
+            neighbor_consistency=bool(
+                cget("nsdudf_neighbor_consistency", False)
+            ),
+            consistency_top_k=int(
+                cget("nsdudf_consistency_top_k", 8)
+            ),
+            consistency_weight=float(
+                cget("nsdudf_consistency_weight", 1.0)
+            ),
+            consistency_sweeps=int(
+                cget("nsdudf_consistency_sweeps", 5)
+            ),
         )
         total_axes = max(1, int(fd_stats["eval_points"]) * 3)
 

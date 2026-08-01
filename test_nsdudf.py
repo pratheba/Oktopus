@@ -255,6 +255,45 @@ def build_parser():
         dest="nsdudf_no_normalize",
         action="store_true",
     )
+    parser.add_argument(
+        "--nsdudf-max-avg-factor",
+        dest="nsdudf_max_avg_factor",
+        type=float,
+        default=1.2,
+        help="Accepted-cell average-UDF threshold in voxel units.",
+    )
+    parser.add_argument(
+        "--nsdudf-max-max-factor",
+        dest="nsdudf_max_max_factor",
+        type=float,
+        default=2.0,
+        help="Accepted-cell maximum-UDF threshold in voxel units.",
+    )
+    parser.add_argument(
+        "--nsdudf-neighbor-consistency",
+        dest="nsdudf_neighbor_consistency",
+        action="store_true",
+        help="Refine top-K cell classes using shared-face consistency.",
+    )
+    parser.add_argument(
+        "--nsdudf-consistency-top-k",
+        dest="nsdudf_consistency_top_k",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--nsdudf-consistency-weight",
+        dest="nsdudf_consistency_weight",
+        type=float,
+        default=1.0,
+        help="Penalty in classifier-logit units per incompatible face.",
+    )
+    parser.add_argument(
+        "--nsdudf-consistency-sweeps",
+        dest="nsdudf_consistency_sweeps",
+        type=int,
+        default=5,
+    )
 
     # Shared UDF domain/model-query controls
     parser.add_argument(
@@ -349,6 +388,14 @@ if __name__ == "__main__":
         "nsdudf_gradient_mode": args.nsdudf_gradient_mode,
         "nsdudf_mesher": args.nsdudf_mesher,
         "nsdudf_dualmesh_batch_size": args.nsdudf_dualmesh_batch_size,
+        "nsdudf_max_avg_factor": args.nsdudf_max_avg_factor,
+        "nsdudf_max_max_factor": args.nsdudf_max_max_factor,
+        "nsdudf_neighbor_consistency": (
+            True if args.nsdudf_neighbor_consistency else None
+        ),
+        "nsdudf_consistency_top_k": args.nsdudf_consistency_top_k,
+        "nsdudf_consistency_weight": args.nsdudf_consistency_weight,
+        "nsdudf_consistency_sweeps": args.nsdudf_consistency_sweeps,
         "udf_far_value": args.udf_far_value,
         "udf_batch_size": args.udf_batch_size,
         "udf_domain_band": args.udf_domain_band,
