@@ -147,6 +147,8 @@ def start_test(opt):
         "udf_shell_wall_min_faces",
         "udf_shell_wall_min_span_world",
         "udf_shell_wall_max_components",
+        "udf_shell_reference_max_avg_factor",
+        "udf_shell_reference_max_max_factor",
         "udf_far_value",
         "udf_batch_size",
         "udf_domain_band",
@@ -386,6 +388,28 @@ def build_parser():
         ),
     )
 
+    parser.add_argument(
+        "--udf-shell-reference-max-avg-factor",
+        dest="udf_shell_reference_max_avg_factor",
+        type=float,
+        default=2.0,
+        help=(
+            "Average-UDF cell threshold used only for the internal legacy "
+            "NSDUDF opening reference. Default 2.0 reproduces the earlier "
+            "threshold-relaxed diagnostic result."
+        ),
+    )
+    parser.add_argument(
+        "--udf-shell-reference-max-max-factor",
+        dest="udf_shell_reference_max_max_factor",
+        type=float,
+        default=3.0,
+        help=(
+            "Maximum-UDF cell threshold used only for the internal legacy "
+            "NSDUDF opening reference. Default 3.0 reproduces the earlier "
+            "threshold-relaxed diagnostic result."
+        ),
+    )
     parser.add_argument(
         "--udf-shell-wall-max-normal-dot",
         dest="udf_shell_wall_max_normal_dot",

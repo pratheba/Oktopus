@@ -982,6 +982,25 @@ class AgentUDFNsdudf(AgentUDF):
             )
         )
 
+        # The opening reference intentionally uses the earlier successful
+        # threshold-relaxed NSDUDF path: plain per-cell argmax, no top-K or
+        # neighborhood-consistency refinement. Keep these controls separate
+        # from the normal NSDUDF mesher so later experiments cannot silently
+        # alter the reference used to open the shell.
+        reference_max_avg_factor = float(
+            cget("udf_shell_reference_max_avg_factor", 2.0)
+        )
+        reference_max_max_factor = float(
+            cget("udf_shell_reference_max_max_factor", 3.0)
+        )
+        print(
+            "[udf shell open reference mode]",
+            "classifier=legacy_argmax",
+            f"max_avg_factor={reference_max_avg_factor:.6g}",
+            f"max_max_factor={reference_max_max_factor:.6g}",
+            "neighbor_consistency=False",
+        )
+
         pseudo_sdf = nsd_meshing.compute_pseudo_sdf(
             model,
             udf_and_grad_f,
@@ -990,20 +1009,9 @@ class AgentUDFNsdudf(AgentUDF):
             normalize_udf=bool(cget("nsdudf_normalize_udf", True)),
             use_grads=True,
             out7=False,
-            max_avg_factor=float(cget("nsdudf_max_avg_factor", 1.2)),
-            max_max_factor=float(cget("nsdudf_max_max_factor", 2.0)),
-            neighbor_consistency=bool(
-                cget("nsdudf_neighbor_consistency", False)
-            ),
-            consistency_top_k=int(
-                cget("nsdudf_consistency_top_k", 8)
-            ),
-            consistency_weight=float(
-                cget("nsdudf_consistency_weight", 1.0)
-            ),
-            consistency_sweeps=int(
-                cget("nsdudf_consistency_sweeps", 5)
-            ),
+            max_avg_factor=reference_max_avg_factor,
+            max_max_factor=reference_max_max_factor,
+            neighbor_consistency=False,
         )
         reference_cube = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
         if reference_cube is None or len(reference_cube.faces) == 0:
