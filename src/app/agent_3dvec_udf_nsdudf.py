@@ -982,51 +982,115 @@ class AgentUDFNsdudf(AgentUDF):
             )
         )
 
-        # The opening reference intentionally uses the earlier successful
-        # threshold-relaxed NSDUDF path: plain per-cell argmax, no top-K or
-        # neighborhood-consistency refinement. Keep these controls separate
-        # from the normal NSDUDF mesher so later experiments cannot silently
-        # alter the reference used to open the shell.
+        # Reproduce the exact diagnostic extraction that produced the known-good
+        # 2.0 / 3.0 reference.  Do not route this through the later
+        # core.meshing.compute_pseudo_sdf path: that path was modified during
+        # the consistency/cleanup experiments.
+        from nsdudf_diagnostics import (
+            DiagnosticOptions,
+            run_nsdudf_diagnostics,
+        )
+
         reference_max_avg_factor = float(
             cget("udf_shell_reference_max_avg_factor", 2.0)
         )
         reference_max_max_factor = float(
             cget("udf_shell_reference_max_max_factor", 3.0)
         )
+
+        call_index = int(
+            getattr(self, "_udf_shell_open_reference_call_index", 0)
+        )
+        self._udf_shell_open_reference_call_index = call_index + 1
+        output_folder = cget("output_folder", None)
+        if output_folder:
+            reference_diag_dir = op.join(
+                str(output_folder),
+                "udf_shell_open_reference_diag",
+                f"item_{call_index:02d}",
+            )
+        else:
+            reference_diag_dir = op.abspath(
+                op.join(
+                    "udf_shell_open_reference_diag",
+                    f"item_{call_index:02d}",
+                )
+            )
+        os.makedirs(reference_diag_dir, exist_ok=True)
+
+        class _ExactDiagnosticMeshing:
+            @staticmethod
+            def mesh_marching_cubes(pseudo_sdf):
+                # This is the original NSDUDF mesh_marching_cubes behavior used
+                # by the successful diagnostic run: raw custom MC followed by
+                # Trimesh's default processing.
+                resolution = int(pseudo_sdf.shape[0]) + 1
+                voxel_size_cube = 2.0 / float(resolution - 1)
+                try:
+                    vertices, faces, _normals, _values = (
+                        nsd_meshing.pseudosdf_mc_lewiner(
+                            pseudo_sdf,
+                            spacing=[voxel_size_cube] * 3,
+                        )
+                    )
+                except Exception as exc:
+                    print(
+                        "[udf shell exact diagnostic MC failed]",
+                        repr(exc),
+                        flush=True,
+                    )
+                    return None
+                vertices = np.asarray(vertices, dtype=np.float64) - 1.0
+                return trimesh.Trimesh(
+                    vertices=vertices,
+                    faces=np.asarray(faces, dtype=np.int64),
+                )
+
         print(
             "[udf shell open reference mode]",
-            "classifier=legacy_argmax",
+            "path=exact_test_nsdudf_diag",
             f"max_avg_factor={reference_max_avg_factor:.6g}",
             f"max_max_factor={reference_max_max_factor:.6g}",
-            "neighbor_consistency=False",
+            "classifier=plain_argmax",
+            "neighbor_consistency=absent",
+            f"item={call_index:02d}",
+            flush=True,
         )
 
-        pseudo_sdf = nsd_meshing.compute_pseudo_sdf(
-            model,
-            udf_and_grad_f,
+        diagnostic_options = DiagnosticOptions(
             n_grid_samples=n,
-            batch_size=batch_size,
+            classifier_batch_size=max(1, int(batch_size)),
+            query_slab=max(
+                1, int(cget("udf_shell_reference_query_slab", 4))
+            ),
+            cell_slab=max(
+                1, int(cget("udf_shell_reference_cell_slab", 2))
+            ),
             normalize_udf=bool(cget("nsdudf_normalize_udf", True)),
-            use_grads=True,
-            out7=False,
             max_avg_factor=reference_max_avg_factor,
             max_max_factor=reference_max_max_factor,
-            neighbor_consistency=False,
+            loose_min_factor=1.0,
+            max_visualization_points=max(
+                1, int(cget("udf_shell_reference_max_points", 200000))
+            ),
+            extract_mesh=True,
         )
-        reference_cube = nsd_meshing.mesh_marching_cubes(pseudo_sdf)
-        if reference_cube is None or len(reference_cube.faces) == 0:
+        diagnostic_result = run_nsdudf_diagnostics(
+            model,
+            udf_and_grad_f,
+            options=diagnostic_options,
+            output_dir=reference_diag_dir,
+            domain_center=center,
+            domain_half_extent=half,
+            meshing_module=_ExactDiagnosticMeshing,
+        )
+        reference = diagnostic_result.mesh
+        if reference is None or len(reference.faces) == 0:
             raise RuntimeError(
-                "NSDUDF produced an empty reference for udf_band_shell_open."
+                "Exact 2.0/3.0 diagnostic NSDUDF produced an empty "
+                "reference for udf_band_shell_open."
             )
 
-        reference = trimesh.Trimesh(
-            vertices=(
-                center[None, :]
-                + np.asarray(reference_cube.vertices, dtype=np.float64) * half
-            ),
-            faces=np.asarray(reference_cube.faces, dtype=np.int64),
-            process=False,
-        )
         voxel_world = 2.0 * half / float(n - 1)
         total_axes = max(1, int(fd_stats["eval_points"]) * 3)
         print(
@@ -1038,12 +1102,23 @@ class AgentUDFNsdudf(AgentUDF):
             f"{100.0 * fd_stats['invalid_axes'] / total_axes:.3f}",
         )
 
+        open_config = config
+        if output_folder and hasattr(config, "copy"):
+            open_config = config.copy()
+            item_output = op.join(
+                str(output_folder),
+                "udf_shell_open_items",
+                f"item_{call_index:02d}",
+            )
+            os.makedirs(item_output, exist_ok=True)
+            open_config["output_folder"] = item_output
+
         opened = self._open_udf_band_shell_from_nsdudf_reference(
             shell,
             reference,
             shell_level_world=shell_level_world,
             voxel_world=voxel_world,
-            config=config,
+            config=open_config,
         )
         if bool(cget("udf_cleanup", False)):
             opened = self._cleanup_nsdudf_mesh(opened, config)
