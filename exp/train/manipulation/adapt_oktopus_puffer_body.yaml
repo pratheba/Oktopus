@@ -97,6 +97,13 @@ adaptations:
   avatar_clearance: 0.0001
   cut_avatar: true 
 
+  udf_cut_subtriangle: true
+  udf_cut_subtriangle_expansion_rings: 1
+  udf_cut_subtriangle_scalar_smooth: true
+  udf_cut_subtriangle_scalar_smooth_rings: 2
+  udf_cut_subtriangle_scalar_smooth_iterations: 3
+  udf_cut_subtriangle_scalar_smooth_alpha: 0.35
+
 
 - name: puffer_body_rigid
   target_key: oktopus_9_v1|body
