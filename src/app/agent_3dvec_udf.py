@@ -8,6 +8,11 @@ import trimesh
 
 import app_utils_3dvec as utils
 from agent_3dvec_base import AgentBase
+from snug_field_io import (
+    load_shared_snug_field,
+    resolve_shared_snug_field_path,
+    snug_field_stats,
+)
 
 
 class AgentUDF(AgentBase):
@@ -824,6 +829,31 @@ class AgentUDF(AgentBase):
                 "accessory_curve_idx": self.feat_dict[accessory_key],
             }
             adapt_arg.update(item)
+
+            # UDF cannot safely derive this field from unsigned avatar
+            # distances. It may reuse the exact signed-SDF field. This is
+            # fully opt-in, so the existing no-snug path stays unchanged.
+            shared_snug_spec = adapt_arg.get("shared_snug_field", None)
+            if shared_snug_spec:
+                shared_snug_path = resolve_shared_snug_field_path(
+                    str(shared_snug_spec),
+                    root_path=arg.get("root_path", os.getcwd()),
+                    output_folder=output_folder,
+                    item_index=item_index,
+                    mode=mode,
+                    target_key=target_key,
+                    accessory_key=accessory_key,
+                )
+                shared_snug_field = load_shared_snug_field(shared_snug_path)
+                adapt_arg["avatar_snug_scale_field"] = shared_snug_field
+                print(
+                    "[udf shared snug load]",
+                    shared_snug_path,
+                    snug_field_stats(shared_snug_field),
+                )
+
+            # Never derive a separate snug field in UDF. The injected
+            # avatar_snug_scale_field remains active independently.
             adapt_arg["auto_avatar_snug_field"] = False
             adapt_arg["use_tiled_detail"] = False
             self._warn_ignored_sdf_settings(adapt_arg)

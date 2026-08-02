@@ -24,6 +24,11 @@ import torch
 import trimesh
 
 from agent_3dvec_udf import AgentUDF
+from snug_field_io import (
+    load_shared_snug_field,
+    resolve_shared_snug_field_path,
+    snug_field_stats,
+)
 
 
 @dataclass
@@ -557,16 +562,44 @@ class AgentUDFCut(AgentUDF):
                 "accessory_curve_idx": self.feat_dict[accessory_key],
             }
             adapt_arg.update(item)
+
+            shared_snug_path = None
+            shared_snug_spec = adapt_arg.get("shared_snug_field", None)
+            if shared_snug_spec:
+                shared_snug_path = resolve_shared_snug_field_path(
+                    str(shared_snug_spec),
+                    root_path=root_path,
+                    output_folder=output_folder,
+                    item_index=item_index,
+                    mode=mode,
+                    target_key=target_key,
+                    accessory_key=accessory_key,
+                )
+                shared_snug_field = load_shared_snug_field(shared_snug_path)
+                adapt_arg["avatar_snug_scale_field"] = shared_snug_field
+                print(
+                    "[udf cut shared snug load]",
+                    shared_snug_path,
+                    snug_field_stats(shared_snug_field),
+                )
+
             adapt_arg["adapt_debug_counts"] = False
             adapt_arg["debug_interval_projection"] = False
 
-            if bool(adapt_arg.get("auto_avatar_snug_field", False)):
+            if (
+                bool(adapt_arg.get("auto_avatar_snug_field", False))
+                and shared_snug_path is None
+            ):
                 print(
                     "[udf cut warning] auto_avatar_snug_field is enabled in the "
                     "YAML, but this direct world-point filter does not rebuild "
-                    "the SDF snug scale field. The geometric adaptation mapping "
-                    "is still shared; only that SDF-specific correction is absent."
+                    "the signed-SDF snug field. Add shared_snug_field to the "
+                    "adaptation item, or disable auto_avatar_snug_field."
                 )
+
+            # Do not derive a separate field from unsigned distances. The
+            # injected avatar_snug_scale_field remains independently active.
+            adapt_arg["auto_avatar_snug_field"] = False
 
             mc_path = self._resolve_path_spec(
                 str(mc_mesh_spec),
@@ -688,6 +721,7 @@ class AgentUDFCut(AgentUDF):
 
             report = {
                 "mc_input": mc_path,
+                "shared_snug_field": shared_snug_path,
                 "nsdudf_reference": reference_path,
                 "target_key": target_key,
                 "accessory_key": accessory_key,

@@ -9,7 +9,11 @@ from tqdm.autonotebook import tqdm
 #import app_utils as utils
 import app_utils_3dvec as utils
 
-
+from snug_field_io import (
+    resolve_shared_snug_field_path,
+    save_shared_snug_field,
+    snug_field_stats,
+)
 from agent_3dvec_base import AgentBase
 
 class AgentSDF(AgentBase):
@@ -1449,6 +1453,30 @@ class AgentSDF(AgentBase):
                         )
 
                         if snug_field is not None:
+                            # Explicit opt-in hand-off to UDF/NSDUDF. When the
+                            # key is absent, the existing SDF path is unchanged.
+                            shared_snug_spec = adapt_arg.get(
+                                "shared_snug_field", None
+                            )
+                            if shared_snug_spec:
+                                shared_snug_path = resolve_shared_snug_field_path(
+                                    str(shared_snug_spec),
+                                    root_path=arg.get("root_path", os.getcwd()),
+                                    output_folder=output_folder,
+                                    item_index=item_index,
+                                    mode=mode,
+                                    target_key=key,
+                                    accessory_key=accessory_key,
+                                )
+                                saved_field = save_shared_snug_field(
+                                    shared_snug_path, snug_field
+                                )
+                                print(
+                                    "[shared snug save]",
+                                    shared_snug_path,
+                                    snug_field_stats(saved_field),
+                                )
+
                             # NOTE: previous code had a typo here
                             # ("avatar_snu g_scale_field" with a stray space)
                             # which meant the snug field was never read by
