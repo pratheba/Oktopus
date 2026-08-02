@@ -119,6 +119,37 @@ def start_test(opt):
         "udf_cut_reference_max_distance_world": (
             opt.udf_cut_reference_max_distance_world
         ),
+        "udf_cut_cleanup_boundary": opt.udf_cut_cleanup_boundary,
+        "udf_cut_fill_small_holes": (
+            not opt.udf_cut_no_fill_small_holes
+        ),
+        "udf_cut_fill_hole_max_edges": (
+            opt.udf_cut_fill_hole_max_edges
+        ),
+        "udf_cut_fill_hole_max_perimeter_world": (
+            opt.udf_cut_fill_hole_max_perimeter_world
+        ),
+        "udf_cut_fill_hole_max_span_world": (
+            opt.udf_cut_fill_hole_max_span_world
+        ),
+        "udf_cut_boundary_smooth_iterations": (
+            opt.udf_cut_boundary_smooth_iterations
+        ),
+        "udf_cut_boundary_smooth_lambda": (
+            opt.udf_cut_boundary_smooth_lambda
+        ),
+        "udf_cut_boundary_smooth_mu": (
+            opt.udf_cut_boundary_smooth_mu
+        ),
+        "udf_cut_boundary_smooth_min_edges": (
+            opt.udf_cut_boundary_smooth_min_edges
+        ),
+        "udf_cut_boundary_max_step_fraction": (
+            opt.udf_cut_boundary_max_step_fraction
+        ),
+        "udf_cut_boundary_max_total_fraction": (
+            opt.udf_cut_boundary_max_total_fraction
+        ),
     }
 
     print(
@@ -217,6 +248,46 @@ def build_parser():
             "its boundary is farther than this from all retained reference "
             "boundary points."
         ),
+    )
+    parser.add_argument(
+        "--udf-cut-cleanup-boundary",
+        action="store_true",
+        help=(
+            "After cutting, fill only tiny closed holes and tangentially "
+            "smooth the retained opening boundaries. Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--udf-cut-no-fill-small-holes",
+        action="store_true",
+        help="Smooth boundaries but do not fill tiny closed loops.",
+    )
+    parser.add_argument(
+        "--udf-cut-fill-hole-max-edges", type=int, default=24
+    )
+    parser.add_argument(
+        "--udf-cut-fill-hole-max-perimeter-world", type=float, default=0.08
+    )
+    parser.add_argument(
+        "--udf-cut-fill-hole-max-span-world", type=float, default=0.04
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-smooth-iterations", type=int, default=8
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-smooth-lambda", type=float, default=0.45
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-smooth-mu", type=float, default=-0.47
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-smooth-min-edges", type=int, default=12
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-max-step-fraction", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--udf-cut-boundary-max-total-fraction", type=float, default=0.75
     )
     return parser
 

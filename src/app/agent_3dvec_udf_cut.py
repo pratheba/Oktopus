@@ -24,6 +24,10 @@ import torch
 import trimesh
 
 from agent_3dvec_udf import AgentUDF
+from udf_cut_boundary_cleanup import (
+    boundary_point_cloud,
+    cleanup_cut_boundary,
+)
 from snug_field_io import (
     load_shared_snug_field,
     resolve_shared_snug_field_path,
@@ -694,6 +698,63 @@ class AgentUDFCut(AgentUDF):
                 reference_max_distance_world=reference_max_distance,
             )
 
+            kept_raw = kept.copy()
+            cleanup_enabled = bool(
+                config.get("udf_cut_cleanup_boundary", False)
+            )
+            cleanup_report = None
+            boundary_before_cloud = None
+            boundary_after_cloud = None
+            if cleanup_enabled:
+                boundary_before_cloud = boundary_point_cloud(kept_raw)
+                kept, cleanup_report = cleanup_cut_boundary(
+                    kept_raw,
+                    fill_small_holes=bool(
+                        config.get("udf_cut_fill_small_holes", True)
+                    ),
+                    fill_max_edges=int(
+                        config.get("udf_cut_fill_hole_max_edges", 24)
+                    ),
+                    fill_max_perimeter_world=float(
+                        config.get(
+                            "udf_cut_fill_hole_max_perimeter_world", 0.08
+                        )
+                    ),
+                    fill_max_span_world=float(
+                        config.get("udf_cut_fill_hole_max_span_world", 0.04)
+                    ),
+                    smooth_iterations=int(
+                        config.get("udf_cut_boundary_smooth_iterations", 8)
+                    ),
+                    smooth_lambda=float(
+                        config.get("udf_cut_boundary_smooth_lambda", 0.45)
+                    ),
+                    smooth_mu=float(
+                        config.get("udf_cut_boundary_smooth_mu", -0.47)
+                    ),
+                    smooth_min_edges=int(
+                        config.get("udf_cut_boundary_smooth_min_edges", 12)
+                    ),
+                    smooth_max_step_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_max_step_fraction", 0.25
+                        )
+                    ),
+                    smooth_max_total_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_max_total_fraction", 0.75
+                        )
+                    ),
+                )
+                boundary_after_cloud = boundary_point_cloud(kept)
+                print(
+                    "[udf cut boundary cleanup]",
+                    f"filled={sum(1 for item in cleanup_report['filled_loops'] if item.get('filled'))}",
+                    f"smoothed={len(cleanup_report['smoothed_loops'])}",
+                    f"boundary_loops_before={len(cleanup_report['boundary_before'])}",
+                    f"boundary_loops_after={len(cleanup_report['boundary_after'])}",
+                )
+
             safe_key = self._safe_label(accessory_key)
             prefix = f"{item_index}_{mode}_{safe_key}"
             before_path = op.join(output_folder, f"{prefix}_mc_before_udf_cut.ply")
@@ -701,6 +762,21 @@ class AgentUDFCut(AgentUDF):
             grow_path = op.join(output_folder, f"{prefix}_udf_cut_grow_faces.ply")
             removed_path = op.join(output_folder, f"{prefix}_udf_cut_removed_caps.ply")
             after_path = op.join(output_folder, f"{prefix}_mc_after_udf_cut.ply")
+            raw_after_path = (
+                op.join(output_folder, f"{prefix}_mc_after_udf_cut_raw.ply")
+                if cleanup_enabled
+                else None
+            )
+            boundary_before_path = (
+                op.join(output_folder, f"{prefix}_udf_cut_boundary_before.ply")
+                if cleanup_enabled
+                else None
+            )
+            boundary_after_path = (
+                op.join(output_folder, f"{prefix}_udf_cut_boundary_after.ply")
+                if cleanup_enabled
+                else None
+            )
             npz_path = op.join(output_folder, f"{prefix}_udf_cut_face_scores.npz")
             report_path = op.join(output_folder, f"{prefix}_udf_cut_report.json")
 
@@ -708,6 +784,16 @@ class AgentUDFCut(AgentUDF):
             self._mesh_from_face_mask(mesh, seed_mask).export(seed_path)
             self._mesh_from_face_mask(mesh, grow_mask).export(grow_path)
             removed.export(removed_path)
+            if cleanup_enabled:
+                kept_raw.export(raw_after_path)
+                if len(boundary_before_cloud.vertices):
+                    boundary_before_cloud.export(boundary_before_path)
+                else:
+                    boundary_before_path = None
+                if len(boundary_after_cloud.vertices):
+                    boundary_after_cloud.export(boundary_after_path)
+                else:
+                    boundary_after_path = None
             kept.export(after_path)
             np.savez_compressed(
                 npz_path,
@@ -750,13 +836,18 @@ class AgentUDFCut(AgentUDF):
                 },
                 "before": self._topology_stats(mesh),
                 "removed": self._topology_stats(removed),
+                "after_raw": self._topology_stats(kept_raw),
                 "after": self._topology_stats(kept),
+                "boundary_cleanup": cleanup_report,
                 "components": [decision.as_dict() for decision in decisions],
                 "outputs": {
                     "before": before_path,
                     "seed_faces": seed_path,
                     "grow_faces": grow_path,
                     "removed_caps": removed_path,
+                    "after_raw": raw_after_path,
+                    "boundary_before": boundary_before_path,
+                    "boundary_after": boundary_after_path,
                     "after": after_path,
                     "face_scores": npz_path,
                 },
