@@ -392,9 +392,9 @@ class AgentUDFCut(AgentUDF):
 
         # Do not pass all-NaN rows to np.nanmedian.
         if np.any(candidate):
-                scores[candidate] = np.nanmedian(masked[candidate], axis=1)
+            scores[candidate] = np.nanmedian(masked[candidate], axis=1)
 
-            usable = candidate & np.isfinite(scores)
+        usable = candidate & np.isfinite(scores)
         scores[~usable] = np.nan
 
         return scores, usable, values, valid
@@ -755,12 +755,74 @@ class AgentUDFCut(AgentUDF):
                             "udf_cut_boundary_max_total_fraction", 0.75
                         )
                     ),
+                    redistribute_boundary=bool(
+                        config.get(
+                            "udf_cut_boundary_redistribute", False
+                        )
+                    ),
+                    redistribute_min_edges=int(
+                        config.get(
+                            "udf_cut_boundary_redistribute_min_edges", 12
+                        )
+                    ),
+                    redistribute_ring_count=int(
+                        config.get(
+                            "udf_cut_boundary_redistribute_ring_count", 1
+                        )
+                    ),
+                    redistribute_curve_smooth_iterations=int(
+                        config.get(
+                            "udf_cut_boundary_curve_smooth_iterations", 6
+                        )
+                    ),
+                    redistribute_curve_smooth_alpha=float(
+                        config.get(
+                            "udf_cut_boundary_curve_smooth_alpha", 0.45
+                        )
+                    ),
+                    redistribute_harmonic_iterations=int(
+                        config.get(
+                            "udf_cut_boundary_harmonic_iterations", 20
+                        )
+                    ),
+                    redistribute_strip_relax_iterations=int(
+                        config.get(
+                            "udf_cut_boundary_strip_relax_iterations", 4
+                        )
+                    ),
+                    redistribute_strip_relax_step=float(
+                        config.get(
+                            "udf_cut_boundary_strip_relax_step", 0.25
+                        )
+                    ),
+                    redistribute_max_boundary_displacement_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_redistribute_max_fraction",
+                            2.0,
+                        )
+                    ),
+                    redistribute_max_strip_displacement_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_strip_max_fraction", 0.80
+                        )
+                    ),
+                    redistribute_min_area_ratio=float(
+                        config.get(
+                            "udf_cut_boundary_min_area_ratio", 0.10
+                        )
+                    ),
+                    redistribute_min_normal_dot=float(
+                        config.get(
+                            "udf_cut_boundary_min_normal_dot", 0.0
+                        )
+                    ),
                 )
                 boundary_after_cloud = boundary_point_cloud(kept)
                 print(
                     "[udf cut boundary cleanup]",
                     f"filled={sum(1 for item in cleanup_report['filled_loops'] if item.get('filled'))}",
                     f"smoothed={len(cleanup_report['smoothed_loops'])}",
+                    f"redistributed={len(cleanup_report['redistributed_loops'])}",
                     f"boundary_loops_before={len(cleanup_report['boundary_before'])}",
                     f"boundary_loops_after={len(cleanup_report['boundary_after'])}",
                 )
