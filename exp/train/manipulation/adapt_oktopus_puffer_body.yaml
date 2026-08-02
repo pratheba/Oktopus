@@ -58,7 +58,7 @@ adaptations:
   src_1: 0.9
   tgt_0: 0.1
   tgt_1: 0.5
-  scale: 0.8
+  scale: 0.7
   rot_deg: 0.0
   wrap_radius: true
   rigid_radius: false
@@ -74,7 +74,7 @@ adaptations:
   #tilt_v_end: 0.0
 
   # Main correction: geometric snug field
-  auto_avatar_snug_field: true 
+  auto_avatar_snug_field: false #true 
   snug_field_n_s: 24
   snug_field_n_theta: 48
   snug_surface_band: 0.01
