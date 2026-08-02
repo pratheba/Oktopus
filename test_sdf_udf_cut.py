@@ -150,42 +150,6 @@ def start_test(opt):
         "udf_cut_boundary_max_total_fraction": (
             opt.udf_cut_boundary_max_total_fraction
         ),
-        "udf_cut_boundary_redistribute": (
-            opt.udf_cut_boundary_redistribute
-        ),
-        "udf_cut_boundary_redistribute_min_edges": (
-            opt.udf_cut_boundary_redistribute_min_edges
-        ),
-        "udf_cut_boundary_redistribute_ring_count": (
-            opt.udf_cut_boundary_redistribute_ring_count
-        ),
-        "udf_cut_boundary_curve_smooth_iterations": (
-            opt.udf_cut_boundary_curve_smooth_iterations
-        ),
-        "udf_cut_boundary_curve_smooth_alpha": (
-            opt.udf_cut_boundary_curve_smooth_alpha
-        ),
-        "udf_cut_boundary_harmonic_iterations": (
-            opt.udf_cut_boundary_harmonic_iterations
-        ),
-        "udf_cut_boundary_strip_relax_iterations": (
-            opt.udf_cut_boundary_strip_relax_iterations
-        ),
-        "udf_cut_boundary_strip_relax_step": (
-            opt.udf_cut_boundary_strip_relax_step
-        ),
-        "udf_cut_boundary_redistribute_max_fraction": (
-            opt.udf_cut_boundary_redistribute_max_fraction
-        ),
-        "udf_cut_boundary_strip_max_fraction": (
-            opt.udf_cut_boundary_strip_max_fraction
-        ),
-        "udf_cut_boundary_min_area_ratio": (
-            opt.udf_cut_boundary_min_area_ratio
-        ),
-        "udf_cut_boundary_min_normal_dot": (
-            opt.udf_cut_boundary_min_normal_dot
-        ),
     }
 
     print(
@@ -324,49 +288,6 @@ def build_parser():
     )
     parser.add_argument(
         "--udf-cut-boundary-max-total-fraction", type=float, default=0.75
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-redistribute",
-        action="store_true",
-        help=(
-            "Uniformly redistribute each retained large cut boundary and "
-            "relax only a narrow adjacent strip. Off by default."
-        ),
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-redistribute-min-edges", type=int, default=12
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-redistribute-ring-count", type=int, default=1
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-curve-smooth-iterations", type=int, default=6
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-curve-smooth-alpha", type=float, default=0.45
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-harmonic-iterations", type=int, default=20
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-strip-relax-iterations", type=int, default=4
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-strip-relax-step", type=float, default=0.25
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-redistribute-max-fraction",
-        type=float,
-        default=2.0,
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-strip-max-fraction", type=float, default=0.80
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-min-area-ratio", type=float, default=0.10
-    )
-    parser.add_argument(
-        "--udf-cut-boundary-min-normal-dot", type=float, default=0.0
     )
     return parser
 
