@@ -1,0 +1,742 @@
+"""Use an adapted UDF as a world-space filter for an existing SDF/MC mesh.
+
+This does *not* mesh the UDF.  The input Marching-Cubes mesh remains the
+geometry source.  The adapted UDF is queried at the MC triangle centroid and
+three edge midpoints using the same target/accessory handles and the same
+adaptation YAML.  Connected high-UDF face patches are removed as likely false
+caps across intentional openings.
+
+Because the UDF is evaluated directly at the MC vertices in world space, there
+is no independent UDF extraction cube, bbox normalization, or post-hoc scale
+alignment.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import os.path as op
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+import torch
+import trimesh
+
+from agent_3dvec_udf import AgentUDF
+
+
+@dataclass
+class _ComponentDecision:
+    component_id: int
+    face_count: int
+    seed_count: int
+    seed_fraction: float
+    area: float
+    score_min: float
+    score_median: float
+    score_max: float
+    ring_face_count: int
+    ring_score_median: Optional[float]
+    touches_existing_boundary: bool
+    reference_distance: Optional[float]
+    accepted: bool
+    reason: str
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "component_id": self.component_id,
+            "face_count": self.face_count,
+            "seed_count": self.seed_count,
+            "seed_fraction": self.seed_fraction,
+            "area": self.area,
+            "score_min": self.score_min,
+            "score_median": self.score_median,
+            "score_max": self.score_max,
+            "ring_face_count": self.ring_face_count,
+            "ring_score_median": self.ring_score_median,
+            "touches_existing_boundary": self.touches_existing_boundary,
+            "reference_distance": self.reference_distance,
+            "accepted": self.accepted,
+            "reason": self.reason,
+        }
+
+
+class AgentUDFCut(AgentUDF):
+    """Direct adapted-UDF cap removal for an already reconstructed MC mesh."""
+
+    @staticmethod
+    def _safe_label(text: str) -> str:
+        return str(text).replace("|", "_").replace("/", "_")
+
+    @staticmethod
+    def _resolve_path_spec(
+        spec: str,
+        *,
+        root_path: str,
+        item_index: int,
+        mode: str,
+        accessory_key: str,
+        target_key: str,
+    ) -> str:
+        if not spec:
+            raise ValueError("A mesh path specification is required.")
+
+        formatted = str(spec).format(
+            index=item_index,
+            mode=mode,
+            accessory=AgentUDFCut._safe_label(accessory_key),
+            target=AgentUDFCut._safe_label(target_key),
+        )
+        path = formatted if op.isabs(formatted) else op.join(root_path, formatted)
+        path = op.abspath(op.expanduser(path))
+        if not op.isfile(path):
+            raise FileNotFoundError(f"Mesh file not found: {path}")
+        return path
+
+    @staticmethod
+    def _mesh_from_face_mask(mesh: trimesh.Trimesh, mask: np.ndarray) -> trimesh.Trimesh:
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        if mask.shape[0] != len(mesh.faces):
+            raise ValueError(
+                f"Face mask length mismatch: {mask.shape[0]} vs {len(mesh.faces)}"
+            )
+        if not np.any(mask):
+            return trimesh.Trimesh(
+                vertices=np.zeros((0, 3), dtype=np.float64),
+                faces=np.zeros((0, 3), dtype=np.int64),
+                process=False,
+            )
+        out = trimesh.Trimesh(
+            vertices=np.asarray(mesh.vertices, dtype=np.float64).copy(),
+            faces=np.asarray(mesh.faces, dtype=np.int64)[mask].copy(),
+            process=False,
+        )
+        out.remove_unreferenced_vertices()
+        return out
+
+    @staticmethod
+    def _topology_stats(mesh: trimesh.Trimesh) -> Dict[str, object]:
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if len(faces) == 0:
+            return {
+                "vertices": int(len(mesh.vertices)),
+                "faces": 0,
+                "boundary_edges": 0,
+                "nonmanifold_edges": 0,
+                "components": 0,
+            }
+
+        edges = np.sort(
+            np.concatenate(
+                [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]],
+                axis=0,
+            ),
+            axis=1,
+        )
+        _unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+
+        # Vertex-connected component count.  This works even for non-manifold
+        # intermediate meshes and does not require trimesh.split().
+        n_vertices = len(mesh.vertices)
+        parent = np.arange(n_vertices, dtype=np.int64)
+        rank = np.zeros(n_vertices, dtype=np.int8)
+
+        def find(x: int) -> int:
+            x = int(x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = int(parent[x])
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
+            else:
+                parent[rb] = ra
+                rank[ra] += 1
+
+        for tri in faces:
+            union(int(tri[0]), int(tri[1]))
+            union(int(tri[1]), int(tri[2]))
+            union(int(tri[2]), int(tri[0]))
+
+        roots = {find(int(v)) for v in np.unique(faces)}
+        return {
+            "vertices": int(len(mesh.vertices)),
+            "faces": int(len(faces)),
+            "boundary_edges": int(np.sum(counts == 1)),
+            "nonmanifold_edges": int(np.sum(counts > 2)),
+            "components": int(len(roots)),
+        }
+
+    @staticmethod
+    def _existing_boundary_faces(mesh: trimesh.Trimesh) -> np.ndarray:
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        result = np.zeros(len(faces), dtype=bool)
+        if len(faces) == 0:
+            return result
+
+        face_ids = np.tile(np.arange(len(faces), dtype=np.int64), 3)
+        edges = np.concatenate(
+            [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0
+        )
+        edges = np.sort(edges, axis=1)
+        _, inverse, counts = np.unique(
+            edges, axis=0, return_inverse=True, return_counts=True
+        )
+        result[face_ids[counts[inverse] == 1]] = True
+        return result
+
+    @staticmethod
+    def _face_components(mask: np.ndarray, adjacency: np.ndarray) -> List[np.ndarray]:
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        active = np.flatnonzero(mask)
+        if active.size == 0:
+            return []
+
+        parent = np.arange(mask.shape[0], dtype=np.int64)
+        rank = np.zeros(mask.shape[0], dtype=np.int8)
+
+        def find(x: int) -> int:
+            x = int(x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = int(parent[x])
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
+            else:
+                parent[rb] = ra
+                rank[ra] += 1
+
+        for pair in np.asarray(adjacency, dtype=np.int64):
+            a, b = int(pair[0]), int(pair[1])
+            if mask[a] and mask[b]:
+                union(a, b)
+
+        groups: Dict[int, List[int]] = {}
+        for face_id in active:
+            groups.setdefault(find(int(face_id)), []).append(int(face_id))
+        return [np.asarray(ids, dtype=np.int64) for ids in groups.values()]
+
+    @staticmethod
+    def _component_ring(
+        component_faces: np.ndarray,
+        adjacency: np.ndarray,
+        n_faces: int,
+    ) -> np.ndarray:
+        in_component = np.zeros(n_faces, dtype=bool)
+        in_component[np.asarray(component_faces, dtype=np.int64)] = True
+        ring = []
+        for a, b in np.asarray(adjacency, dtype=np.int64):
+            a, b = int(a), int(b)
+            if in_component[a] and not in_component[b]:
+                ring.append(b)
+            elif in_component[b] and not in_component[a]:
+                ring.append(a)
+        if not ring:
+            return np.zeros((0,), dtype=np.int64)
+        return np.unique(np.asarray(ring, dtype=np.int64))
+
+    @staticmethod
+    def _exact_weld_for_boundary(mesh: trimesh.Trimesh) -> Tuple[np.ndarray, np.ndarray]:
+        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if len(vertices) == 0 or len(faces) == 0:
+            return vertices, faces
+        unique_vertices, inverse = np.unique(vertices, axis=0, return_inverse=True)
+        welded_faces = inverse[faces]
+        repeated = (
+            (welded_faces[:, 0] == welded_faces[:, 1])
+            | (welded_faces[:, 1] == welded_faces[:, 2])
+            | (welded_faces[:, 2] == welded_faces[:, 0])
+        )
+        return unique_vertices, welded_faces[~repeated]
+
+    @classmethod
+    def _large_reference_boundary_points(
+        cls,
+        reference_mesh: trimesh.Trimesh,
+        *,
+        min_edges: int,
+        min_span_world: float,
+    ) -> np.ndarray:
+        vertices, faces = cls._exact_weld_for_boundary(reference_mesh)
+        if len(faces) == 0:
+            return np.zeros((0, 3), dtype=np.float64)
+
+        edges = np.sort(
+            np.concatenate(
+                [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]],
+                axis=0,
+            ),
+            axis=1,
+        )
+        unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+        boundary_edges = unique_edges[counts == 1]
+        if len(boundary_edges) == 0:
+            return np.zeros((0, 3), dtype=np.float64)
+
+        boundary_vertices = np.unique(boundary_edges.reshape(-1))
+        parent = {int(v): int(v) for v in boundary_vertices}
+
+        def find(v: int) -> int:
+            while parent[v] != v:
+                parent[v] = parent[parent[v]]
+                v = parent[v]
+            return v
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for a, b in boundary_edges:
+            union(int(a), int(b))
+
+        edge_groups: Dict[int, List[Tuple[int, int]]] = {}
+        for a, b in boundary_edges:
+            edge_groups.setdefault(find(int(a)), []).append((int(a), int(b)))
+
+        kept_points = []
+        for group_edges in edge_groups.values():
+            if len(group_edges) < int(min_edges):
+                continue
+            ids = np.unique(np.asarray(group_edges, dtype=np.int64).reshape(-1))
+            points = vertices[ids]
+            span = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+            if span < float(min_span_world):
+                continue
+            kept_points.append(points)
+
+        if not kept_points:
+            return np.zeros((0, 3), dtype=np.float64)
+        return np.concatenate(kept_points, axis=0)
+
+    def _query_face_scores(
+        self,
+        mesh: trimesh.Trimesh,
+        *,
+        avatar_curve,
+        adapt_arg: dict,
+        accessory_key: str,
+        model_batch_size: int,
+        query_batch_size: int,
+        far_world: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        tri = vertices[faces]
+
+        samples = np.stack(
+            [
+                tri.mean(axis=1),
+                0.5 * (tri[:, 0] + tri[:, 1]),
+                0.5 * (tri[:, 1] + tri[:, 2]),
+                0.5 * (tri[:, 2] + tri[:, 0]),
+            ],
+            axis=1,
+        )
+        flat = samples.reshape(-1, 3)
+        values = np.empty(flat.shape[0], dtype=np.float64)
+        valid = np.zeros(flat.shape[0], dtype=bool)
+
+        query_batch_size = max(1, int(query_batch_size))
+        for start in range(0, flat.shape[0], query_batch_size):
+            end = min(start + query_batch_size, flat.shape[0])
+            value_chunk, valid_chunk = self._query_adapted_raw_udf(
+                flat[start:end],
+                avatar_curve=avatar_curve,
+                adapt_arg=adapt_arg,
+                accessory_key=accessory_key,
+                batch_size=int(model_batch_size),
+                far_world=float(far_world),
+                return_valid=True,
+            )
+            values[start:end] = np.asarray(value_chunk, dtype=np.float64)
+            valid[start:end] = np.asarray(valid_chunk, dtype=bool)
+
+        values = values.reshape(len(faces), 4)
+        valid = valid.reshape(len(faces), 4)
+        masked = np.where(valid, values, np.nan)
+
+        with np.errstate(all="ignore"):
+            scores = np.nanmedian(masked, axis=1)
+        valid_counts = valid.sum(axis=1)
+        usable = valid[:, 0] & (valid_counts >= 2) & np.isfinite(scores)
+        scores[~usable] = np.nan
+        return scores, usable, values, valid
+
+    def _cut_mesh(
+        self,
+        mesh: trimesh.Trimesh,
+        *,
+        face_scores: np.ndarray,
+        usable_faces: np.ndarray,
+        seed_world: float,
+        grow_world: float,
+        min_faces: int,
+        min_seed_faces: int,
+        min_seed_fraction: float,
+        min_area_world2: float,
+        preserve_existing_boundaries: bool,
+        reference_points: Optional[np.ndarray],
+        reference_max_distance_world: Optional[float],
+    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, np.ndarray, np.ndarray, List[_ComponentDecision]]:
+        if grow_world > seed_world:
+            raise ValueError(
+                f"udf_cut_grow_world ({grow_world}) must be <= "
+                f"udf_cut_seed_world ({seed_world})."
+            )
+
+        scores = np.asarray(face_scores, dtype=np.float64).reshape(-1)
+        usable = np.asarray(usable_faces, dtype=bool).reshape(-1)
+        seed_mask = usable & (scores >= float(seed_world))
+        grow_mask = usable & (scores >= float(grow_world))
+
+        adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64)
+        components = self._face_components(grow_mask, adjacency)
+        face_areas = np.asarray(mesh.area_faces, dtype=np.float64)
+        existing_boundary_faces = self._existing_boundary_faces(mesh)
+        centroids = np.asarray(mesh.triangles_center, dtype=np.float64)
+
+        reference_tree = None
+        if reference_points is not None and len(reference_points):
+            try:
+                from scipy.spatial import cKDTree
+
+                reference_tree = cKDTree(np.asarray(reference_points, dtype=np.float64))
+            except Exception as exc:
+                print("[udf cut] reference KD-tree unavailable:", exc)
+
+        remove_mask = np.zeros(len(mesh.faces), dtype=bool)
+        decisions: List[_ComponentDecision] = []
+
+        for component_id, face_ids in enumerate(components):
+            seed_count = int(np.sum(seed_mask[face_ids]))
+            face_count = int(len(face_ids))
+            seed_fraction = float(seed_count / max(face_count, 1))
+            area = float(np.sum(face_areas[face_ids]))
+            comp_scores = scores[face_ids]
+            ring = self._component_ring(face_ids, adjacency, len(mesh.faces))
+            ring_valid = ring[np.isfinite(scores[ring])] if len(ring) else ring
+            ring_median = (
+                float(np.median(scores[ring_valid])) if len(ring_valid) else None
+            )
+            touches_boundary = bool(np.any(existing_boundary_faces[face_ids]))
+
+            reference_distance = None
+            if reference_tree is not None:
+                # The component boundary is the useful comparison target.  If
+                # the ring is empty, fall back to the component centroids.
+                probe_faces = ring if len(ring) else face_ids
+                distances, _ = reference_tree.query(centroids[probe_faces], k=1)
+                reference_distance = float(np.min(np.asarray(distances)))
+
+            accepted = True
+            reason = "accepted"
+            if face_count < int(min_faces):
+                accepted, reason = False, "too_few_faces"
+            elif seed_count < int(min_seed_faces):
+                accepted, reason = False, "too_few_seed_faces"
+            elif seed_fraction < float(min_seed_fraction):
+                accepted, reason = False, "seed_fraction_too_low"
+            elif area < float(min_area_world2):
+                accepted, reason = False, "area_too_small"
+            elif preserve_existing_boundaries and touches_boundary:
+                accepted, reason = False, "touches_existing_boundary"
+            elif (
+                reference_tree is not None
+                and reference_max_distance_world is not None
+                and reference_distance is not None
+                and reference_distance > float(reference_max_distance_world)
+            ):
+                accepted, reason = False, "far_from_reference_boundary"
+
+            if accepted:
+                remove_mask[face_ids] = True
+
+            decisions.append(
+                _ComponentDecision(
+                    component_id=component_id,
+                    face_count=face_count,
+                    seed_count=seed_count,
+                    seed_fraction=seed_fraction,
+                    area=area,
+                    score_min=float(np.min(comp_scores)),
+                    score_median=float(np.median(comp_scores)),
+                    score_max=float(np.max(comp_scores)),
+                    ring_face_count=int(len(ring)),
+                    ring_score_median=ring_median,
+                    touches_existing_boundary=touches_boundary,
+                    reference_distance=reference_distance,
+                    accepted=accepted,
+                    reason=reason,
+                )
+            )
+
+        removed = self._mesh_from_face_mask(mesh, remove_mask)
+        kept = self._mesh_from_face_mask(mesh, ~remove_mask)
+        return kept, removed, seed_mask, grow_mask, decisions
+
+    @torch.no_grad()
+    def action_part_adapt_udf_cut(self, arg):
+        output_folder = arg["output_folder"]
+        shape_name = arg["shape"]
+        data_root = arg["data_root"]
+        root_path = arg.get("root_path", os.getcwd())
+
+        adaptation_items, extraction_config = self._load_adaptations(arg)
+        handle = self.load_shape_handle(data_root, shape_name, "avatar")
+        target_curves = {
+            self.encode_key(shape_name, curve.name): curve for curve in handle.curves
+        }
+
+        missing = sorted(
+            {
+                item["target_key"]
+                for item in adaptation_items
+                if item["target_key"] not in target_curves
+            }
+        )
+        if missing:
+            raise KeyError(
+                f"Missing target curves: {missing}. Available: {sorted(target_curves)}"
+            )
+
+        os.makedirs(output_folder, exist_ok=True)
+        model_batch_size = int(
+            extraction_config.get(
+                "udf_model_batch_size",
+                extraction_config.get("udf_batch_size", 32768),
+            )
+        )
+        query_batch_size = int(
+            extraction_config.get("udf_cut_query_batch_size", 32768)
+        )
+        far_world = float(extraction_config.get("udf_far_value", 0.1))
+
+        mc_mesh_spec = extraction_config.get("mc_mesh")
+        if not mc_mesh_spec:
+            raise ValueError("part_adapt_udf_cut requires --mc-mesh / mc_mesh.")
+        reference_spec = extraction_config.get("nsdudf_reference_mesh")
+
+        for item_index, item in enumerate(adaptation_items):
+            target_key = item["target_key"]
+            accessory_key = item["accessory_key"]
+            mode = str(item.get("mode", "direct"))
+            if mode != "direct":
+                raise ValueError(
+                    f"AgentUDFCut supports mode='direct' only, got {mode!r}."
+                )
+
+            avatar_curve = target_curves[target_key]
+            accessory_curve = self.curve_from_key(accessory_key)
+            config = self._extraction_config_for_item(extraction_config, item)
+
+            adapt_arg = {
+                "mode": "direct",
+                "avatar_curve_handle": avatar_curve,
+                "accessory_curve_handle": accessory_curve,
+                "device": self.device,
+                "infer_scale": 2.0,
+                "avatar_curve_idx": self.feat_dict[target_key],
+                "accessory_curve_idx": self.feat_dict[accessory_key],
+            }
+            adapt_arg.update(item)
+            adapt_arg["adapt_debug_counts"] = False
+            adapt_arg["debug_interval_projection"] = False
+
+            if bool(adapt_arg.get("auto_avatar_snug_field", False)):
+                print(
+                    "[udf cut warning] auto_avatar_snug_field is enabled in the "
+                    "YAML, but this direct world-point filter does not rebuild "
+                    "the SDF snug scale field. The geometric adaptation mapping "
+                    "is still shared; only that SDF-specific correction is absent."
+                )
+
+            mc_path = self._resolve_path_spec(
+                str(mc_mesh_spec),
+                root_path=root_path,
+                item_index=item_index,
+                mode=mode,
+                accessory_key=accessory_key,
+                target_key=target_key,
+            )
+            mesh = trimesh.load(mc_path, process=False, force="mesh")
+            if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
+                raise ValueError(f"MC input is empty or not a triangle mesh: {mc_path}")
+
+            reference_points = None
+            reference_path = None
+            if reference_spec:
+                reference_path = self._resolve_path_spec(
+                    str(reference_spec),
+                    root_path=root_path,
+                    item_index=item_index,
+                    mode=mode,
+                    accessory_key=accessory_key,
+                    target_key=target_key,
+                )
+                reference_mesh = trimesh.load(
+                    reference_path, process=False, force="mesh"
+                )
+                reference_points = self._large_reference_boundary_points(
+                    reference_mesh,
+                    min_edges=int(config.get("udf_cut_reference_min_edges", 20)),
+                    min_span_world=float(
+                        config.get("udf_cut_reference_min_span_world", 0.05)
+                    ),
+                )
+                print(
+                    "[udf cut reference]",
+                    f"path={reference_path}",
+                    f"kept_boundary_points={len(reference_points)}",
+                )
+
+            print(
+                f"[udf cut {item_index + 1}/{len(adaptation_items)}]",
+                f"mc={mc_path}",
+                f"target={target_key}",
+                f"accessory={accessory_key}",
+                "world_space_direct_query=True",
+            )
+
+            scores, usable, sample_values, sample_valid = self._query_face_scores(
+                mesh,
+                avatar_curve=avatar_curve,
+                adapt_arg=adapt_arg,
+                accessory_key=accessory_key,
+                model_batch_size=model_batch_size,
+                query_batch_size=query_batch_size,
+                far_world=far_world,
+            )
+
+            finite_scores = scores[np.isfinite(scores)]
+            score_percentiles = {}
+            if len(finite_scores):
+                for q in (0, 1, 5, 10, 25, 50, 75, 90, 95, 99, 100):
+                    score_percentiles[str(q)] = float(np.percentile(finite_scores, q))
+
+            seed_world = float(config.get("udf_cut_seed_world", 0.02))
+            grow_world = float(config.get("udf_cut_grow_world", 0.01))
+            preserve_existing_boundaries = bool(
+                config.get("udf_cut_preserve_existing_boundaries", True)
+            )
+            reference_max_distance = config.get(
+                "udf_cut_reference_max_distance_world", None
+            )
+            if reference_max_distance is not None:
+                reference_max_distance = float(reference_max_distance)
+
+            kept, removed, seed_mask, grow_mask, decisions = self._cut_mesh(
+                mesh,
+                face_scores=scores,
+                usable_faces=usable,
+                seed_world=seed_world,
+                grow_world=grow_world,
+                min_faces=int(config.get("udf_cut_min_faces", 8)),
+                min_seed_faces=int(config.get("udf_cut_min_seed_faces", 2)),
+                min_seed_fraction=float(
+                    config.get("udf_cut_min_seed_fraction", 0.05)
+                ),
+                min_area_world2=float(
+                    config.get("udf_cut_min_area_world2", 0.0)
+                ),
+                preserve_existing_boundaries=preserve_existing_boundaries,
+                reference_points=reference_points,
+                reference_max_distance_world=reference_max_distance,
+            )
+
+            safe_key = self._safe_label(accessory_key)
+            prefix = f"{item_index}_{mode}_{safe_key}"
+            before_path = op.join(output_folder, f"{prefix}_mc_before_udf_cut.ply")
+            seed_path = op.join(output_folder, f"{prefix}_udf_cut_seed_faces.ply")
+            grow_path = op.join(output_folder, f"{prefix}_udf_cut_grow_faces.ply")
+            removed_path = op.join(output_folder, f"{prefix}_udf_cut_removed_caps.ply")
+            after_path = op.join(output_folder, f"{prefix}_mc_after_udf_cut.ply")
+            npz_path = op.join(output_folder, f"{prefix}_udf_cut_face_scores.npz")
+            report_path = op.join(output_folder, f"{prefix}_udf_cut_report.json")
+
+            mesh.export(before_path)
+            self._mesh_from_face_mask(mesh, seed_mask).export(seed_path)
+            self._mesh_from_face_mask(mesh, grow_mask).export(grow_path)
+            removed.export(removed_path)
+            kept.export(after_path)
+            np.savez_compressed(
+                npz_path,
+                face_scores=scores,
+                usable_faces=usable,
+                sample_values=sample_values,
+                sample_valid=sample_valid,
+                seed_mask=seed_mask,
+                grow_mask=grow_mask,
+            )
+
+            report = {
+                "mc_input": mc_path,
+                "nsdudf_reference": reference_path,
+                "target_key": target_key,
+                "accessory_key": accessory_key,
+                "parameters": {
+                    "seed_world": seed_world,
+                    "grow_world": grow_world,
+                    "min_faces": int(config.get("udf_cut_min_faces", 8)),
+                    "min_seed_faces": int(
+                        config.get("udf_cut_min_seed_faces", 2)
+                    ),
+                    "min_seed_fraction": float(
+                        config.get("udf_cut_min_seed_fraction", 0.05)
+                    ),
+                    "min_area_world2": float(
+                        config.get("udf_cut_min_area_world2", 0.0)
+                    ),
+                    "preserve_existing_boundaries": preserve_existing_boundaries,
+                    "reference_max_distance_world": reference_max_distance,
+                },
+                "face_query": {
+                    "faces": int(len(mesh.faces)),
+                    "usable_faces": int(np.sum(usable)),
+                    "seed_faces": int(np.sum(seed_mask)),
+                    "grow_faces": int(np.sum(grow_mask)),
+                    "score_percentiles": score_percentiles,
+                },
+                "before": self._topology_stats(mesh),
+                "removed": self._topology_stats(removed),
+                "after": self._topology_stats(kept),
+                "components": [decision.as_dict() for decision in decisions],
+                "outputs": {
+                    "before": before_path,
+                    "seed_faces": seed_path,
+                    "grow_faces": grow_path,
+                    "removed_caps": removed_path,
+                    "after": after_path,
+                    "face_scores": npz_path,
+                },
+            }
+            with open(report_path, "w", encoding="utf-8") as handle_out:
+                json.dump(report, handle_out, indent=2)
+
+            print(
+                "[udf cut result]",
+                f"usable={int(np.sum(usable))}/{len(mesh.faces)}",
+                f"seed={int(np.sum(seed_mask))}",
+                f"grow={int(np.sum(grow_mask))}",
+                f"removed={len(removed.faces)}",
+                f"before={report['before']}",
+                f"after={report['after']}",
+            )
+            print("[udf cut saved]", after_path)
