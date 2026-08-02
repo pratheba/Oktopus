@@ -33,6 +33,7 @@ from snug_field_io import (
     resolve_shared_snug_field_path,
     snug_field_stats,
 )
+from udf_cut_subtriangle import clip_accepted_udf_components
 
 
 @dataclass
@@ -396,8 +397,42 @@ class AgentUDFCut(AgentUDF):
 
         usable = candidate & np.isfinite(scores)
         scores[~usable] = np.nan
-
         return scores, usable, values, valid
+
+    def _query_vertex_values(
+        self,
+        mesh: trimesh.Trimesh,
+        *,
+        avatar_curve,
+        adapt_arg: dict,
+        accessory_key: str,
+        model_batch_size: int,
+        query_batch_size: int,
+        far_world: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Evaluate the adapted UDF once at every MC vertex."""
+        points = np.asarray(mesh.vertices, dtype=np.float64)
+        values = np.empty(len(points), dtype=np.float64)
+        valid = np.zeros(len(points), dtype=bool)
+
+        query_batch_size = max(1, int(query_batch_size))
+        for start in range(0, len(points), query_batch_size):
+            end = min(start + query_batch_size, len(points))
+            value_chunk, valid_chunk = self._query_adapted_raw_udf(
+                points[start:end],
+                avatar_curve=avatar_curve,
+                adapt_arg=adapt_arg,
+                accessory_key=accessory_key,
+                batch_size=int(model_batch_size),
+                far_world=float(far_world),
+                return_valid=True,
+            )
+            values[start:end] = np.asarray(value_chunk, dtype=np.float64)
+            valid[start:end] = np.asarray(valid_chunk, dtype=bool)
+
+        valid &= np.isfinite(values)
+        values[~valid] = np.nan
+        return values, valid
 
     def _cut_mesh(
         self,
@@ -414,7 +449,14 @@ class AgentUDFCut(AgentUDF):
         preserve_existing_boundaries: bool,
         reference_points: Optional[np.ndarray],
         reference_max_distance_world: Optional[float],
-    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, np.ndarray, np.ndarray, List[_ComponentDecision]]:
+    ) -> Tuple[
+        trimesh.Trimesh,
+        trimesh.Trimesh,
+        np.ndarray,
+        np.ndarray,
+        List[_ComponentDecision],
+        np.ndarray,
+    ]:
         if grow_world > seed_world:
             raise ValueError(
                 f"udf_cut_grow_world ({grow_world}) must be <= "
@@ -509,7 +551,7 @@ class AgentUDFCut(AgentUDF):
 
         removed = self._mesh_from_face_mask(mesh, remove_mask)
         kept = self._mesh_from_face_mask(mesh, ~remove_mask)
-        return kept, removed, seed_mask, grow_mask, decisions
+        return kept, removed, seed_mask, grow_mask, decisions, remove_mask
 
     @torch.no_grad()
     def action_part_adapt_udf_cut(self, arg):
@@ -689,7 +731,14 @@ class AgentUDFCut(AgentUDF):
             if reference_max_distance is not None:
                 reference_max_distance = float(reference_max_distance)
 
-            kept, removed, seed_mask, grow_mask, decisions = self._cut_mesh(
+            (
+                kept,
+                removed,
+                seed_mask,
+                grow_mask,
+                decisions,
+                remove_face_mask,
+            ) = self._cut_mesh(
                 mesh,
                 face_scores=scores,
                 usable_faces=usable,
@@ -707,6 +756,57 @@ class AgentUDFCut(AgentUDF):
                 reference_points=reference_points,
                 reference_max_distance_world=reference_max_distance,
             )
+
+            whole_face_kept = kept.copy()
+            subtriangle_enabled = bool(config.get("udf_cut_subtriangle", False))
+            subtriangle_report = None
+            vertex_values = None
+            vertex_valid = None
+            if subtriangle_enabled and np.any(remove_face_mask):
+                vertex_values, vertex_valid = self._query_vertex_values(
+                    mesh,
+                    avatar_curve=avatar_curve,
+                    adapt_arg=adapt_arg,
+                    accessory_key=accessory_key,
+                    model_batch_size=model_batch_size,
+                    query_batch_size=query_batch_size,
+                    far_world=far_world,
+                )
+                subtriangle_threshold = config.get(
+                    "udf_cut_subtriangle_threshold_world", None
+                )
+                if subtriangle_threshold is None:
+                    subtriangle_threshold = grow_world
+                subtriangle_threshold = float(subtriangle_threshold)
+                kept, removed, subtriangle_report = clip_accepted_udf_components(
+                    mesh,
+                    accepted_face_mask=remove_face_mask,
+                    vertex_values=vertex_values,
+                    vertex_valid=vertex_valid,
+                    centroid_values=sample_values[:, 0],
+                    centroid_valid=sample_valid[:, 0],
+                    threshold_world=subtriangle_threshold,
+                    expansion_rings=int(
+                        config.get("udf_cut_subtriangle_expansion_rings", 1)
+                    ),
+                    epsilon=float(
+                        config.get("udf_cut_subtriangle_epsilon", 1e-10)
+                    ),
+                    min_area_world2=float(
+                        config.get(
+                            "udf_cut_subtriangle_min_area_world2", 1e-14
+                        )
+                    ),
+                )
+                print(
+                    "[udf cut subtriangle]",
+                    f"threshold={subtriangle_threshold}",
+                    f"accepted_faces={subtriangle_report['accepted_faces']}",
+                    f"active_faces={subtriangle_report['active_faces']}",
+                    f"mixed_faces={subtriangle_report['mixed_faces']}",
+                    f"inserted_vertices={subtriangle_report['inserted_vertices']}",
+                    f"unresolved_crossings={subtriangle_report['unresolved_active_boundary_crossings']}",
+                )
 
             kept_raw = kept.copy()
             cleanup_enabled = bool(
@@ -772,6 +872,14 @@ class AgentUDFCut(AgentUDF):
             grow_path = op.join(output_folder, f"{prefix}_udf_cut_grow_faces.ply")
             removed_path = op.join(output_folder, f"{prefix}_udf_cut_removed_caps.ply")
             after_path = op.join(output_folder, f"{prefix}_mc_after_udf_cut.ply")
+            whole_face_after_path = (
+                op.join(
+                    output_folder,
+                    f"{prefix}_mc_after_udf_cut_whole_face.ply",
+                )
+                if subtriangle_enabled
+                else None
+            )
             raw_after_path = (
                 op.join(output_folder, f"{prefix}_mc_after_udf_cut_raw.ply")
                 if cleanup_enabled
@@ -794,6 +902,8 @@ class AgentUDFCut(AgentUDF):
             self._mesh_from_face_mask(mesh, seed_mask).export(seed_path)
             self._mesh_from_face_mask(mesh, grow_mask).export(grow_path)
             removed.export(removed_path)
+            if subtriangle_enabled:
+                whole_face_kept.export(whole_face_after_path)
             if cleanup_enabled:
                 kept_raw.export(raw_after_path)
                 if len(boundary_before_cloud.vertices):
@@ -813,6 +923,17 @@ class AgentUDFCut(AgentUDF):
                 sample_valid=sample_valid,
                 seed_mask=seed_mask,
                 grow_mask=grow_mask,
+                remove_face_mask=remove_face_mask,
+                vertex_values=(
+                    vertex_values
+                    if vertex_values is not None
+                    else np.zeros((0,), dtype=np.float64)
+                ),
+                vertex_valid=(
+                    vertex_valid
+                    if vertex_valid is not None
+                    else np.zeros((0,), dtype=bool)
+                ),
             )
 
             report = {
@@ -836,6 +957,15 @@ class AgentUDFCut(AgentUDF):
                     ),
                     "preserve_existing_boundaries": preserve_existing_boundaries,
                     "reference_max_distance_world": reference_max_distance,
+                    "subtriangle": subtriangle_enabled,
+                    "subtriangle_threshold_world": (
+                        None
+                        if subtriangle_report is None
+                        else subtriangle_report["threshold_world"]
+                    ),
+                    "subtriangle_expansion_rings": int(
+                        config.get("udf_cut_subtriangle_expansion_rings", 1)
+                    ),
                 },
                 "face_query": {
                     "faces": int(len(mesh.faces)),
@@ -846,8 +976,10 @@ class AgentUDFCut(AgentUDF):
                 },
                 "before": self._topology_stats(mesh),
                 "removed": self._topology_stats(removed),
+                "whole_face_after": self._topology_stats(whole_face_kept),
                 "after_raw": self._topology_stats(kept_raw),
                 "after": self._topology_stats(kept),
+                "subtriangle_cut": subtriangle_report,
                 "boundary_cleanup": cleanup_report,
                 "components": [decision.as_dict() for decision in decisions],
                 "outputs": {
@@ -855,6 +987,7 @@ class AgentUDFCut(AgentUDF):
                     "seed_faces": seed_path,
                     "grow_faces": grow_path,
                     "removed_caps": removed_path,
+                    "whole_face_after": whole_face_after_path,
                     "after_raw": raw_after_path,
                     "boundary_before": boundary_before_path,
                     "boundary_after": boundary_after_path,
