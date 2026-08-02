@@ -382,11 +382,21 @@ class AgentUDFCut(AgentUDF):
         valid = valid.reshape(len(faces), 4)
         masked = np.where(valid, values, np.nan)
 
-        with np.errstate(all="ignore"):
-            scores = np.nanmedian(masked, axis=1)
         valid_counts = valid.sum(axis=1)
-        usable = valid[:, 0] & (valid_counts >= 2) & np.isfinite(scores)
+
+        # A face is usable only when its centroid is valid and at least one
+        # additional sample is valid.
+        candidate = valid[:, 0] & (valid_counts >= 2)
+
+        scores = np.full(len(faces), np.nan, dtype=np.float64)
+
+        # Do not pass all-NaN rows to np.nanmedian.
+        if np.any(candidate):
+                scores[candidate] = np.nanmedian(masked[candidate], axis=1)
+
+            usable = candidate & np.isfinite(scores)
         scores[~usable] = np.nan
+
         return scores, usable, values, valid
 
     def _cut_mesh(
