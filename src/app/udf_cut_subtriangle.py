@@ -32,6 +32,15 @@ class SubtriangleCutReport:
     kept_faces: int
     removed_faces: int
     unresolved_active_boundary_crossings: int
+    scalar_smoothing_enabled: bool
+    scalar_smooth_rings: int
+    scalar_smooth_iterations: int
+    scalar_smooth_alpha: float
+    scalar_smooth_vertices: int
+    scalar_smooth_changed_vertices: int
+    scalar_smooth_mean_abs_delta: float
+    scalar_smooth_max_abs_delta: float
+    scalar_smooth_threshold_flips: int
 
     def as_dict(self) -> Dict[str, object]:
         return {
@@ -52,6 +61,23 @@ class SubtriangleCutReport:
             "unresolved_active_boundary_crossings": int(
                 self.unresolved_active_boundary_crossings
             ),
+            "scalar_smoothing_enabled": bool(self.scalar_smoothing_enabled),
+            "scalar_smooth_rings": int(self.scalar_smooth_rings),
+            "scalar_smooth_iterations": int(self.scalar_smooth_iterations),
+            "scalar_smooth_alpha": float(self.scalar_smooth_alpha),
+            "scalar_smooth_vertices": int(self.scalar_smooth_vertices),
+            "scalar_smooth_changed_vertices": int(
+                self.scalar_smooth_changed_vertices
+            ),
+            "scalar_smooth_mean_abs_delta": float(
+                self.scalar_smooth_mean_abs_delta
+            ),
+            "scalar_smooth_max_abs_delta": float(
+                self.scalar_smooth_max_abs_delta
+            ),
+            "scalar_smooth_threshold_flips": int(
+                self.scalar_smooth_threshold_flips
+            ),
         }
 
 
@@ -63,6 +89,130 @@ def _face_adjacency_lists(mesh: trimesh.Trimesh) -> List[List[int]]:
         result[b].append(a)
     return result
 
+
+
+def _expand_face_mask_by_rings(
+    mesh: trimesh.Trimesh,
+    face_mask: np.ndarray,
+    rings: int,
+) -> np.ndarray:
+    """Expand a face mask through face adjacency by a fixed ring count."""
+    expanded = np.asarray(face_mask, dtype=bool).copy()
+    if not np.any(expanded) or int(rings) <= 0:
+        return expanded
+
+    adjacency = _face_adjacency_lists(mesh)
+    frontier = np.flatnonzero(expanded).tolist()
+    for _ in range(int(rings)):
+        next_frontier: List[int] = []
+        for face_id in frontier:
+            for neighbour in adjacency[int(face_id)]:
+                if not expanded[neighbour]:
+                    expanded[neighbour] = True
+                    next_frontier.append(int(neighbour))
+        frontier = next_frontier
+        if not frontier:
+            break
+    return expanded
+
+
+def _vertex_neighbours(faces: np.ndarray, n_vertices: int) -> List[np.ndarray]:
+    """Return one-ring vertex neighbours for a triangle mesh."""
+    neighbours = [set() for _ in range(int(n_vertices))]
+    for a_raw, b_raw, c_raw in np.asarray(faces, dtype=np.int64):
+        a, b, c = int(a_raw), int(b_raw), int(c_raw)
+        neighbours[a].update((b, c))
+        neighbours[b].update((a, c))
+        neighbours[c].update((a, b))
+    return [
+        np.asarray(sorted(items), dtype=np.int64)
+        if items
+        else np.zeros((0,), dtype=np.int64)
+        for items in neighbours
+    ]
+
+
+def _smooth_local_vertex_scalars(
+    mesh: trimesh.Trimesh,
+    accepted_face_mask: np.ndarray,
+    vertex_values: np.ndarray,
+    vertex_valid: np.ndarray,
+    *,
+    threshold_world: float,
+    rings: int,
+    iterations: int,
+    alpha: float,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Graph-Laplacian smooth UDF values only near accepted cut components.
+
+    Geometry and component selection are untouched.  Vertices outside the
+    expanded local face band act as fixed boundary conditions.  Invalid UDF
+    samples remain invalid and are never used as smoothing targets.
+    """
+    values = np.asarray(vertex_values, dtype=np.float64).copy()
+    valid = np.asarray(vertex_valid, dtype=bool).reshape(-1) & np.isfinite(values)
+    iterations = max(0, int(iterations))
+    rings = max(0, int(rings))
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(
+            f"scalar smoothing alpha must be in [0, 1], got {alpha}"
+        )
+
+    face_band = _expand_face_mask_by_rings(
+        mesh, np.asarray(accepted_face_mask, dtype=bool), rings
+    )
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    active_vertices = (
+        np.unique(faces[face_band].reshape(-1))
+        if np.any(face_band)
+        else np.zeros((0,), dtype=np.int64)
+    )
+    active_vertices = active_vertices[valid[active_vertices]]
+
+    original = values.copy()
+    if iterations > 0 and active_vertices.size:
+        neighbours = _vertex_neighbours(faces, len(mesh.vertices))
+        for _ in range(iterations):
+            previous = values.copy()
+            updated = previous.copy()
+            for vertex_id_raw in active_vertices:
+                vertex_id = int(vertex_id_raw)
+                ring = neighbours[vertex_id]
+                if ring.size == 0:
+                    continue
+                ring = ring[valid[ring]]
+                if ring.size < 2:
+                    continue
+                neighbour_mean = float(np.mean(previous[ring]))
+                updated[vertex_id] = (
+                    (1.0 - alpha) * previous[vertex_id]
+                    + alpha * neighbour_mean
+                )
+            # UDF values are non-negative.
+            values[active_vertices] = np.maximum(updated[active_vertices], 0.0)
+
+    delta = np.abs(values - original)
+    active_delta = delta[active_vertices] if active_vertices.size else np.zeros(0)
+    before_side = original[active_vertices] >= float(threshold_world)
+    after_side = values[active_vertices] >= float(threshold_world)
+    report = {
+        "enabled": bool(iterations > 0 and active_vertices.size > 0),
+        "rings": int(rings),
+        "iterations": int(iterations),
+        "alpha": float(alpha),
+        "active_faces": int(np.sum(face_band)),
+        "active_vertices": int(active_vertices.size),
+        "changed_vertices": int(np.sum(active_delta > 1e-12)),
+        "mean_abs_delta": (
+            float(np.mean(active_delta)) if active_delta.size else 0.0
+        ),
+        "max_abs_delta": (
+            float(np.max(active_delta)) if active_delta.size else 0.0
+        ),
+        "threshold_flips": int(np.sum(before_side != after_side)),
+    }
+    return values, report
 
 def _edge_incident_faces(faces: np.ndarray) -> Dict[Tuple[int, int], List[int]]:
     result: Dict[Tuple[int, int], List[int]] = {}
@@ -210,6 +360,9 @@ def clip_accepted_udf_components(
     expansion_rings: int = 1,
     epsilon: float = 1e-10,
     min_area_world2: float = 1e-14,
+    scalar_smooth_rings: int = 0,
+    scalar_smooth_iterations: int = 0,
+    scalar_smooth_alpha: float = 0.35,
 ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object]]:
     """Clip only accepted cap components at a continuous UDF threshold.
 
@@ -235,6 +388,17 @@ def clip_accepted_udf_components(
     if len(centroid_values) != len(faces) or len(centroid_valid) != len(faces):
         raise ValueError("centroid UDF arrays do not match mesh faces")
 
+    vertex_values, scalar_smooth_report = _smooth_local_vertex_scalars(
+        mesh,
+        accepted,
+        vertex_values,
+        vertex_valid,
+        threshold_world=float(threshold_world),
+        rings=int(scalar_smooth_rings),
+        iterations=int(scalar_smooth_iterations),
+        alpha=float(scalar_smooth_alpha),
+    )
+
     if not np.any(accepted):
         empty = trimesh.Trimesh(
             vertices=np.zeros((0, 3), dtype=np.float64),
@@ -257,6 +421,29 @@ def clip_accepted_udf_components(
             kept_faces=int(len(faces)),
             removed_faces=0,
             unresolved_active_boundary_crossings=0,
+            scalar_smoothing_enabled=bool(
+                scalar_smooth_report["enabled"]
+            ),
+            scalar_smooth_rings=int(scalar_smooth_report["rings"]),
+            scalar_smooth_iterations=int(
+                scalar_smooth_report["iterations"]
+            ),
+            scalar_smooth_alpha=float(scalar_smooth_report["alpha"]),
+            scalar_smooth_vertices=int(
+                scalar_smooth_report["active_vertices"]
+            ),
+            scalar_smooth_changed_vertices=int(
+                scalar_smooth_report["changed_vertices"]
+            ),
+            scalar_smooth_mean_abs_delta=float(
+                scalar_smooth_report["mean_abs_delta"]
+            ),
+            scalar_smooth_max_abs_delta=float(
+                scalar_smooth_report["max_abs_delta"]
+            ),
+            scalar_smooth_threshold_flips=int(
+                scalar_smooth_report["threshold_flips"]
+            ),
         )
         return mesh.copy(), empty, report.as_dict()
 
@@ -298,17 +485,24 @@ def clip_accepted_udf_components(
         point = vertices[tri].mean(axis=0)
         node_id = len(output_vertices)
         output_vertices.append(np.asarray(point, dtype=np.float64))
-        value = float(centroid_values[face_id])
-        valid = bool(centroid_valid[face_id] and np.isfinite(value))
-        if not valid:
-            local_values = vertex_values[tri]
-            local_valid = vertex_valid[tri] & np.isfinite(local_values)
-            if np.any(local_valid):
-                value = float(np.mean(local_values[local_valid]))
-                valid = True
-            else:
-                value = threshold - max(epsilon, 1e-12)
-                valid = False
+        local_values = vertex_values[tri]
+        local_valid = vertex_valid[tri] & np.isfinite(local_values)
+        if bool(scalar_smooth_report["enabled"]) and np.any(local_valid):
+            # Keep the piecewise-linear scalar field consistent with the
+            # smoothed vertex samples instead of reintroducing a noisy raw
+            # centroid query inside each triangle.
+            value = float(np.mean(local_values[local_valid]))
+            valid = True
+        else:
+            value = float(centroid_values[face_id])
+            valid = bool(centroid_valid[face_id] and np.isfinite(value))
+            if not valid:
+                if np.any(local_valid):
+                    value = float(np.mean(local_values[local_valid]))
+                    valid = True
+                else:
+                    value = threshold - max(epsilon, 1e-12)
+                    valid = False
         scalar_value[node_id] = value
         scalar_valid[node_id] = valid
         centroid_node[face_id] = node_id
@@ -463,5 +657,22 @@ def clip_accepted_udf_components(
         kept_faces=int(len(kept_mesh.faces)),
         removed_faces=int(len(removed_mesh.faces)),
         unresolved_active_boundary_crossings=int(unresolved),
+        scalar_smoothing_enabled=bool(scalar_smooth_report["enabled"]),
+        scalar_smooth_rings=int(scalar_smooth_report["rings"]),
+        scalar_smooth_iterations=int(scalar_smooth_report["iterations"]),
+        scalar_smooth_alpha=float(scalar_smooth_report["alpha"]),
+        scalar_smooth_vertices=int(scalar_smooth_report["active_vertices"]),
+        scalar_smooth_changed_vertices=int(
+            scalar_smooth_report["changed_vertices"]
+        ),
+        scalar_smooth_mean_abs_delta=float(
+            scalar_smooth_report["mean_abs_delta"]
+        ),
+        scalar_smooth_max_abs_delta=float(
+            scalar_smooth_report["max_abs_delta"]
+        ),
+        scalar_smooth_threshold_flips=int(
+            scalar_smooth_report["threshold_flips"]
+        ),
     )
     return kept_mesh, removed_mesh, report.as_dict()

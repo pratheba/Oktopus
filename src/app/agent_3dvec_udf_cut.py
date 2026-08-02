@@ -778,6 +778,11 @@ class AgentUDFCut(AgentUDF):
                 if subtriangle_threshold is None:
                     subtriangle_threshold = grow_world
                 subtriangle_threshold = float(subtriangle_threshold)
+                scalar_smooth_enabled = bool(
+                    config.get(
+                        "udf_cut_subtriangle_scalar_smooth", False
+                    )
+                )
                 kept, removed, subtriangle_report = clip_accepted_udf_components(
                     mesh,
                     accepted_face_mask=remove_face_mask,
@@ -797,6 +802,30 @@ class AgentUDFCut(AgentUDF):
                             "udf_cut_subtriangle_min_area_world2", 1e-14
                         )
                     ),
+                    scalar_smooth_rings=(
+                        int(
+                            config.get(
+                                "udf_cut_subtriangle_scalar_smooth_rings", 2
+                            )
+                        )
+                        if scalar_smooth_enabled
+                        else 0
+                    ),
+                    scalar_smooth_iterations=(
+                        int(
+                            config.get(
+                                "udf_cut_subtriangle_scalar_smooth_iterations",
+                                3,
+                            )
+                        )
+                        if scalar_smooth_enabled
+                        else 0
+                    ),
+                    scalar_smooth_alpha=float(
+                        config.get(
+                            "udf_cut_subtriangle_scalar_smooth_alpha", 0.35
+                        )
+                    ),
                 )
                 print(
                     "[udf cut subtriangle]",
@@ -806,6 +835,10 @@ class AgentUDFCut(AgentUDF):
                     f"mixed_faces={subtriangle_report['mixed_faces']}",
                     f"inserted_vertices={subtriangle_report['inserted_vertices']}",
                     f"unresolved_crossings={subtriangle_report['unresolved_active_boundary_crossings']}",
+                    f"scalar_smooth={subtriangle_report['scalar_smoothing_enabled']}",
+                    f"scalar_changed={subtriangle_report['scalar_smooth_changed_vertices']}",
+                    f"scalar_flips={subtriangle_report['scalar_smooth_threshold_flips']}",
+                    f"scalar_max_delta={subtriangle_report['scalar_smooth_max_abs_delta']:.6g}",
                 )
 
             kept_raw = kept.copy()
@@ -965,6 +998,26 @@ class AgentUDFCut(AgentUDF):
                     ),
                     "subtriangle_expansion_rings": int(
                         config.get("udf_cut_subtriangle_expansion_rings", 1)
+                    ),
+                    "subtriangle_scalar_smooth": bool(
+                        config.get(
+                            "udf_cut_subtriangle_scalar_smooth", False
+                        )
+                    ),
+                    "subtriangle_scalar_smooth_rings": int(
+                        config.get(
+                            "udf_cut_subtriangle_scalar_smooth_rings", 2
+                        )
+                    ),
+                    "subtriangle_scalar_smooth_iterations": int(
+                        config.get(
+                            "udf_cut_subtriangle_scalar_smooth_iterations", 3
+                        )
+                    ),
+                    "subtriangle_scalar_smooth_alpha": float(
+                        config.get(
+                            "udf_cut_subtriangle_scalar_smooth_alpha", 0.35
+                        )
                     ),
                 },
                 "face_query": {
