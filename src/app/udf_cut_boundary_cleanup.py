@@ -19,6 +19,8 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import trimesh
 
+from udf_cut_boundary_strip import rebuild_boundary_strips
+
 
 @dataclass(frozen=True)
 class BoundaryLoop:
@@ -619,6 +621,16 @@ def cleanup_cut_boundary(
     fill_max_edges: int = 24,
     fill_max_perimeter_world: float = 0.08,
     fill_max_span_world: float = 0.04,
+    strip_rebuild_enabled: bool = False,
+    strip_rebuild_min_edges: int = 100,
+    strip_rebuild_min_perimeter_world: float = 0.15,
+    strip_rebuild_max_loops: int = 8,
+    strip_rebuild_min_rings: int = 2,
+    strip_rebuild_max_rings: int = 6,
+    strip_rebuild_spline_smoothing_fraction: float = 0.35,
+    strip_rebuild_target_edge_scale: float = 1.0,
+    strip_rebuild_max_spline_displacement_fraction: float = 1.5,
+    strip_rebuild_min_area_world2: float = 1e-14,
     spline_enabled: bool = False,
     spline_smoothing_fraction: float = 0.35,
     spline_blend: float = 1.0,
@@ -649,9 +661,30 @@ def cleanup_cut_boundary(
 
     after_fill_loops, after_fill_invalid = boundary_loops(work)
 
+    strip_reports: List[Dict[str, object]] = []
+    if bool(strip_rebuild_enabled):
+        work, strip_reports = rebuild_boundary_strips(
+            work,
+            [loop.vertices for loop in after_fill_loops],
+            min_edges=int(strip_rebuild_min_edges),
+            min_perimeter_world=float(strip_rebuild_min_perimeter_world),
+            max_loops=int(strip_rebuild_max_loops),
+            min_rings=int(strip_rebuild_min_rings),
+            max_rings=int(strip_rebuild_max_rings),
+            spline_smoothing_fraction=float(
+                strip_rebuild_spline_smoothing_fraction
+            ),
+            target_edge_scale=float(strip_rebuild_target_edge_scale),
+            max_spline_displacement_fraction=float(
+                strip_rebuild_max_spline_displacement_fraction
+            ),
+            min_area_world2=float(strip_rebuild_min_area_world2),
+        )
+    after_strip_loops, after_strip_invalid = boundary_loops(work)
+
     spline_reports: List[Dict[str, object]] = []
     spline_invalid: List[Dict[str, object]] = []
-    if bool(spline_enabled):
+    if bool(spline_enabled) and not bool(strip_rebuild_enabled):
         work, spline_reports, spline_invalid = spline_smooth_boundary_loops(
             work,
             smoothing_fraction=float(spline_smoothing_fraction),
@@ -681,6 +714,26 @@ def cleanup_cut_boundary(
             "fill_max_edges": int(fill_max_edges),
             "fill_max_perimeter_world": float(fill_max_perimeter_world),
             "fill_max_span_world": float(fill_max_span_world),
+            "strip_rebuild_enabled": bool(strip_rebuild_enabled),
+            "strip_rebuild_min_edges": int(strip_rebuild_min_edges),
+            "strip_rebuild_min_perimeter_world": float(
+                strip_rebuild_min_perimeter_world
+            ),
+            "strip_rebuild_max_loops": int(strip_rebuild_max_loops),
+            "strip_rebuild_min_rings": int(strip_rebuild_min_rings),
+            "strip_rebuild_max_rings": int(strip_rebuild_max_rings),
+            "strip_rebuild_spline_smoothing_fraction": float(
+                strip_rebuild_spline_smoothing_fraction
+            ),
+            "strip_rebuild_target_edge_scale": float(
+                strip_rebuild_target_edge_scale
+            ),
+            "strip_rebuild_max_spline_displacement_fraction": float(
+                strip_rebuild_max_spline_displacement_fraction
+            ),
+            "strip_rebuild_min_area_world2": float(
+                strip_rebuild_min_area_world2
+            ),
             "spline_enabled": bool(spline_enabled),
             "spline_smoothing_fraction": float(spline_smoothing_fraction),
             "spline_blend": float(spline_blend),
@@ -702,6 +755,14 @@ def cleanup_cut_boundary(
         "invalid_boundary_during_fill": fill_invalid,
         "boundary_after_fill": [loop.as_dict() for loop in after_fill_loops],
         "invalid_boundary_after_fill": after_fill_invalid,
+        "strip_rebuild_loops": strip_reports,
+        "boundary_after_strip_rebuild": [
+            loop.as_dict() for loop in after_strip_loops
+        ],
+        "invalid_boundary_after_strip_rebuild": after_strip_invalid,
+        "spline_skipped_due_to_strip_rebuild": bool(
+            spline_enabled and strip_rebuild_enabled
+        ),
         "spline_loops": spline_reports,
         "invalid_boundary_during_spline": spline_invalid,
         "boundary_after_spline": [

@@ -866,6 +866,49 @@ class AgentUDFCut(AgentUDF):
                     fill_max_span_world=float(
                         config.get("udf_cut_fill_hole_max_span_world", 0.04)
                     ),
+                    strip_rebuild_enabled=bool(
+                        config.get("udf_cut_boundary_strip_rebuild", False)
+                    ),
+                    strip_rebuild_min_edges=int(
+                        config.get("udf_cut_boundary_strip_min_edges", 100)
+                    ),
+                    strip_rebuild_min_perimeter_world=float(
+                        config.get(
+                            "udf_cut_boundary_strip_min_perimeter_world",
+                            0.15,
+                        )
+                    ),
+                    strip_rebuild_max_loops=int(
+                        config.get("udf_cut_boundary_strip_max_loops", 8)
+                    ),
+                    strip_rebuild_min_rings=int(
+                        config.get("udf_cut_boundary_strip_min_rings", 2)
+                    ),
+                    strip_rebuild_max_rings=int(
+                        config.get("udf_cut_boundary_strip_max_rings", 6)
+                    ),
+                    strip_rebuild_spline_smoothing_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_strip_spline_smoothing_fraction",
+                            0.35,
+                        )
+                    ),
+                    strip_rebuild_target_edge_scale=float(
+                        config.get(
+                            "udf_cut_boundary_strip_target_edge_scale", 1.0
+                        )
+                    ),
+                    strip_rebuild_max_spline_displacement_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_strip_max_spline_displacement_fraction",
+                            1.5,
+                        )
+                    ),
+                    strip_rebuild_min_area_world2=float(
+                        config.get(
+                            "udf_cut_boundary_strip_min_area_world2", 1e-14
+                        )
+                    ),
                     spline_enabled=bool(
                         config.get("udf_cut_boundary_spline", False)
                     ),
@@ -930,6 +973,7 @@ class AgentUDFCut(AgentUDF):
                 print(
                     "[udf cut boundary cleanup]",
                     f"filled={sum(1 for item in cleanup_report['filled_loops'] if item.get('filled'))}",
+                    f"strip_rebuilt={sum(1 for item in cleanup_report['strip_rebuild_loops'] if item.get('accepted'))}",
                     f"splined={sum(1 for item in cleanup_report['spline_loops'] if item.get('accepted'))}",
                     f"smoothed={len(cleanup_report['smoothed_loops'])}",
                     f"boundary_loops_before={len(cleanup_report['boundary_before'])}",
