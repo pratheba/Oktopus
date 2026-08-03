@@ -382,6 +382,236 @@ def smooth_large_boundary_loops(
     return out, reports, invalid
 
 
+
+def _incident_face_ids(faces: np.ndarray, vertex_ids: np.ndarray) -> np.ndarray:
+    """Faces touching any vertex in ``vertex_ids``."""
+    ids = np.asarray(vertex_ids, dtype=np.int64).reshape(-1)
+    if ids.size == 0:
+        return np.zeros((0,), dtype=np.int64)
+    mask = np.isin(np.asarray(faces, dtype=np.int64), ids).any(axis=1)
+    return np.flatnonzero(mask).astype(np.int64, copy=False)
+
+
+def _periodic_spline_targets(
+    points: np.ndarray,
+    *,
+    smoothing_fraction: float,
+) -> Tuple[np.ndarray, float]:
+    """Fit a periodic cubic spline and sample it uniformly by arclength.
+
+    ``smoothing_fraction`` is dimensionless.  The scipy smoothing budget is
+    scaled by the loop median edge length, so the same value behaves similarly
+    at 128 and 256 resolution.
+    """
+    from scipy.interpolate import splprep, splev
+
+    points = np.asarray(points, dtype=np.float64)
+    n = int(len(points))
+    if n < 4:
+        return points.copy(), 0.0
+
+    closed = np.vstack([points, points[0]])
+    seg = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+    perimeter = float(np.sum(seg))
+    positive = seg[seg > 1e-15]
+    median_edge = float(np.median(positive)) if positive.size else 0.0
+    if perimeter <= 1e-15 or median_edge <= 1e-15:
+        return points.copy(), median_edge
+
+    u = np.concatenate([[0.0], np.cumsum(seg)]) / perimeter
+    smooth_world = max(0.0, float(smoothing_fraction)) * median_edge
+    smoothing_budget = float(len(closed)) * smooth_world * smooth_world
+    degree = min(3, n - 1)
+
+    tck, _ = splprep(
+        closed.T,
+        u=u,
+        s=smoothing_budget,
+        per=True,
+        k=degree,
+    )
+
+    dense_count = max(256, 12 * n)
+    dense_u = np.linspace(0.0, 1.0, dense_count, endpoint=False)
+    dense = np.stack(splev(dense_u, tck), axis=1)
+    dense_closed = np.vstack([dense, dense[0]])
+    dense_seg = np.linalg.norm(np.diff(dense_closed, axis=0), axis=1)
+    dense_cum = np.concatenate([[0.0], np.cumsum(dense_seg)])
+    dense_total = float(dense_cum[-1])
+    if dense_total <= 1e-15:
+        return points.copy(), median_edge
+
+    dense_u_closed = np.concatenate([dense_u, [1.0]])
+    target_arc = np.linspace(0.0, dense_total, n, endpoint=False)
+    target_u = np.interp(target_arc, dense_cum, dense_u_closed)
+    targets = np.stack(splev(target_u, tck), axis=1)
+
+    # Prevent a global translation of the opening.
+    targets += points.mean(axis=0, keepdims=True) - targets.mean(
+        axis=0, keepdims=True
+    )
+    return targets, median_edge
+
+
+def spline_smooth_boundary_loops(
+    mesh: trimesh.Trimesh,
+    *,
+    smoothing_fraction: float,
+    blend: float,
+    min_edges: int,
+    max_total_fraction: float,
+    min_area_ratio: float,
+    min_normal_dot: float,
+    min_backtrack_scale: float,
+) -> Tuple[trimesh.Trimesh, List[Dict[str, object]], List[Dict[str, object]]]:
+    """Spline-fair only large closed boundary loops.
+
+    The vertex count and face connectivity are unchanged.  Each loop is fit by
+    a periodic cubic B-spline, sampled uniformly by arclength, and moved only
+    in the local tangent plane.  A local triangle-quality guard backtracks the
+    move if adjacent faces would collapse or flip.
+    """
+    loops, invalid = boundary_loops(mesh)
+    selected = [loop for loop in loops if loop.edge_count >= int(min_edges)]
+    if not selected:
+        return mesh.copy(), [], invalid
+
+    blend = float(np.clip(float(blend), 0.0, 1.0))
+    max_total_fraction = max(0.0, float(max_total_fraction))
+    min_area_ratio = max(0.0, float(min_area_ratio))
+    min_normal_dot = float(np.clip(float(min_normal_dot), -1.0, 1.0))
+    min_backtrack_scale = float(
+        np.clip(float(min_backtrack_scale), 0.0, 1.0)
+    )
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64).copy()
+    faces = np.asarray(mesh.faces, dtype=np.int64).copy()
+    reports: List[Dict[str, object]] = []
+
+    for loop in selected:
+        ids = np.asarray(loop.vertices, dtype=np.int64)
+        current = vertices[ids].copy()
+        try:
+            targets, median_edge = _periodic_spline_targets(
+                current,
+                smoothing_fraction=float(smoothing_fraction),
+            )
+        except Exception as exc:
+            reports.append(
+                {
+                    **loop.as_dict(),
+                    "accepted": False,
+                    "reason": f"spline_fit_failed: {exc}",
+                }
+            )
+            continue
+
+        if median_edge <= 1e-15:
+            reports.append(
+                {
+                    **loop.as_dict(),
+                    "accepted": False,
+                    "reason": "zero_median_edge_length",
+                }
+            )
+            continue
+
+        normals = _area_weighted_vertex_normals(vertices, faces)[ids]
+        displacement = targets - current
+        displacement -= (
+            np.sum(displacement * normals, axis=1, keepdims=True) * normals
+        )
+        displacement -= displacement.mean(axis=0, keepdims=True)
+        displacement -= (
+            np.sum(displacement * normals, axis=1, keepdims=True) * normals
+        )
+        displacement *= blend
+
+        total_limit = max_total_fraction * median_edge
+        if total_limit > 0.0:
+            lengths = np.linalg.norm(displacement, axis=1)
+            too_large = lengths > total_limit
+            if np.any(too_large):
+                displacement[too_large] *= (
+                    total_limit / (lengths[too_large, None] + 1e-15)
+                )
+
+        incident = _incident_face_ids(faces, ids)
+        if incident.size == 0:
+            reports.append(
+                {
+                    **loop.as_dict(),
+                    "accepted": False,
+                    "reason": "no_incident_faces",
+                }
+            )
+            continue
+
+        tri0 = vertices[faces[incident]]
+        cross0 = np.cross(tri0[:, 1] - tri0[:, 0], tri0[:, 2] - tri0[:, 0])
+        area0 = np.linalg.norm(cross0, axis=1)
+        normal0 = np.zeros_like(cross0)
+        valid0 = area0 > 1e-15
+        normal0[valid0] = cross0[valid0] / area0[valid0, None]
+
+        accepted_scale = 0.0
+        accepted_area_ratio = 0.0
+        accepted_normal_dot = -1.0
+        scale = 1.0
+        while scale + 1e-15 >= min_backtrack_scale:
+            candidate_vertices = vertices.copy()
+            candidate_vertices[ids] = current + scale * displacement
+            tri1 = candidate_vertices[faces[incident]]
+            cross1 = np.cross(
+                tri1[:, 1] - tri1[:, 0], tri1[:, 2] - tri1[:, 0]
+            )
+            area1 = np.linalg.norm(cross1, axis=1)
+            ratio = area1 / (area0 + 1e-15)
+            normal1 = np.zeros_like(cross1)
+            valid1 = area1 > 1e-15
+            normal1[valid1] = cross1[valid1] / area1[valid1, None]
+            dots = np.sum(normal0 * normal1, axis=1)
+
+            area_ratio_min = float(np.min(ratio)) if ratio.size else 0.0
+            normal_dot_min = float(np.min(dots)) if dots.size else -1.0
+            if (
+                np.all(valid1)
+                and area_ratio_min >= min_area_ratio
+                and normal_dot_min >= min_normal_dot
+            ):
+                accepted_scale = float(scale)
+                accepted_area_ratio = area_ratio_min
+                accepted_normal_dot = normal_dot_min
+                vertices = candidate_vertices
+                break
+            scale *= 0.5
+
+        final_displacement = np.linalg.norm(
+            vertices[ids] - current, axis=1
+        )
+        reports.append(
+            {
+                **loop.as_dict(),
+                "accepted": bool(accepted_scale > 0.0),
+                "reason": (
+                    "accepted" if accepted_scale > 0.0 else "quality_guard_rejected"
+                ),
+                "smoothing_fraction": float(smoothing_fraction),
+                "blend": float(blend),
+                "median_edge_length": float(median_edge),
+                "accepted_scale": float(accepted_scale),
+                "area_ratio_min": float(accepted_area_ratio),
+                "normal_dot_min": float(accepted_normal_dot),
+                "displacement_min": float(np.min(final_displacement)),
+                "displacement_mean": float(np.mean(final_displacement)),
+                "displacement_max": float(np.max(final_displacement)),
+                "affected_faces": int(incident.size),
+            }
+        )
+
+    out = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    return out, reports, invalid
+
 def cleanup_cut_boundary(
     mesh: trimesh.Trimesh,
     *,
@@ -389,6 +619,14 @@ def cleanup_cut_boundary(
     fill_max_edges: int = 24,
     fill_max_perimeter_world: float = 0.08,
     fill_max_span_world: float = 0.04,
+    spline_enabled: bool = False,
+    spline_smoothing_fraction: float = 0.35,
+    spline_blend: float = 1.0,
+    spline_min_edges: int = 20,
+    spline_max_total_fraction: float = 1.0,
+    spline_min_area_ratio: float = 0.10,
+    spline_min_normal_dot: float = 0.0,
+    spline_min_backtrack_scale: float = 0.0625,
     smooth_iterations: int = 8,
     smooth_lambda: float = 0.45,
     smooth_mu: float = -0.47,
@@ -410,6 +648,22 @@ def cleanup_cut_boundary(
         )
 
     after_fill_loops, after_fill_invalid = boundary_loops(work)
+
+    spline_reports: List[Dict[str, object]] = []
+    spline_invalid: List[Dict[str, object]] = []
+    if bool(spline_enabled):
+        work, spline_reports, spline_invalid = spline_smooth_boundary_loops(
+            work,
+            smoothing_fraction=float(spline_smoothing_fraction),
+            blend=float(spline_blend),
+            min_edges=int(spline_min_edges),
+            max_total_fraction=float(spline_max_total_fraction),
+            min_area_ratio=float(spline_min_area_ratio),
+            min_normal_dot=float(spline_min_normal_dot),
+            min_backtrack_scale=float(spline_min_backtrack_scale),
+        )
+    after_spline_loops, after_spline_invalid = boundary_loops(work)
+
     work, smoothed, smooth_invalid = smooth_large_boundary_loops(
         work,
         iterations=int(smooth_iterations),
@@ -427,6 +681,14 @@ def cleanup_cut_boundary(
             "fill_max_edges": int(fill_max_edges),
             "fill_max_perimeter_world": float(fill_max_perimeter_world),
             "fill_max_span_world": float(fill_max_span_world),
+            "spline_enabled": bool(spline_enabled),
+            "spline_smoothing_fraction": float(spline_smoothing_fraction),
+            "spline_blend": float(spline_blend),
+            "spline_min_edges": int(spline_min_edges),
+            "spline_max_total_fraction": float(spline_max_total_fraction),
+            "spline_min_area_ratio": float(spline_min_area_ratio),
+            "spline_min_normal_dot": float(spline_min_normal_dot),
+            "spline_min_backtrack_scale": float(spline_min_backtrack_scale),
             "smooth_iterations": int(smooth_iterations),
             "smooth_lambda": float(smooth_lambda),
             "smooth_mu": float(smooth_mu),
@@ -440,6 +702,12 @@ def cleanup_cut_boundary(
         "invalid_boundary_during_fill": fill_invalid,
         "boundary_after_fill": [loop.as_dict() for loop in after_fill_loops],
         "invalid_boundary_after_fill": after_fill_invalid,
+        "spline_loops": spline_reports,
+        "invalid_boundary_during_spline": spline_invalid,
+        "boundary_after_spline": [
+            loop.as_dict() for loop in after_spline_loops
+        ],
+        "invalid_boundary_after_spline": after_spline_invalid,
         "smoothed_loops": smoothed,
         "invalid_boundary_during_smoothing": smooth_invalid,
         "boundary_after": [loop.as_dict() for loop in after_loops],

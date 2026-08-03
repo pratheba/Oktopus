@@ -102,7 +102,27 @@ adaptations:
   udf_cut_subtriangle_scalar_smooth: true
   udf_cut_subtriangle_scalar_smooth_rings: 2
   udf_cut_subtriangle_scalar_smooth_iterations: 3
-  udf_cut_subtriangle_scalar_smooth_alpha: 0.35
+  udf_cut_subtriangle_scalar_smooth_alpha: 0.45
+
+  udf_cut_boundary_spline: true
+
+  # How strongly the periodic spline ignores local zigzags.
+  # # Scaled relative to the boundary's median edge length.
+  udf_cut_boundary_spline_smoothing_fraction: 0.35
+  #
+  # # Blend from the current boundary toward the spline.
+  udf_cut_boundary_spline_blend: 1.0
+  #
+  # # Do not spline tiny accidental loops.
+  udf_cut_boundary_spline_min_edges: 20
+  #
+  # # Maximum movement per vertex, relative to median boundary edge length.
+  udf_cut_boundary_spline_max_total_fraction: 1.0
+  #
+  # # Triangle-quality guards.
+  udf_cut_boundary_spline_min_area_ratio: 0.10
+  udf_cut_boundary_spline_min_normal_dot: 0.0
+  udf_cut_boundary_spline_min_backtrack_scale: 0.0625
 
 
 - name: puffer_body_rigid

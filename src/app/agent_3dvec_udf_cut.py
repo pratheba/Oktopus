@@ -866,6 +866,43 @@ class AgentUDFCut(AgentUDF):
                     fill_max_span_world=float(
                         config.get("udf_cut_fill_hole_max_span_world", 0.04)
                     ),
+                    spline_enabled=bool(
+                        config.get("udf_cut_boundary_spline", False)
+                    ),
+                    spline_smoothing_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_spline_smoothing_fraction",
+                            0.35,
+                        )
+                    ),
+                    spline_blend=float(
+                        config.get("udf_cut_boundary_spline_blend", 1.0)
+                    ),
+                    spline_min_edges=int(
+                        config.get("udf_cut_boundary_spline_min_edges", 20)
+                    ),
+                    spline_max_total_fraction=float(
+                        config.get(
+                            "udf_cut_boundary_spline_max_total_fraction",
+                            1.0,
+                        )
+                    ),
+                    spline_min_area_ratio=float(
+                        config.get(
+                            "udf_cut_boundary_spline_min_area_ratio", 0.10
+                        )
+                    ),
+                    spline_min_normal_dot=float(
+                        config.get(
+                            "udf_cut_boundary_spline_min_normal_dot", 0.0
+                        )
+                    ),
+                    spline_min_backtrack_scale=float(
+                        config.get(
+                            "udf_cut_boundary_spline_min_backtrack_scale",
+                            0.0625,
+                        )
+                    ),
                     smooth_iterations=int(
                         config.get("udf_cut_boundary_smooth_iterations", 8)
                     ),
@@ -893,6 +930,7 @@ class AgentUDFCut(AgentUDF):
                 print(
                     "[udf cut boundary cleanup]",
                     f"filled={sum(1 for item in cleanup_report['filled_loops'] if item.get('filled'))}",
+                    f"splined={sum(1 for item in cleanup_report['spline_loops'] if item.get('accepted'))}",
                     f"smoothed={len(cleanup_report['smoothed_loops'])}",
                     f"boundary_loops_before={len(cleanup_report['boundary_before'])}",
                     f"boundary_loops_after={len(cleanup_report['boundary_after'])}",
