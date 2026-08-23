@@ -34,6 +34,7 @@ from snug_field_io import (
     snug_field_stats,
 )
 from udf_cut_subtriangle import clip_accepted_udf_components
+from udf_cut_combined_transfer import transfer_udf_cut_to_combined_mesh
 
 
 @dataclass
@@ -553,6 +554,92 @@ class AgentUDFCut(AgentUDF):
         kept = self._mesh_from_face_mask(mesh, ~remove_mask)
         return kept, removed, seed_mask, grow_mask, decisions, remove_mask
 
+    @staticmethod
+    def _boundary_cleanup_kwargs(config: dict) -> Dict[str, object]:
+        return {
+            "fill_small_holes": bool(config.get("udf_cut_fill_small_holes", True)),
+            "fill_max_edges": int(config.get("udf_cut_fill_hole_max_edges", 24)),
+            "fill_max_perimeter_world": float(
+                config.get("udf_cut_fill_hole_max_perimeter_world", 0.08)
+            ),
+            "fill_max_span_world": float(
+                config.get("udf_cut_fill_hole_max_span_world", 0.04)
+            ),
+            "strip_rebuild_enabled": bool(
+                config.get("udf_cut_boundary_strip_rebuild", False)
+            ),
+            "strip_rebuild_min_edges": int(
+                config.get("udf_cut_boundary_strip_min_edges", 100)
+            ),
+            "strip_rebuild_min_perimeter_world": float(
+                config.get("udf_cut_boundary_strip_min_perimeter_world", 0.15)
+            ),
+            "strip_rebuild_max_loops": int(
+                config.get("udf_cut_boundary_strip_max_loops", 8)
+            ),
+            "strip_rebuild_min_rings": int(
+                config.get("udf_cut_boundary_strip_min_rings", 2)
+            ),
+            "strip_rebuild_max_rings": int(
+                config.get("udf_cut_boundary_strip_max_rings", 6)
+            ),
+            "strip_rebuild_spline_smoothing_fraction": float(
+                config.get(
+                    "udf_cut_boundary_strip_spline_smoothing_fraction", 0.35
+                )
+            ),
+            "strip_rebuild_target_edge_scale": float(
+                config.get("udf_cut_boundary_strip_target_edge_scale", 1.0)
+            ),
+            "strip_rebuild_max_spline_displacement_fraction": float(
+                config.get(
+                    "udf_cut_boundary_strip_max_spline_displacement_fraction",
+                    1.5,
+                )
+            ),
+            "strip_rebuild_min_area_world2": float(
+                config.get("udf_cut_boundary_strip_min_area_world2", 1e-14)
+            ),
+            "spline_enabled": bool(config.get("udf_cut_boundary_spline", False)),
+            "spline_smoothing_fraction": float(
+                config.get("udf_cut_boundary_spline_smoothing_fraction", 0.35)
+            ),
+            "spline_blend": float(
+                config.get("udf_cut_boundary_spline_blend", 1.0)
+            ),
+            "spline_min_edges": int(
+                config.get("udf_cut_boundary_spline_min_edges", 20)
+            ),
+            "spline_max_total_fraction": float(
+                config.get("udf_cut_boundary_spline_max_total_fraction", 1.0)
+            ),
+            "spline_min_area_ratio": float(
+                config.get("udf_cut_boundary_spline_min_area_ratio", 0.10)
+            ),
+            "spline_min_normal_dot": float(
+                config.get("udf_cut_boundary_spline_min_normal_dot", 0.0)
+            ),
+            "spline_min_backtrack_scale": float(
+                config.get("udf_cut_boundary_spline_min_backtrack_scale", 0.0625)
+            ),
+            "smooth_iterations": int(
+                config.get("udf_cut_boundary_smooth_iterations", 8)
+            ),
+            "smooth_lambda": float(
+                config.get("udf_cut_boundary_smooth_lambda", 0.45)
+            ),
+            "smooth_mu": float(config.get("udf_cut_boundary_smooth_mu", -0.47)),
+            "smooth_min_edges": int(
+                config.get("udf_cut_boundary_smooth_min_edges", 12)
+            ),
+            "smooth_max_step_fraction": float(
+                config.get("udf_cut_boundary_max_step_fraction", 0.25)
+            ),
+            "smooth_max_total_fraction": float(
+                config.get("udf_cut_boundary_max_total_fraction", 0.75)
+            ),
+        }
+
     @torch.no_grad()
     def action_part_adapt_udf_cut(self, arg):
         output_folder = arg["output_folder"]
@@ -594,6 +681,18 @@ class AgentUDFCut(AgentUDF):
         if not mc_mesh_spec:
             raise ValueError("part_adapt_udf_cut requires --mc-mesh / mc_mesh.")
         reference_spec = extraction_config.get("nsdudf_reference_mesh")
+
+        combined_transfer_enabled = bool(
+            extraction_config.get("udf_cut_combined_transfer", False)
+        )
+        combined_mc_spec = extraction_config.get("udf_cut_combined_mc_mesh")
+        if combined_transfer_enabled and not combined_mc_spec:
+            raise ValueError(
+                "udf_cut_combined_transfer=true requires "
+                "udf_cut_combined_mc_mesh at YAML top level."
+            )
+        combined_removed_references: List[trimesh.Trimesh] = []
+        combined_kept_references: List[trimesh.Trimesh] = []
 
         for item_index, item in enumerate(adaptation_items):
             target_key = item["target_key"]
@@ -852,122 +951,7 @@ class AgentUDFCut(AgentUDF):
                 boundary_before_cloud = boundary_point_cloud(kept_raw)
                 kept, cleanup_report = cleanup_cut_boundary(
                     kept_raw,
-                    fill_small_holes=bool(
-                        config.get("udf_cut_fill_small_holes", True)
-                    ),
-                    fill_max_edges=int(
-                        config.get("udf_cut_fill_hole_max_edges", 24)
-                    ),
-                    fill_max_perimeter_world=float(
-                        config.get(
-                            "udf_cut_fill_hole_max_perimeter_world", 0.08
-                        )
-                    ),
-                    fill_max_span_world=float(
-                        config.get("udf_cut_fill_hole_max_span_world", 0.04)
-                    ),
-                    strip_rebuild_enabled=bool(
-                        config.get("udf_cut_boundary_strip_rebuild", False)
-                    ),
-                    strip_rebuild_min_edges=int(
-                        config.get("udf_cut_boundary_strip_min_edges", 100)
-                    ),
-                    strip_rebuild_min_perimeter_world=float(
-                        config.get(
-                            "udf_cut_boundary_strip_min_perimeter_world",
-                            0.15,
-                        )
-                    ),
-                    strip_rebuild_max_loops=int(
-                        config.get("udf_cut_boundary_strip_max_loops", 8)
-                    ),
-                    strip_rebuild_min_rings=int(
-                        config.get("udf_cut_boundary_strip_min_rings", 2)
-                    ),
-                    strip_rebuild_max_rings=int(
-                        config.get("udf_cut_boundary_strip_max_rings", 6)
-                    ),
-                    strip_rebuild_spline_smoothing_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_strip_spline_smoothing_fraction",
-                            0.35,
-                        )
-                    ),
-                    strip_rebuild_target_edge_scale=float(
-                        config.get(
-                            "udf_cut_boundary_strip_target_edge_scale", 1.0
-                        )
-                    ),
-                    strip_rebuild_max_spline_displacement_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_strip_max_spline_displacement_fraction",
-                            1.5,
-                        )
-                    ),
-                    strip_rebuild_min_area_world2=float(
-                        config.get(
-                            "udf_cut_boundary_strip_min_area_world2", 1e-14
-                        )
-                    ),
-                    spline_enabled=bool(
-                        config.get("udf_cut_boundary_spline", False)
-                    ),
-                    spline_smoothing_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_spline_smoothing_fraction",
-                            0.35,
-                        )
-                    ),
-                    spline_blend=float(
-                        config.get("udf_cut_boundary_spline_blend", 1.0)
-                    ),
-                    spline_min_edges=int(
-                        config.get("udf_cut_boundary_spline_min_edges", 20)
-                    ),
-                    spline_max_total_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_spline_max_total_fraction",
-                            1.0,
-                        )
-                    ),
-                    spline_min_area_ratio=float(
-                        config.get(
-                            "udf_cut_boundary_spline_min_area_ratio", 0.10
-                        )
-                    ),
-                    spline_min_normal_dot=float(
-                        config.get(
-                            "udf_cut_boundary_spline_min_normal_dot", 0.0
-                        )
-                    ),
-                    spline_min_backtrack_scale=float(
-                        config.get(
-                            "udf_cut_boundary_spline_min_backtrack_scale",
-                            0.0625,
-                        )
-                    ),
-                    smooth_iterations=int(
-                        config.get("udf_cut_boundary_smooth_iterations", 8)
-                    ),
-                    smooth_lambda=float(
-                        config.get("udf_cut_boundary_smooth_lambda", 0.45)
-                    ),
-                    smooth_mu=float(
-                        config.get("udf_cut_boundary_smooth_mu", -0.47)
-                    ),
-                    smooth_min_edges=int(
-                        config.get("udf_cut_boundary_smooth_min_edges", 12)
-                    ),
-                    smooth_max_step_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_max_step_fraction", 0.25
-                        )
-                    ),
-                    smooth_max_total_fraction=float(
-                        config.get(
-                            "udf_cut_boundary_max_total_fraction", 0.75
-                        )
-                    ),
+                    **self._boundary_cleanup_kwargs(config),
                 )
                 boundary_after_cloud = boundary_point_cloud(kept)
                 print(
@@ -979,6 +963,10 @@ class AgentUDFCut(AgentUDF):
                     f"boundary_loops_before={len(cleanup_report['boundary_before'])}",
                     f"boundary_loops_after={len(cleanup_report['boundary_after'])}",
                 )
+
+            if combined_transfer_enabled:
+                combined_removed_references.append(removed.copy())
+                combined_kept_references.append(kept_raw.copy())
 
             safe_key = self._safe_label(accessory_key)
             prefix = f"{item_index}_{mode}_{safe_key}"
@@ -1143,3 +1131,131 @@ class AgentUDFCut(AgentUDF):
                 f"after={report['after']}",
             )
             print("[udf cut saved]", after_path)
+
+        if combined_transfer_enabled:
+            first_item = adaptation_items[0]
+            combined_path = self._resolve_path_spec(
+                str(combined_mc_spec),
+                root_path=root_path,
+                item_index=0,
+                mode=str(first_item.get("mode", "direct")),
+                accessory_key=str(first_item["accessory_key"]),
+                target_key=str(first_item["target_key"]),
+            )
+            combined_mesh = trimesh.load(
+                combined_path, process=False, force="mesh"
+            )
+            if (
+                not isinstance(combined_mesh, trimesh.Trimesh)
+                or len(combined_mesh.faces) == 0
+            ):
+                raise ValueError(
+                    f"Combined MC input is empty or not a triangle mesh: {combined_path}"
+                )
+
+            print(
+                "[udf cut combined transfer]",
+                f"combined_mc={combined_path}",
+                f"removed_refs={len(combined_removed_references)}",
+                f"kept_refs={len(combined_kept_references)}",
+            )
+            combined_raw, combined_removed, combined_transfer_report = (
+                transfer_udf_cut_to_combined_mesh(
+                    combined_mesh,
+                    removed_reference_meshes=combined_removed_references,
+                    kept_reference_meshes=combined_kept_references,
+                    radius_edge_fraction=float(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_radius_edges", 2.0
+                        )
+                    ),
+                    seed_advantage_edge_fraction=float(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_seed_advantage_edges",
+                            0.30,
+                        )
+                    ),
+                    grow_advantage_edge_fraction=float(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_grow_advantage_edges",
+                            0.0,
+                        )
+                    ),
+                    min_faces=int(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_min_faces", 8
+                        )
+                    ),
+                    min_seed_faces=int(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_min_seed_faces", 2
+                        )
+                    ),
+                    min_seed_fraction=float(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_min_seed_fraction", 0.05
+                        )
+                    ),
+                    min_valid_samples=int(
+                        extraction_config.get(
+                            "udf_cut_combined_transfer_min_valid_samples", 2
+                        )
+                    ),
+                )
+            )
+
+            combined_cleanup_report = None
+            combined_final = combined_raw
+            if bool(extraction_config.get("udf_cut_cleanup_boundary", False)):
+                combined_final, combined_cleanup_report = cleanup_cut_boundary(
+                    combined_raw,
+                    **self._boundary_cleanup_kwargs(extraction_config),
+                )
+
+            combined_before_path = op.join(
+                output_folder, "combined_mc_before_udf_transfer.ply"
+            )
+            combined_removed_path = op.join(
+                output_folder, "combined_udf_transfer_removed.ply"
+            )
+            combined_raw_path = op.join(
+                output_folder, "combined_mc_after_udf_cut_raw.ply"
+            )
+            combined_after_path = op.join(
+                output_folder, "combined_mc_after_udf_cut.ply"
+            )
+            combined_report_path = op.join(
+                output_folder, "combined_udf_cut_report.json"
+            )
+
+            combined_mesh.export(combined_before_path)
+            combined_removed.export(combined_removed_path)
+            combined_raw.export(combined_raw_path)
+            combined_final.export(combined_after_path)
+            with open(combined_report_path, "w", encoding="utf-8") as handle_out:
+                json.dump(
+                    {
+                        "combined_mc_input": combined_path,
+                        "before": self._topology_stats(combined_mesh),
+                        "after_raw": self._topology_stats(combined_raw),
+                        "after": self._topology_stats(combined_final),
+                        "transfer": combined_transfer_report,
+                        "boundary_cleanup": combined_cleanup_report,
+                        "outputs": {
+                            "before": combined_before_path,
+                            "removed": combined_removed_path,
+                            "after_raw": combined_raw_path,
+                            "after": combined_after_path,
+                        },
+                    },
+                    handle_out,
+                    indent=2,
+                )
+
+            print(
+                "[udf cut combined result]",
+                f"removed_faces={len(combined_removed.faces)}",
+                f"before={self._topology_stats(combined_mesh)}",
+                f"after={self._topology_stats(combined_final)}",
+            )
+            print("[udf cut combined saved]", combined_after_path)
