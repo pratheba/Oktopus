@@ -3,7 +3,7 @@ combine_adaptations: true
 # Final combined UDF-cut transfer. The individual SDF meshes are still supplied
 # through --mc-mesh with {index}/{mode}/{accessory} placeholders.
 udf_cut_combined_transfer: true
-udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer/oktopus_9_v1/oktopus_9_v1_final.ply
+udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer/oktopus_9_v1/oktopus_9_v1_adapt.ply
 
 # Transfer is scaled by the combined mesh edge length so it behaves similarly
 # at 128/256 resolutions.
