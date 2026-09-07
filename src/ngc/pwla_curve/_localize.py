@@ -1369,6 +1369,23 @@ class _LocalizeMixin:
             )
 
             skirt_env_scale = None
+            src_ref_by_s = np.nanmedian(wrap_src, axis=1)
+            tgt_ref_by_s = np.nanmedian(wrap_tgt, axis=1)
+
+            r_src_ref = np.interp(
+                avatar_coords,
+                s_bins_src,
+                src_ref_by_s,
+            )
+
+            r_tgt_ref = np.interp(
+                acc_coords,
+                s_bins_tgt,
+                tgt_ref_by_s,
+            )
+
+            r_src_ref = np.maximum(r_src_ref, 1e-8)
+            r_tgt_ref = np.maximum(r_tgt_ref, 1e-8)
 
 
 
@@ -1430,14 +1447,23 @@ class _LocalizeMixin:
                 )
 
 
-            scale_rho_wrap = (global_scale * r_tgt) / (r_src + 1e-12)
+            #scale_rho_wrap = (global_scale * r_tgt) / (r_src + 1e-12)
 
-            #if skirt_env_scale is not None:
-            #    # Keep original wrap/detail variation, only enlarge smoothly by envelope.
-            #    if adapt_arg.get("skirt_env_replace_wrap_scale", True):
-            #        scale_rho_wrap = global_scale * skirt_env_scale
-            #    else:
-            #        scale_rho_wrap = scale_rho_wrap * skirt_env_scale
+
+            scale_iso = global_scale * r_tgt_ref / (r_src_ref + 1e-12)
+
+            angular_ratio = (
+                (r_tgt / (r_tgt_ref + 1e-12))
+                /
+                (r_src / (r_src_ref + 1e-12))
+            )
+
+            alpha = float(adapt_arg.get("wrap_angular_follow", 1.0))
+
+            scale_rho_wrap = scale_iso * np.power(
+                np.maximum(angular_ratio, 1e-8),
+                alpha,
+            )
 
             if "wrap_scale_min" in adapt_arg or "wrap_scale_max" in adapt_arg:
                 scale_rho_wrap = np.clip(
@@ -1789,6 +1815,32 @@ class _LocalizeMixin:
 
 
             if adapt_arg.get("wrap_debug", False):
+                sectors = {
+                    "u_pos": np.cos(theta_tgt) >= 0.0,
+                    "u_neg": np.cos(theta_tgt) < 0.0,
+                    "v_pos": np.sin(theta_tgt) >= 0.0,
+                    "v_neg": np.sin(theta_tgt) < 0.0,
+                }
+
+                for name, m in sectors.items():
+                    if np.any(m):
+                        print(
+                            "[wrap sector]",
+                            name,
+                            "count=", int(np.sum(m)),
+                            "r_src min/mean/max=",
+                            float(np.min(r_src[m])),
+                            float(np.mean(r_src[m])),
+                            float(np.max(r_src[m])),
+                            "r_tgt min/mean/max=",
+                            float(np.min(r_tgt[m])),
+                            float(np.mean(r_tgt[m])),
+                            float(np.max(r_tgt[m])),
+                            "scale_rho_wrap min/mean/max=",
+                            float(np.min(scale_rho_wrap[m])),
+                            float(np.mean(scale_rho_wrap[m])),
+                            float(np.max(scale_rho_wrap[m])),
+                        )
                 q_src = rho_avatar / (r_src + 1e-12)
                 print(
                     "[wrap_debug]",

@@ -52,7 +52,7 @@ adaptations:
   use_hard_avatar_clamp: true
   hard_clearance: 0.0001
   avatar_clearance: 0.0001
-  cut_avatar: false
+  cut_avatar: true
 
 
 - name: puffer_t1_1_rigid
@@ -169,7 +169,7 @@ adaptations:
   use_hard_avatar_clamp: true
   hard_clearance: 0.00001
   avatar_clearance: 0.00001
-  cut_avatar: false 
+  cut_avatar: true 
 
 
 

@@ -148,7 +148,7 @@ adaptations:
   use_hard_avatar_clamp: true
   hard_clearance: 0.00001
   avatar_clearance: 0.00001
-  cut_avatar: false 
+  cut_avatar: true 
 
   blend_group: t1
   mesh_blend_delta: 0.005
@@ -194,7 +194,7 @@ adaptations:
   accessory_key: puffer_3_v1|r_arm
   mode: direct
   cache_as: puffer_3_v1|r_arm
-  src_0: 0.38
+  src_0: 0.35
   src_1: 0.68
   tgt_0: 0.25
   tgt_1: 0.7
@@ -212,7 +212,7 @@ adaptations:
   support_clamp_verbose: true
   # Main correction: geometric snug field
   # Disable these in first test
-  use_adapt_control_filter_grid: true
+  use_adapt_control_filter_grid: false
   accessory_offset_mode: none 
   use_soft_snug: true
   local_offset_strength: 0.15
@@ -247,7 +247,7 @@ adaptations:
   support_clamp_verbose: true
   # Main correction: geometric snug field
   # Disable these in first test
-  use_adapt_control_filter_grid: true
+  use_adapt_control_filter_grid: false
   accessory_offset_mode: none 
   use_soft_snug: true
   local_offset_strength: 0.15
@@ -256,4 +256,4 @@ adaptations:
   use_hard_avatar_clamp: true
   hard_clearance: 0.00001
   avatar_clearance: 0.00001
-  cut_avatar: false
+  cut_avatar: true
