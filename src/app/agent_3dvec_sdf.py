@@ -1655,7 +1655,63 @@ class AgentSDF(AgentBase):
                     print("cut_avatar")
                     avatar_clearance = float(adapt_arg.get("avatar_clearance", 0.0))
                     avatar_vals_inflated = avatar_sdf_for_offset - avatar_clearance
+
+                    # Debug the exact three scalar fields involved in the hard
+                    # Boolean.  This runs only when cut_avatar is already on;
+                    # there is no additional YAML/config switch.  The avatar
+                    # mesh below is reconstructed from the exact inflated SDF
+                    # used by max(accessory, -avatar), on the same active kidx
+                    # support as the accessory.
+                    cut_debug_before = vals_base_fit.copy()
                     vals_base_fit = np.maximum(vals_base_fit, -avatar_vals_inflated)
+
+                    debug_prefix = (
+                        f"{item_index}_{mode}_"
+                        f"{accessory_key.replace('|', '_')}_cut_avatar"
+                    )
+                    debug_fields = (
+                        ("boot_before", cut_debug_before),
+                        ("avatar_used", avatar_vals_inflated),
+                        ("boot_after", vals_base_fit),
+                    )
+
+                    for debug_name, debug_vals in debug_fields:
+                        debug_grid = utils.create_grid_like(mc_grid)
+                        debug_grid.clear_grid()
+                        debug_grid.update_grid(
+                            debug_vals, kidx, mark=True, mode="overwrite"
+                        )
+                        debug_path = op.join(
+                            output_folder,
+                            f"{debug_prefix}_{debug_name}.ply",
+                        )
+                        try:
+                            debug_mesh = self.extract_surface_mesh(
+                                debug_grid,
+                                {"surface_extraction": "marching_cubes"},
+                                context=f"{debug_prefix}_{debug_name}",
+                            )
+                            if len(debug_mesh.faces) > 0:
+                                debug_mesh.export(debug_path)
+                                print(
+                                    "[cut_avatar debug]",
+                                    debug_name,
+                                    "vertices=", len(debug_mesh.vertices),
+                                    "faces=", len(debug_mesh.faces),
+                                    "saved=", debug_path,
+                                )
+                            else:
+                                print(
+                                    "[cut_avatar debug]",
+                                    debug_name,
+                                    "empty mesh",
+                                )
+                        except Exception as exc:
+                            print(
+                                "[cut_avatar debug]",
+                                debug_name,
+                                "export failed:", exc,
+                            )
 
                 # ------------------------------------------------------------
                 # Recompute detail gate from the corrected/snugged base.
