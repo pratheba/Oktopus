@@ -1764,6 +1764,12 @@ class AgentSDF(AgentBase):
 
                 vals_final = vals_base_fit + gate_detail_snug * detail_amp
 
+                # Preserve the hard avatar Boolean after signed-detail
+                # reconstruction. Detail must not reintroduce accessory
+                # material inside the avatar that was already carved from base.
+                if cut_avatar and avatar_sdf_for_offset is not None:
+                    vals_final = np.maximum(vals_final, -avatar_vals_inflated)
+
                 # ------------------------------------------------------------
                 # Additive snug delta: applied to the FINAL SDF.
                 #
