@@ -1662,15 +1662,25 @@ class AgentSDF(AgentBase):
                     # mesh below is reconstructed from the exact inflated SDF
                     # used by max(accessory, -avatar), on the same active kidx
                     # support as the accessory.
-                    cut_debug_before = vals_base_fit.copy()
-                    vals_base_fit = np.maximum(vals_base_fit, -avatar_vals_inflated)
+                    vals_base_before_cut = vals_base_fit.copy()
+                    avatar_cut_field = -avatar_vals_inflated
+
+                    # Keep track of which Boolean operand owns the carved BASE
+                    # field. Detail is allowed only where the original accessory
+                    # BASE wins; the avatar-owned cavity remains base-only.
+                    detail_boot_owned_mask = (
+                        vals_base_before_cut >= avatar_cut_field
+                    )
+                    vals_base_fit = np.maximum(
+                        vals_base_before_cut, avatar_cut_field
+                    )
 
                     debug_prefix = (
                         f"{item_index}_{mode}_"
                         f"{accessory_key.replace('|', '_')}_cut_avatar"
                     )
                     debug_fields = (
-                        ("boot_before", cut_debug_before),
+                        ("boot_before", vals_base_before_cut),
                         ("avatar_used", avatar_vals_inflated),
                         ("boot_after", vals_base_fit),
                     )
@@ -1733,7 +1743,17 @@ class AgentSDF(AgentBase):
                     / (2.0 * sigma_detail * sigma_detail + 1e-12)
                 )
 
-                detail_amp = acc_vals_detail
+                detail_amp = acc_vals_detail.copy()
+
+                # The hard avatar Boolean already created the intended cavity
+                # in vals_base_fit. Do not let the learned accessory detail
+                # residual alter samples where the avatar operand owns that
+                # Boolean result. Detail remains active on boot-owned regions.
+                if cut_avatar and avatar_sdf_for_offset is not None:
+                    detail_amp = np.where(
+                        detail_boot_owned_mask, detail_amp, 0.0
+                    )
+
                 use_detail_avatar_gate = bool(
                     adapt_arg.get("detail_avatar_gate", False)
                 )
