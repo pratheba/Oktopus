@@ -381,7 +381,12 @@ class AgentSDFDC(AgentSDF):
         # Reference MC keeps the original Oktopus field. DC and DC-SDD get a
         # separately filled and bounded field because they use abs(S) as a
         # geometric radius.
-        S_mc = np.ascontiguousarray(S_raw - level, dtype=np.float64)
+        # Only the reference MC path needs this extra full float64 grid.
+        # With --dcsdd-methods ours, avoid an unused ~1 GiB array at r=512.
+        S_mc = (
+            np.ascontiguousarray(S_raw - level, dtype=np.float64)
+            if "mc_ref" in methods else None
+        )
         S_dc = None
         if any(method in methods for method in ("dc", "ours")):
             step = float(sdf_grid.grid_config["step"])

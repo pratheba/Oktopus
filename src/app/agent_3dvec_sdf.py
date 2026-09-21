@@ -1297,7 +1297,9 @@ class AgentSDF(AgentBase):
         mc_grid.clear_grid()
 
         adapted_support_cache = {}
-        all_acc_grids = []
+        # Combine incrementally. Do not retain a complete grid per adaptation:
+        # one 512^3 value grid plus its occupancy mask can exceed 1 GiB.
+        # mc_grid is already cleared above and is the ungrouped union accumulator.
         blend_groups = {}
         for item_index, item in enumerate(adaptation_items):
             target_key = item['target_key']
@@ -2003,23 +2005,55 @@ class AgentSDF(AgentBase):
 #                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
 #                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
 
-                # Combined reconstruction is a separate, explicit task.
-                # Only collect grids when the top-level YAML enables it with:
-                #     combine_adaptations: true
+                # Accumulate this adaptation *after* its individual mesh has
+                # been extracted and saved. Retain only one grid per blend
+                # group, not one complete grid for every YAML entry.
                 if combine_adaptations:
                     blend_group = str(adapt_arg.get("blend_group", "none"))
+                    valid_i = ~acc_grid.empty_marks
 
-                    if blend_group not in ["none", "", "false"]:
-                        blend_groups.setdefault(blend_group, []).append({
-                            "val_grid": acc_grid.val_grid.copy(),
-                            "empty_marks": acc_grid.empty_marks.copy(),
-                            "adapt_arg": dict(adapt_arg),
-                        })
+                    if blend_group not in ("none", "", "false"):
+                        group = blend_groups.get(blend_group)
+                        if group is None:
+                            group = {
+                                "val_grid": np.full_like(mc_grid.val_grid, 10.0),
+                                "empty_marks": np.ones_like(
+                                    mc_grid.empty_marks, dtype=bool
+                                ),
+                                # Match the original behavior: the first entry
+                                # defines the blend width for the entire group.
+                                "blend_delta": float(
+                                    adapt_arg.get("mesh_blend_delta", 0.0)
+                                ),
+                            }
+                            blend_groups[blend_group] = group
+
+                        group_vals = group["val_grid"]
+                        group_empty = group["empty_marks"]
+                        overlap = (~group_empty) & valid_i
+                        np.minimum(
+                            group_vals, acc_grid.val_grid,
+                            out=group_vals, where=valid_i,
+                        )
+                        if group["blend_delta"] > 0.0 and np.any(overlap):
+                            group_vals[overlap] = self.smooth_union_sdf(
+                                group_vals[overlap],
+                                acc_grid.val_grid[overlap],
+                                group["blend_delta"],
+                            )
+                        group_empty[valid_i] = False
+                        del overlap, group_vals, group_empty, group
                     else:
-                        all_acc_grids.append({
-                            "val_grid": acc_grid.val_grid.copy(),
-                            "empty_marks": acc_grid.empty_marks.copy(),
-                        })
+                        np.minimum(
+                            mc_grid.val_grid, acc_grid.val_grid,
+                            out=mc_grid.val_grid, where=valid_i,
+                        )
+                        mc_grid.empty_marks[valid_i] = False
+                    del valid_i
+
+                # The remaining steps only need the accumulated data, not the
+                # full individual grids or the saved mesh in this iteration.
+                del acc_grid, acc_grid_base, acc_grid_base_fit, curve_grid, mesh_acc
 
                 # target_key is unique within this loaded avatar handle. Once
                 # matched, this concrete adaptation run is complete.
@@ -2041,53 +2075,19 @@ class AgentSDF(AgentBase):
             )
             return
 
-        mc_grid.clear_grid()
-
-        # Explicit combined task: hard-union all ungrouped accessories.
-        for it in all_acc_grids:
-            valid_i = ~it["empty_marks"]
-            mc_grid.val_grid[valid_i] = np.minimum(
-                mc_grid.val_grid[valid_i],
-                it["val_grid"][valid_i],
-            )
-            mc_grid.empty_marks[valid_i] = False
-
-        for group_name, items in blend_groups.items():
-
-            blend_delta = float(
-                items[0]["adapt_arg"].get("mesh_blend_delta", 0.0)
-            )
-
-            group_vals = np.full_like(mc_grid.val_grid, 10.0)
-            group_empty = np.ones_like(mc_grid.empty_marks, dtype=bool)
-
-            for ii, it in enumerate(items):
-                vals_i = it["val_grid"]
-                valid_i = ~it["empty_marks"]
-
-                overlap = (~group_empty) & valid_i
-
-                group_vals[valid_i] = np.minimum(
-                    group_vals[valid_i],
-                    vals_i[valid_i],
-                )
-
-                if blend_delta > 0.0 and np.any(overlap):
-                    group_vals[overlap] = self.smooth_union_sdf(
-                        group_vals[overlap],
-                        vals_i[overlap],
-                        blend_delta,
-                    )
-
-                group_empty[valid_i] = False
-
-            valid_group = ~group_empty
-
-            mc_grid.val_grid[valid_group] = np.minimum(
-                mc_grid.val_grid[valid_group],
-                group_vals[valid_group],
+        # Ungrouped entries have already been hard-unioned into mc_grid.
+        # Merge each finished blend-group accumulator only once, preserving
+        # the previous ordering: ungrouped first, then blended groups.
+        for group in blend_groups.values():
+            valid_group = ~group["empty_marks"]
+            np.minimum(
+                mc_grid.val_grid, group["val_grid"],
+                out=mc_grid.val_grid, where=valid_group,
             )
             mc_grid.empty_marks[valid_group] = False
+            del valid_group, group
+        # Group buffers are no longer needed before the final 512^3 DCSDD run.
+        blend_groups.clear()
 
 
         valid_final = int(np.sum(~mc_grid.empty_marks))
