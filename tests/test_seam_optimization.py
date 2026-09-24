@@ -33,8 +33,8 @@ class SeamTests(unittest.TestCase):
     def setUp(self):
         self.curves = {'puffer|left': FakeCurve(lambda s: 1.0 + .05 * s),
                        'puffer|right': FakeCurve(lambda s: 1.0 + .03 * s)}
-        self.config = {'t1': {'seam_optimization': {'enabled': True}},
-                       't2': {'seam_optimization': {'enabled': True}}}
+        self.config = {'t1': {'seam_optimization': {'enabled': True, 'radius_source': 'curve'}},
+                       't2': {'seam_optimization': {'enabled': True, 'radius_source': 'curve'}}}
         self.items = [item('a', 'avatar|t1', 'puffer|left', .9, .6, 2.0, 't1'),
                       item('b', 'avatar|t1', 'puffer|left', .62, .32, 2.2, 't1'),
                       item('c', 'avatar|t1', 'puffer|left', .34, .1, 2.2, 't1'),
@@ -56,7 +56,7 @@ class SeamTests(unittest.TestCase):
         a, b = self.items[:2]
         def physical(item, correction):
             t = item['tgt_0'] + (s - item['src_0']) / (item['src_1'] - item['src_0']) * (item['tgt_1'] - item['tgt_0'])
-            return item['scale'] * float(self.curves[item['accessory_key']].core.interpolate([t])['radius'][0, 0]) * radius_scale_at([s], [correction])[0]
+            return float(self.curves[item['accessory_key']].core.interpolate([t])['radius'][0, 0]) / item['scale'] * radius_scale_at([s], [correction])[0]
         self.assertAlmostEqual(physical(a, plan[0][0]), physical(b, plan[1][1]), places=10)
 
     def test_radius_profile_vanishes_smoothly_at_band_edges(self):
@@ -153,6 +153,77 @@ class SeamTests(unittest.TestCase):
         np.testing.assert_allclose(result['samples_local'][2], original[2])
         np.testing.assert_allclose(result['samples_local'][1], [.0, .96, 2.02])
         np.testing.assert_allclose(result['rho_n'][1], np.hypot(.96, 2.02))
+
+    def test_rigid_global_scale_is_inverse_in_physical_radius(self):
+        curves = {'puffer|x': FakeCurve(lambda s: np.ones_like(s))}
+        pieces = [item('a', 'avatar|t', 'puffer|x', .1, .4, 1.5, 'g'),
+                  item('b', 'avatar|t', 'puffer|x', .38, .68, 1.8, 'g')]
+        spec = {'g': {'seam_optimization': {'enabled': True,
+                                           'radius_source': 'curve',
+                                           'match_surface_tangent': False}}}
+        plan = build_seam_plan(pieces, spec, curves.__getitem__)
+        # Before fitting, scale 1.5 produces the larger physical radius (1/1.5).
+        # It must shrink, while scale 1.8 must expand.
+        self.assertLess(math.exp(plan[0][0].log_radius_scale), 1.0)
+        self.assertGreater(math.exp(plan[1][0].log_radius_scale), 1.0)
+        seam_s = plan[0][0].source_s
+        ra = (1.0 / 1.5) * radius_scale_at([seam_s], plan[0])[0]
+        rb = (1.0 / 1.8) * radius_scale_at([seam_s], plan[1])[0]
+        self.assertAlmostEqual(ra, rb, places=10)
+
+    def test_position_tangent_is_fitted_and_warped_locally(self):
+        class SurfaceCore:
+            def __init__(self):
+                angles = np.linspace(0.0, 2.0 * np.pi, 96, endpoint=False)
+                grid_s = np.linspace(0.0, 1.0, 260)
+                self.surface_points_owned = np.array([
+                    (s, 0.35 * s + (1.0 + 0.15 * s) * np.cos(theta),
+                     -0.18 * s + (1.0 + 0.15 * s) * np.sin(theta))
+                    for s in grid_s for theta in angles], dtype=float)
+
+            def curve_projection(self, points):
+                return points[:, 0]
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': (1.0 + .15 * s)[:, None],
+                        'points': np.column_stack((s, np.zeros_like(s), np.zeros_like(s))),
+                        'frame': np.broadcast_to(np.eye(3), (len(s), 3, 3))}
+
+        class SurfaceCurve:
+            def __init__(self):
+                self.core = SurfaceCore()
+
+        curve = SurfaceCurve()
+        pieces = [item('a', 'avatar|t', 'puffer|x', .1, .4, 1.5, 'g'),
+                  item('b', 'avatar|t', 'puffer|x', .38, .68, 1.8, 'g')]
+        pieces[0]['tgt_0'], pieces[0]['tgt_1'] = .10, .40
+        pieces[1]['tgt_0'], pieces[1]['tgt_1'] = .55, .95
+        spec = {'g': {'seam_optimization': {'enabled': True,
+                                           'optimize_radius': True,
+                                           'optimize_position': True,
+                                           'radius_source': 'surface',
+                                           'match_surface_tangent': True,
+                                           'match_position_tangent': True,
+                                           'max_position_change': .2}}}
+        plan = build_seam_plan(pieces, spec, lambda _: curve)
+        self.assertTrue(np.linalg.norm(plan[0][0].position_slope_uv) > 0.0)
+        self.assertTrue(np.linalg.norm(plan[1][0].position_slope_uv) > 0.0)
+        self.assertNotEqual(plan[0][0].log_radius_slope, 0.0)
+
+        seam_s = plan[0][0].source_s
+        query_s = np.array([seam_s - .01, seam_s, seam_s + .01])
+        queries = {'samples_local': np.column_stack((np.zeros(3), np.ones(3), np.zeros(3))),
+                   'radius': np.ones((3, 2)),
+                   'rho_n': np.ones(3)}
+        before = queries['samples_local'].copy()
+        out = warp_accessory_queries(queries, {'coords': query_s}, plan[0])
+        # C1 positional term makes the two sides of the seam differ; a C0-only
+        # translation would be symmetric around the center sample.
+        self.assertFalse(np.allclose(out['samples_local'][0, 1:],
+                                     out['samples_local'][2, 1:]))
+        self.assertTrue(np.array_equal(before[:, 0], out['samples_local'][:, 0]))
+
 
     def test_position_enabled_requires_surface_evidence(self):
         config = {'t1': {'seam_optimization': {'enabled': True, 'optimize_position': True}}}
