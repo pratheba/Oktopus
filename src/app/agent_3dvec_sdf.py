@@ -15,6 +15,7 @@ from snug_field_io import (
     snug_field_stats,
 )
 from agent_3dvec_base import AgentBase
+from seam_optimization import build_seam_plan, warp_accessory_queries
 
 class AgentSDF(AgentBase):
     """Signed-distance agent: marching cubes, RFTA, sign conversion,
@@ -1296,6 +1297,15 @@ class AgentSDF(AgentBase):
         #mc_grid.clear_grid(val=10.0)
         mc_grid.clear_grid()
 
+        # Fit per blend_group before starting any expensive grid inference.
+        # A group may reuse the same puffer source as another group without
+        # sharing corrections, since each entry retains its own avatar target.
+        seam_plan = build_seam_plan(
+            adaptation_items,
+            raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
+            self.curve_from_key,
+        )
+
         adapted_support_cache = {}
         # Combine incrementally. Do not retain a complete grid per adaptation:
         # one 512^3 value grid plus its occupancy mask can exceed 1 GiB.
@@ -1508,6 +1518,13 @@ class AgentSDF(AgentBase):
 #                                    "assembly_scale": root_scale,
 #                                }
 
+
+                # Warp the accessory's normalized radial inference queries,
+                # not the output SDF or grid. Do this after any snug-field rerun.
+                if item_index in seam_plan:
+                    accessory_data = warp_accessory_queries(
+                        accessory_data, avatar_data, seam_plan[item_index]
+                    )
 
                 use_tiled_detail = bool(adapt_arg.get("use_tiled_detail", False))
 
@@ -1971,17 +1988,19 @@ class AgentSDF(AgentBase):
                         group_vals = group["val_grid"]
                         group_empty = group["empty_marks"]
                         overlap = (~group_empty) & valid_i
-                        np.minimum(
-                            group_vals, acc_grid.val_grid,
-                            out=group_vals, where=valid_i,
-                        )
                         if group["blend_delta"] > 0.0 and np.any(overlap):
                             group_vals[overlap] = self.smooth_union_sdf(
                                 group_vals[overlap],
                                 acc_grid.val_grid[overlap],
                                 group["blend_delta"],
                             )
+                        # The overlap has already been blended; hard-union only
+                        # cells that have a value in the new grid but not yet
+                        # in the group accumulator.
+                        new_only = group_empty & valid_i
+                        group_vals[new_only] = acc_grid.val_grid[new_only]
                         group_empty[valid_i] = False
+                        del new_only
                         del overlap, group_vals, group_empty, group
                     else:
                         np.minimum(
