@@ -93,9 +93,70 @@ class SeamTests(unittest.TestCase):
         plan = build_seam_plan(self.items, {'t1': {'seam_optimization': {'enabled': False}}}, self.curves.__getitem__)
         self.assertEqual(plan, {})
 
-    def test_unsupported_positional_optimization_raises(self):
+    def test_position_fitting_aligns_unequal_surface_centers(self):
+        class SurfaceCore:
+            def __init__(self):
+                angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+                grid_s = np.linspace(0.0, 1.0, 200)
+                self.surface_points_owned = np.array([
+                    (s, (0.12 * s) + np.cos(theta), (-0.08 * s) + np.sin(theta))
+                    for s in grid_s for theta in angles], dtype=float)
+
+            def curve_projection(self, points):
+                return points[:, 0]
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': np.ones((len(s), 2)),
+                        'points': np.column_stack((s, np.zeros_like(s), np.zeros_like(s))),
+                        'frame': np.broadcast_to(np.eye(3), (len(s), 3, 3))}
+
+        class SurfaceCurve:
+            def __init__(self):
+                self.core = SurfaceCore()
+
+        curve = SurfaceCurve()
+        pieces = [item('a', 'avatar|t4', 'puffer|right', .1, .4, 1.5, 't4'),
+                  item('b', 'avatar|t4', 'puffer|right', .38, .68, 1.8, 't4')]
+        pieces[1]['tgt_0'], pieces[1]['tgt_1'] = .55, .95
+        spec = {'t4': {'seam_optimization': {'enabled': True,
+                                          'optimize_radius': False,
+                                          'optimize_position': True,
+                                          'max_position_change': .05}}}
+        plan = build_seam_plan(pieces, spec, lambda _: curve)
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(plan[0][0].log_radius_scale, 0.0)
+        self.assertNotEqual(plan[0][0].position_uv, (0.0, 0.0))
+        self.assertLessEqual(np.linalg.norm(plan[0][0].position_uv), .05 + 1e-12)
+        self.assertLessEqual(np.linalg.norm(plan[1][0].position_uv), .05 + 1e-12)
+        # When fitted positions are applied to world-space center, mismatch shrinks.
+        from seam_optimization import _surface_profile, _position_center
+        seam_s = .39
+        profile = _surface_profile(curve)
+        before = [_position_center(it, curve, profile, seam_s, 1., .025)
+                  for it in pieces]
+        after = [before[i] + np.asarray(plan[i][0].position_uv) / it['scale']
+                 for i, it in enumerate(pieces)]
+        self.assertLess(np.linalg.norm(after[0] - after[1]),
+                        np.linalg.norm(before[0] - before[1]))
+
+    def test_position_warp_local_and_fades_without_touching_axial_queries(self):
+        from seam_optimization import SeamCorrection
+        seam = SeamCorrection(.5, .1, 0., 0., (.02, -.04))
+        queries = {'samples_local': np.array([[.0, 1., 2.], [.0, 1., 2.], [.0, 1., 2.]]),
+                   'radius': np.array([[.5, 2.], [.5, 2.], [.5, 2.]]),
+                   'rho_n': np.sqrt(np.array([5., 5., 5.])),
+                   'angles': np.arctan2(np.array([2., 2., 2.]), np.array([1., 1., 1.]))}
+        original = queries['samples_local'].copy()
+        result = warp_accessory_queries(queries, {'coords': np.array([.2, .5, .8])}, [seam])
+        np.testing.assert_allclose(result['samples_local'][0], original[0])
+        np.testing.assert_allclose(result['samples_local'][2], original[2])
+        np.testing.assert_allclose(result['samples_local'][1], [.0, .96, 2.02])
+        np.testing.assert_allclose(result['rho_n'][1], np.hypot(.96, 2.02))
+
+    def test_position_enabled_requires_surface_evidence(self):
         config = {'t1': {'seam_optimization': {'enabled': True, 'optimize_position': True}}}
-        with self.assertRaisesRegex(ValueError, 'not implemented'):
+        with self.assertRaisesRegex(ValueError, 'surface_points_owned'):
             build_seam_plan(self.items, config, self.curves.__getitem__)
 
 
