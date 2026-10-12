@@ -318,5 +318,101 @@ class SeamTests(unittest.TestCase):
 
 
 
+    def test_angular_profile_fit_reduces_lobed_surface_mismatch(self):
+        class LobedCore:
+            def __init__(self):
+                angles = np.linspace(0.0, 2.0 * np.pi, 128, endpoint=False)
+                grid_s = np.linspace(0.0, 1.0, 320)
+                self.surface_points_owned = np.array([
+                    (s,
+                     (1.0 + .18 * s * np.sin(2.0 * theta)
+                      + .14 * s * np.cos(3.0 * theta)) * np.cos(theta),
+                     (1.0 + .18 * s * np.sin(2.0 * theta)
+                      + .14 * s * np.cos(3.0 * theta)) * np.sin(theta))
+                    for s in grid_s for theta in angles
+                ], dtype=float)
+
+            def curve_projection(self, points):
+                return points[:, 0]
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': np.ones((len(s), 2)),
+                        'points': np.column_stack((s, np.zeros_like(s), np.zeros_like(s))),
+                        'frame': np.broadcast_to(np.eye(3), (len(s), 3, 3))}
+
+        class LobedCurve:
+            def __init__(self):
+                self.core = LobedCore()
+
+        curve = LobedCurve()
+        pieces = [item('a', 'avatar|t', 'puffer|x', .1, .4, 1.0, 'g'),
+                  item('b', 'avatar|t', 'puffer|x', .38, .68, 1.0, 'g')]
+        pieces[0]['tgt_0'], pieces[0]['tgt_1'] = .10, .40
+        pieces[1]['tgt_0'], pieces[1]['tgt_1'] = .58, .88
+        spec = {'g': {'seam_optimization': {
+            'enabled': True,
+            'optimize_radius': True,
+            'radius_source': 'surface',
+            'radius_mode': 'angular',
+            'max_radius_change': .30,
+            'max_anisotropic_change': .20,
+            'max_angular_radius_change': .12,
+            'angular_profile_order': 3,
+            'deformation_weight': 0.0,
+            'angular_deformation_weight': 0.0,
+            'match_surface_tangent': True,
+        }}}
+        plan = build_seam_plan(pieces, spec, lambda _: curve)
+        self.assertIsNotNone(plan[0][0].angular_log_radius_coeffs)
+        self.assertEqual(len(plan[0][0].angular_log_radius_coeffs), 4)  # k=2,3
+        self.assertIsNotNone(plan[0][0].angular_log_radius_slope_coeffs)
+
+        from seam_optimization import _surface_profile, _surface_log_radius_profile
+        profile = _surface_profile(curve)
+        seam_s = plan[0][0].source_s
+        before_l = _surface_log_radius_profile(pieces[0], profile, seam_s, .025, 24, .85)
+        before_r = _surface_log_radius_profile(pieces[1], profile, seam_s, .025, 24, .85)
+        c0, c1 = plan[0][0], plan[1][0]
+        after_l = _surface_log_radius_profile(
+            pieces[0], profile, seam_s, .025, 24, .85,
+            c0.log_radius_scale_uv, c0.angular_log_radius_coeffs)
+        after_r = _surface_log_radius_profile(
+            pieces[1], profile, seam_s, .025, 24, .85,
+            c1.log_radius_scale_uv, c1.angular_log_radius_coeffs)
+        before = np.sqrt(np.mean((before_l - before_r) ** 2))
+        after = np.sqrt(np.mean((after_l - after_r) ** 2))
+        self.assertLess(after, 0.70 * before)
+
+    def test_angular_query_warp_is_directional_and_local(self):
+        from seam_optimization import SeamCorrection, angular_radius_scale_at
+        log_amp = math.log(1.1)
+        seam = SeamCorrection(
+            .5, .1, 0.0, 0.0,
+            angular_log_radius_coeffs=(log_amp, 0.0, 0.0, 0.0),
+            angular_log_radius_slope_coeffs=(0.0, 0.0, 0.0, 0.0),
+        )
+        coords = np.array([.2, .5, .5])
+        queries = {
+            'samples_local': np.array([[.0, 1.0, 0.0],
+                                       [.0, 1.0, 0.0],
+                                       [.0, 0.0, 1.0]]),
+            'radius': np.ones((3, 2)),
+            'rho_n': np.ones(3),
+            'angles': np.array([0.0, 0.0, np.pi / 2.0]),
+        }
+        out = warp_accessory_queries(queries, {'coords': coords}, [seam])
+        # Outside the correction band nothing changes.
+        np.testing.assert_allclose(out['samples_local'][0], [0.0, 1.0, 0.0])
+        # k=2: theta=0 expands geometry by 1.1, hence inverse query shrinks.
+        np.testing.assert_allclose(out['samples_local'][1], [0.0, 1.0 / 1.1, 0.0])
+        # theta=pi/2 has cos(2theta)=-1, so geometry scale is 1/1.1.
+        np.testing.assert_allclose(out['samples_local'][2], [0.0, 0.0, 1.1])
+        factors = angular_radius_scale_at(
+            [.4, .5, .6], [0.0, 0.0, 0.0], [seam])
+        np.testing.assert_allclose(factors[[0, 2]], [1.0, 1.0], atol=1e-12)
+        self.assertAlmostEqual(factors[1], 1.1)
+
+
 if __name__ == '__main__':
     unittest.main()

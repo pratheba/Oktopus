@@ -10,9 +10,10 @@ For each adjoining pair in a blend group we fit both C0 and C1 behavior:
 * transverse center position and center tangent,
 * outer cross-section scale and longitudinal taper tangent.
 
-Surface-profile fitting supports both the original isotropic scale and an
-opt-in anisotropic U/V mode.  The anisotropic mode fits two bounded local axis
-scales plus their longitudinal derivatives, then fades them C1-smoothly back to
+Surface-profile fitting supports isotropic scale, anisotropic U/V scale, and
+an optional low-order angular residual.  The angular mode first performs the U/V
+fit, then fits mean/center-preserving Fourier harmonics around the cross-section.
+All value and longitudinal-derivative corrections fade C1-smoothly back to
 identity away from each seam.
 """
 
@@ -37,6 +38,10 @@ class SeamCorrection:
     # None means: use the scalar log_radius_* values for both axes.
     log_radius_scale_uv: tuple = None
     log_radius_slope_uv: tuple = None
+    # Optional mean-zero Fourier log-radius correction in accessory-local angle.
+    # Coefficients are [cos(theta), sin(theta), cos(2theta), sin(2theta), ...].
+    angular_log_radius_coeffs: tuple = None
+    angular_log_radius_slope_coeffs: tuple = None
 
 
 def _positive_radius(curve, s):
@@ -137,6 +142,56 @@ def _rotate_uv(vector, degrees):
     return out
 
 
+
+
+def _angular_basis(theta, max_harmonic):
+    """Mean/center-preserving Fourier basis for harmonics 2..max_harmonic.
+
+    Harmonic 0 is already handled by radius scale and harmonic 1 behaves like
+    a first-order center translation, which is handled by the position fit.
+    """
+    theta = np.asarray(theta, dtype=np.float64).reshape(-1)
+    cols = []
+    for harmonic in range(2, int(max_harmonic) + 1):
+        cols.append(np.cos(harmonic * theta))
+        cols.append(np.sin(harmonic * theta))
+    if not cols:
+        return np.zeros((len(theta), 0), dtype=np.float64)
+    return np.column_stack(cols)
+
+
+def _angular_log_field(theta, coeffs):
+    """Evaluate a mean-zero angular log-radius field."""
+    coeffs = np.asarray(coeffs, dtype=np.float64).reshape(-1)
+    if coeffs.size == 0:
+        return np.zeros(np.asarray(theta).shape, dtype=np.float64)
+    if coeffs.size % 2:
+        raise ValueError("Angular seam coefficients must contain cos/sin pairs")
+    # Two coefficients per harmonic, starting from harmonic 2.
+    basis = _angular_basis(theta, coeffs.size // 2 + 1)
+    return basis @ coeffs
+
+
+def _bound_angular_field(coeffs, max_abs_value, n_probe=128):
+    """Scale Fourier coefficients so the sampled field stays within a bound."""
+    coeffs = np.asarray(coeffs, dtype=np.float64).reshape(-1).copy()
+    if coeffs.size == 0:
+        return coeffs
+    limit = float(max_abs_value)
+    theta = np.linspace(-np.pi, np.pi, int(n_probe), endpoint=False)
+    peak = float(np.max(np.abs(_angular_log_field(theta, coeffs))))
+    if peak > limit and peak > 1e-12:
+        coeffs *= limit / peak
+    return coeffs
+
+
+def _bound_angular_coeffs(coeffs, max_change, n_probe=128):
+    """Scale Fourier coefficients so pointwise radial change stays bounded."""
+    return _bound_angular_field(
+        coeffs, math.log(1.0 + float(max_change)), n_probe=n_probe
+    )
+
+
 def _manual_tloc_uv(item):
     value = np.asarray(
         item.get("tloc", item.get("translate_local", (0, 0, 0))), dtype=np.float64
@@ -195,18 +250,23 @@ def _surface_log_radius_profile(
     n_bins,
     radius_quantile,
     log_scale_uv=None,
+    angular_coeffs=None,
 ):
     """Outer surface profile in the common avatar-local transverse frame.
 
     ``log_scale_uv`` is an optional geometry scale in the accessory's own
-    physical U/V axes.  Applying it here mirrors the inverse U/V query warp
-    used later during inference.  Rotation is applied after that local scaling
-    so differently rotated adaptations are still compared in one common frame.
+    physical U/V axes.  ``angular_coeffs`` adds a low-order mean-zero radial
+    field in the *post-U/V-scale accessory-local angle*.  The runtime inverse
+    query warp uses the same ordering: undo angular radial scale, then U/V scale.
     """
     local = _surface_ring_local(item, profile, source_s, half_window)
     if log_scale_uv is not None:
         logs = np.asarray(log_scale_uv, dtype=np.float64).reshape(2)
         local = local * np.exp(logs)[None, :]
+    if angular_coeffs is not None:
+        theta_local = np.arctan2(local[:, 1], local[:, 0])
+        angular_log = _angular_log_field(theta_local, angular_coeffs)
+        local = local * np.exp(angular_log)[:, None]
     common = _rotate_uv(local, -float(item.get("rot_deg", 0.0)))
     return _angular_log_radius_profile(common, n_bins, radius_quantile)
 
@@ -223,38 +283,55 @@ def _surface_radius_slope(
     correction_width=None,
     log_scale_uv=None,
     log_slope_uv=None,
+    angular_coeffs=None,
+    angular_slope_coeffs=None,
 ):
     """Finite-difference d(log radial profile)/d(source_s).
 
-    When an anisotropic correction is supplied, evaluate the same C1 fade used
-    by the runtime query warp.  This lets the tangent fit target the geometry
-    that will actually be inferred, not an unwarped proxy.
+    Optional U/V and angular corrections are evaluated with the same C1 fade
+    used by the runtime inverse query warp, so tangent fitting targets the
+    geometry that will actually be inferred.
     """
     lo, hi = sorted((float(item["src_0"]), float(item["src_1"])))
     left, right = max(lo, source_s - step), min(hi, source_s + step)
     if right - left <= 1e-9:
         return np.zeros(n_bins, dtype=np.float64)
 
-    def logs_at(s):
-        if log_scale_uv is None:
-            return None
-        base = np.asarray(log_scale_uv, dtype=np.float64).reshape(2)
-        slope = np.zeros(2, dtype=np.float64)
-        if log_slope_uv is not None:
-            slope = np.asarray(log_slope_uv, dtype=np.float64).reshape(2)
-        if seam_s is None or correction_width is None:
-            return base + slope * (s - source_s)
-        fade = float(_smooth_fade([s], seam_s, correction_width)[0])
-        return (base + slope * (s - seam_s)) * fade
+    def values_at(s):
+        uv_value = None
+        if log_scale_uv is not None:
+            base = np.asarray(log_scale_uv, dtype=np.float64).reshape(2)
+            slope = np.zeros(2, dtype=np.float64)
+            if log_slope_uv is not None:
+                slope = np.asarray(log_slope_uv, dtype=np.float64).reshape(2)
+            if seam_s is None or correction_width is None:
+                uv_value = base + slope * (s - source_s)
+            else:
+                fade = float(_smooth_fade([s], seam_s, correction_width)[0])
+                uv_value = (base + slope * (s - seam_s)) * fade
 
+        angular_value = None
+        if angular_coeffs is not None:
+            base = np.asarray(angular_coeffs, dtype=np.float64).reshape(-1)
+            slope = np.zeros_like(base)
+            if angular_slope_coeffs is not None:
+                slope = np.asarray(angular_slope_coeffs, dtype=np.float64).reshape(base.shape)
+            if seam_s is None or correction_width is None:
+                angular_value = base + slope * (s - source_s)
+            else:
+                fade = float(_smooth_fade([s], seam_s, correction_width)[0])
+                angular_value = (base + slope * (s - seam_s)) * fade
+        return uv_value, angular_value
+
+    uv_l, angular_l = values_at(left)
+    uv_r, angular_r = values_at(right)
     profile_l = _surface_log_radius_profile(
-        item, profile, left, half_window, n_bins, radius_quantile, logs_at(left)
+        item, profile, left, half_window, n_bins, radius_quantile, uv_l, angular_l
     )
     profile_r = _surface_log_radius_profile(
-        item, profile, right, half_window, n_bins, radius_quantile, logs_at(right)
+        item, profile, right, half_window, n_bins, radius_quantile, uv_r, angular_r
     )
     return (profile_r - profile_l) / (right - left)
-
 
 def _anisotropy_excess(log_uv, max_anisotropic_change):
     """Amount by which per-axis deformation exceeds the configured shape limit."""
@@ -423,6 +500,159 @@ def _fit_anisotropic_tangent_pair(
     x[limits <= 1e-12] = 0.0
     return x[:2].copy(), x[2:].copy()
 
+
+def _fit_angular_radius_pair(
+    left,
+    right,
+    profile_l,
+    profile_r,
+    seam_s,
+    surface_window,
+    surface_bins,
+    radius_quantile,
+    base_uv_l,
+    base_uv_r,
+    order,
+    max_angular_change,
+    deformation_weight,
+):
+    """Fit a low-order angular radial residual on top of U/V scaling.
+
+    The Fourier field has no constant term, so global radius stays controlled by
+    the existing isotropic/U-V fit.  Harmonics 1..order only refine circumferential
+    profile mismatch.
+    """
+    n_coeff = 2 * max(0, int(order) - 1)
+    if n_coeff <= 0:
+        return np.zeros(0), np.zeros(0), 0.0, 0.0
+    baseline_l = _surface_log_radius_profile(
+        left, profile_l, seam_s, surface_window, surface_bins,
+        radius_quantile, base_uv_l
+    )
+    baseline_r = _surface_log_radius_profile(
+        right, profile_r, seam_s, surface_window, surface_bins,
+        radius_quantile, base_uv_r
+    )
+    before_rms = float(np.sqrt(np.mean((baseline_l - baseline_r) ** 2)))
+    x0 = np.zeros(2 * n_coeff, dtype=np.float64)
+    max_log = math.log(1.0 + float(max_angular_change))
+    probe_theta = np.linspace(-np.pi, np.pi, max(64, 4 * surface_bins), endpoint=False)
+    probe_basis = _angular_basis(probe_theta, order)
+    reg = math.sqrt(max(0.0, deformation_weight))
+
+    def residual(x):
+        cl = x[:n_coeff]
+        cr = x[n_coeff:]
+        lp = _surface_log_radius_profile(
+            left, profile_l, seam_s, surface_window, surface_bins,
+            radius_quantile, base_uv_l, cl
+        )
+        rp = _surface_log_radius_profile(
+            right, profile_r, seam_s, surface_window, surface_bins,
+            radius_quantile, base_uv_r, cr
+        )
+        parts = [lp - rp]
+        if reg > 0.0:
+            parts.append(reg * x)
+        # Penalize pointwise radial changes beyond the configured bound.
+        field_l = probe_basis @ cl
+        field_r = probe_basis @ cr
+        excess = np.concatenate((
+            np.maximum(np.abs(field_l) - max_log, 0.0),
+            np.maximum(np.abs(field_r) - max_log, 0.0),
+        ))
+        parts.append(10.0 * excess)
+        return np.concatenate(parts)
+
+    fit = least_squares(
+        residual,
+        x0,
+        bounds=(np.full_like(x0, -max_log), np.full_like(x0, max_log)),
+        max_nfev=80,
+        ftol=1e-8,
+        xtol=1e-8,
+        gtol=1e-8,
+    )
+    x = np.asarray(fit.x, dtype=np.float64)
+    coeff_l = _bound_angular_coeffs(x[:n_coeff], max_angular_change)
+    coeff_r = _bound_angular_coeffs(x[n_coeff:], max_angular_change)
+    final_l = _surface_log_radius_profile(
+        left, profile_l, seam_s, surface_window, surface_bins,
+        radius_quantile, base_uv_l, coeff_l
+    )
+    final_r = _surface_log_radius_profile(
+        right, profile_r, seam_s, surface_window, surface_bins,
+        radius_quantile, base_uv_r, coeff_r
+    )
+    after_rms = float(np.sqrt(np.mean((final_l - final_r) ** 2)))
+    return coeff_l, coeff_r, before_rms, after_rms
+
+
+def _fit_angular_tangent_pair(
+    left,
+    right,
+    profile_l,
+    profile_r,
+    seam_s,
+    width_l,
+    width_r,
+    step_l,
+    step_r,
+    surface_window,
+    surface_bins,
+    radius_quantile,
+    base_uv_l,
+    base_uv_r,
+    slope_uv_l,
+    slope_uv_r,
+    angular_l,
+    angular_r,
+    max_angular_tangent_change,
+    deformation_weight,
+):
+    """Fit d(Fourier log-radius)/dsrc so angular surface taper is C1."""
+    angular_l = np.asarray(angular_l, dtype=np.float64).reshape(-1)
+    angular_r = np.asarray(angular_r, dtype=np.float64).reshape(-1)
+    if angular_l.shape != angular_r.shape:
+        raise ValueError("Angular seam coefficient size mismatch")
+    n_coeff = angular_l.size
+    if n_coeff == 0:
+        return np.zeros(0), np.zeros(0)
+
+    x0 = np.zeros(2 * n_coeff, dtype=np.float64)
+    limit = float(max_angular_tangent_change)
+    reg = math.sqrt(max(0.0, deformation_weight))
+
+    def residual(x):
+        sl = _surface_radius_slope(
+            left, profile_l, seam_s, step_l, surface_window, surface_bins,
+            radius_quantile, seam_s, width_l, base_uv_l, slope_uv_l,
+            angular_l, x[:n_coeff]
+        )
+        sr = _surface_radius_slope(
+            right, profile_r, seam_s, step_r, surface_window, surface_bins,
+            radius_quantile, seam_s, width_r, base_uv_r, slope_uv_r,
+            angular_r, x[n_coeff:]
+        )
+        parts = [sl - sr]
+        if reg > 0.0:
+            parts.append(reg * x * max(step_l, step_r))
+        return np.concatenate(parts)
+
+    fit = least_squares(
+        residual,
+        x0,
+        bounds=(np.full_like(x0, -limit), np.full_like(x0, limit)),
+        max_nfev=80,
+        ftol=1e-8,
+        xtol=1e-8,
+        gtol=1e-8,
+    )
+    x = np.asarray(fit.x, dtype=np.float64)
+    slope_l = _bound_angular_field(x[:n_coeff], limit)
+    slope_r = _bound_angular_field(x[n_coeff:], limit)
+    return slope_l, slope_r
+
 def _position_center(item, curve, profile, source_s, radius_factor, half_window):
     """Approximate fitted cross-section center in the common avatar UV frame."""
     target_s = _mapped_s(item, source_s)
@@ -567,6 +797,14 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
         radius_mode = str(spec.get("radius_mode", "isotropic")).lower()
         max_anisotropic_change = float(spec.get("max_anisotropic_change", 0.15))
         deformation_weight = float(spec.get("deformation_weight", 0.01))
+        angular_profile_order = int(spec.get("angular_profile_order", 3))
+        max_angular_change = float(spec.get("max_angular_radius_change", 0.08))
+        angular_deformation_weight = float(
+            spec.get("angular_deformation_weight", max(deformation_weight, 0.02))
+        )
+        max_angular_tangent_change = float(
+            spec.get("max_angular_tangent_change", 1.0)
+        )
         max_gap = float(spec.get("max_gap", 0.0))
 
         if not (
@@ -579,14 +817,24 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
             raise ValueError(f"Invalid positional optimization settings in {group_name}")
         if radius_source not in {"surface", "curve"}:
             raise ValueError(f"radius_source must be 'surface' or 'curve' in {group_name}")
-        if radius_mode not in {"isotropic", "anisotropic"}:
-            raise ValueError(f"radius_mode must be 'isotropic' or 'anisotropic' in {group_name}")
-        if radius_mode == "anisotropic" and radius_source != "surface":
+        if radius_mode not in {"isotropic", "anisotropic", "angular"}:
             raise ValueError(
-                f"anisotropic radius fitting needs radius_source: surface in {group_name}"
+                f"radius_mode must be 'isotropic', 'anisotropic', or 'angular' in {group_name}"
+            )
+        if radius_mode in {"anisotropic", "angular"} and radius_source != "surface":
+            raise ValueError(
+                f"{radius_mode} radius fitting needs radius_source: surface in {group_name}"
             )
         if not (0.0 <= max_anisotropic_change < 1.0 and deformation_weight >= 0.0):
             raise ValueError(f"Invalid anisotropic seam settings in {group_name}")
+        if radius_mode == "angular":
+            if not (
+                2 <= angular_profile_order <= 6
+                and 0.0 < max_angular_change < 1.0
+                and angular_deformation_weight >= 0.0
+                and max_angular_tangent_change > 0.0
+            ):
+                raise ValueError(f"Invalid angular seam settings in {group_name}")
         if not (0.0 < surface_window <= 0.08 and tangent_step > 0.0):
             raise ValueError(f"Invalid seam sampling settings in {group_name}")
         if surface_bins < 8 or not (0.5 <= radius_quantile < 1.0):
@@ -669,12 +917,15 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
             slope_uv_l = slope_uv_r = None
             anisotropic_residual = None
             anisotropic_before = None
+            angular_l = angular_r = None
+            angular_slope_l = angular_slope_r = None
+            angular_residual = angular_before = None
             if do_radius:
                 lower, upper = math.log(1.0 - max_change), math.log(1.0 + max_change)
                 if surface_radius_available:
                     profile_l = surface_profiles[left["accessory_key"]]
                     profile_r = surface_profiles[right["accessory_key"]]
-                    if radius_mode == "anisotropic":
+                    if radius_mode in {"anisotropic", "angular"}:
                         corr_uv_l, corr_uv_r, anisotropic_before, anisotropic_residual = (
                             _fit_anisotropic_radius_pair(
                                 left,
@@ -714,6 +965,54 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                         else:
                             slope_uv_l = np.zeros(2, dtype=np.float64)
                             slope_uv_r = np.zeros(2, dtype=np.float64)
+
+                        if radius_mode == "angular":
+                            angular_l, angular_r, angular_before, angular_residual = (
+                                _fit_angular_radius_pair(
+                                    left,
+                                    right,
+                                    profile_l,
+                                    profile_r,
+                                    seam_s,
+                                    surface_window,
+                                    surface_bins,
+                                    radius_quantile,
+                                    corr_uv_l,
+                                    corr_uv_r,
+                                    angular_profile_order,
+                                    max_angular_change,
+                                    angular_deformation_weight,
+                                )
+                            )
+                            if match_radius_tangent:
+                                angular_slope_l, angular_slope_r = (
+                                    _fit_angular_tangent_pair(
+                                        left,
+                                        right,
+                                        profile_l,
+                                        profile_r,
+                                        seam_s,
+                                        width_l,
+                                        width_r,
+                                        step_l,
+                                        step_r,
+                                        surface_window,
+                                        surface_bins,
+                                        radius_quantile,
+                                        corr_uv_l,
+                                        corr_uv_r,
+                                        slope_uv_l,
+                                        slope_uv_r,
+                                        angular_l,
+                                        angular_r,
+                                        max_angular_tangent_change,
+                                        angular_deformation_weight,
+                                    )
+                                )
+                            else:
+                                angular_slope_l = np.zeros_like(angular_l)
+                                angular_slope_r = np.zeros_like(angular_r)
+
                         # Keep scalar summaries for backward-compatible diagnostics
                         # and callers that inspect SeamCorrection directly.
                         corr_l = float(np.mean(corr_uv_l))
@@ -900,6 +1199,8 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                     tuple(pos_slope_l),
                     None if corr_uv_l is None else tuple(np.asarray(corr_uv_l, dtype=float)),
                     None if slope_uv_l is None else tuple(np.asarray(slope_uv_l, dtype=float)),
+                    None if angular_l is None else tuple(np.asarray(angular_l, dtype=float)),
+                    None if angular_slope_l is None else tuple(np.asarray(angular_slope_l, dtype=float)),
                 )
             )
             result.setdefault(right_idx, []).append(
@@ -912,6 +1213,8 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                     tuple(pos_slope_r),
                     None if corr_uv_r is None else tuple(np.asarray(corr_uv_r, dtype=float)),
                     None if slope_uv_r is None else tuple(np.asarray(slope_uv_r, dtype=float)),
+                    None if angular_r is None else tuple(np.asarray(angular_r, dtype=float)),
+                    None if angular_slope_r is None else tuple(np.asarray(angular_slope_r, dtype=float)),
                 )
             )
             paired += 1
@@ -935,6 +1238,22 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                         print(
                             f"[seam {group_name}] {label}surface-profile mismatch "
                             f"{before_pct:.1f}% -> {after_pct:.1f}% after anisotropic radius fit"
+                        )
+                    if angular_l is not None:
+                        print(
+                            f"[seam {group_name}] angular profile harmonics 2.."
+                            f"{angular_profile_order} coeffs "
+                            f"{np.asarray(angular_l).round(4).tolist()} / "
+                            f"{np.asarray(angular_r).round(4).tolist()}; "
+                            f"dcoeff/dsrc {np.asarray(angular_slope_l).round(4).tolist()} / "
+                            f"{np.asarray(angular_slope_r).round(4).tolist()}"
+                        )
+                        before_pct = 100.0 * math.expm1(angular_before)
+                        after_pct = 100.0 * math.expm1(angular_residual)
+                        label = "WARNING " if angular_residual > 0.025 else ""
+                        print(
+                            f"[seam {group_name}] {label}surface-profile mismatch "
+                            f"{before_pct:.1f}% -> {after_pct:.1f}% after angular profile fit"
                         )
                 else:
                     print(
@@ -979,11 +1298,36 @@ def radius_scale_at(source_coords, corrections):
     uv = radius_scale_uv_at(source_coords, corrections)
     return np.sqrt(uv[:, 0] * uv[:, 1])
 
-def warp_accessory_queries(accessory_data, avatar_data, corrections):
-    """Apply local C1 translation, then the established radius query warp.
+def angular_radius_scale_at(source_coords, physical_angles, corrections):
+    """C1 angular radial scale evaluated in accessory-local physical angle."""
+    s = np.asarray(source_coords, dtype=np.float64).reshape(-1)
+    theta = np.asarray(physical_angles, dtype=np.float64).reshape(-1)
+    if s.shape != theta.shape:
+        raise ValueError("Angular seam source/angle count mismatch")
+    log_scale = np.zeros_like(s)
+    for seam in corrections:
+        if seam.angular_log_radius_coeffs is None:
+            continue
+        value = np.asarray(seam.angular_log_radius_coeffs, dtype=np.float64).reshape(-1)
+        if seam.angular_log_radius_slope_coeffs is None:
+            slope = np.zeros_like(value)
+        else:
+            slope = np.asarray(
+                seam.angular_log_radius_slope_coeffs, dtype=np.float64
+            ).reshape(value.shape)
+        basis = _angular_basis(theta, value.size // 2 + 1)
+        ds = s - seam.source_s
+        fade = _smooth_fade(s, seam.source_s, seam.half_width)
+        coeffs = value[None, :] + ds[:, None] * slope[None, :]
+        log_scale += np.sum(basis * coeffs, axis=1) * fade
+    return np.exp(log_scale)
 
-    Translation is in accessory-local physical U/V units, like tloc[1:3].  Its
-    value and first derivative fade to zero at the correction-band edges.
+
+def warp_accessory_queries(accessory_data, avatar_data, corrections):
+    """Apply local translation and profile warps before model inference.
+
+    Inverse-warp order matches the fitted forward geometry:
+      translation -> angular radial scale -> anisotropic U/V scale.
     Processing is chunked so seam fitting never allocates another full 512^3
     working array.
     """
@@ -1001,20 +1345,27 @@ def warp_accessory_queries(accessory_data, avatar_data, corrections):
         np.any(seam.position_uv) or np.any(seam.position_slope_uv)
         for seam in corrections
     )
-    if position_enabled:
+    angular_enabled = any(
+        seam.angular_log_radius_coeffs is not None
+        for seam in corrections
+    )
+    if position_enabled or angular_enabled:
         radius = np.asarray(accessory_data["radius"])
         if radius.shape != (len(local), 2):
-            raise ValueError("Position fitting needs per-point accessory U/V radii")
+            raise ValueError(
+                "Position/angular seam fitting needs per-point accessory U/V radii"
+            )
 
     chunk_size = 262144
     for start in range(0, len(local), chunk_size):
         stop = min(start + chunk_size, len(local))
         s = source_s[start:stop]
         piece = local[start:stop]
-        if position_enabled:
+        if position_enabled or angular_enabled:
             radii = radius[start:stop]
             if not np.all(np.isfinite(radii)) or np.any(radii <= 0.0):
-                raise ValueError("Invalid accessory radius for seam position fitting")
+                raise ValueError("Invalid accessory radius for seam fitting")
+        if position_enabled:
             for seam in corrections:
                 base = np.asarray(seam.position_uv, dtype=np.float64)
                 slope = np.asarray(seam.position_slope_uv, dtype=np.float64)
@@ -1031,6 +1382,17 @@ def warp_accessory_queries(accessory_data, avatar_data, corrections):
                 piece[active, 1] -= shift[:, 0] / radii[active, 0]
                 piece[active, 2] -= shift[:, 1] / radii[active, 1]
 
+        if angular_enabled:
+            # The angular field is defined in accessory-local *physical* angle
+            # after translation and before the U/V anisotropic inverse warp.
+            physical_angle = np.arctan2(
+                piece[:, 2] * radii[:, 1],
+                piece[:, 1] * radii[:, 0],
+            )
+            angular_scale = angular_radius_scale_at(s, physical_angle, corrections)
+            np.divide(piece[:, 1], angular_scale, out=piece[:, 1], casting="unsafe")
+            np.divide(piece[:, 2], angular_scale, out=piece[:, 2], casting="unsafe")
+
         scale_uv = radius_scale_uv_at(s, corrections)
         np.divide(piece[:, 1], scale_uv[:, 0], out=piece[:, 1], casting="unsafe")
         np.divide(piece[:, 2], scale_uv[:, 1], out=piece[:, 2], casting="unsafe")
@@ -1039,7 +1401,7 @@ def warp_accessory_queries(accessory_data, avatar_data, corrections):
             seam.log_radius_scale_uv is not None or seam.log_radius_slope_uv is not None
             for seam in corrections
         )
-        if position_enabled or anisotropic_enabled:
+        if position_enabled or anisotropic_enabled or angular_enabled:
             # Translation and anisotropic scaling both change rho and angle, so
             # rebuild support proxies from the warped model-local queries.
             if "rho_n" in accessory_data:
