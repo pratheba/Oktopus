@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src' / 'app'))
-from seam_optimization import build_seam_plan, radius_scale_at, warp_accessory_queries
+from seam_optimization import (build_seam_plan, radius_scale_at, radius_scale_uv_at,
+                               warp_accessory_queries)
 
 
 class FakeCore:
@@ -229,6 +230,92 @@ class SeamTests(unittest.TestCase):
         config = {'t1': {'seam_optimization': {'enabled': True, 'optimize_position': True}}}
         with self.assertRaisesRegex(ValueError, 'surface_points_owned'):
             build_seam_plan(self.items, config, self.curves.__getitem__)
+
+
+    def test_anisotropic_surface_fit_reduces_elliptical_profile_mismatch(self):
+        class EllipseCore:
+            def __init__(self):
+                angles = np.linspace(0.0, 2.0 * np.pi, 96, endpoint=False)
+                grid_s = np.linspace(0.0, 1.0, 260)
+                self.surface_points_owned = np.array([
+                    (s,
+                     (1.0 + 0.8 * s) * np.cos(theta),
+                     (1.1 - 0.45 * s) * np.sin(theta))
+                    for s in grid_s for theta in angles
+                ], dtype=float)
+
+            def curve_projection(self, points):
+                return points[:, 0]
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': np.ones((len(s), 2)),
+                        'points': np.column_stack((s, np.zeros_like(s), np.zeros_like(s))),
+                        'frame': np.broadcast_to(np.eye(3), (len(s), 3, 3))}
+
+        class EllipseCurve:
+            def __init__(self):
+                self.core = EllipseCore()
+
+        curve = EllipseCurve()
+        pieces = [item('a', 'avatar|t', 'puffer|x', .1, .4, 1.0, 'g'),
+                  item('b', 'avatar|t', 'puffer|x', .38, .68, 1.0, 'g')]
+        pieces[0]['tgt_0'], pieces[0]['tgt_1'] = .10, .40
+        pieces[1]['tgt_0'], pieces[1]['tgt_1'] = .58, .88
+        spec = {'g': {'seam_optimization': {
+            'enabled': True,
+            'optimize_radius': True,
+            'radius_source': 'surface',
+            'radius_mode': 'anisotropic',
+            'max_radius_change': .30,
+            'max_anisotropic_change': .25,
+            'deformation_weight': 0.0,
+            'match_surface_tangent': True,
+        }}}
+        plan = build_seam_plan(pieces, spec, lambda _: curve)
+        self.assertIsNotNone(plan[0][0].log_radius_scale_uv)
+        self.assertIsNotNone(plan[1][0].log_radius_scale_uv)
+        self.assertNotAlmostEqual(plan[0][0].log_radius_scale_uv[0],
+                                  plan[0][0].log_radius_scale_uv[1])
+        self.assertNotAlmostEqual(plan[0][0].log_radius_slope_uv[0],
+                                  plan[0][0].log_radius_slope_uv[1])
+
+        from seam_optimization import _surface_profile, _surface_log_radius_profile
+        profile = _surface_profile(curve)
+        seam_s = plan[0][0].source_s
+        before_l = _surface_log_radius_profile(pieces[0], profile, seam_s, .025, 24, .85)
+        before_r = _surface_log_radius_profile(pieces[1], profile, seam_s, .025, 24, .85)
+        after_l = _surface_log_radius_profile(
+            pieces[0], profile, seam_s, .025, 24, .85, plan[0][0].log_radius_scale_uv)
+        after_r = _surface_log_radius_profile(
+            pieces[1], profile, seam_s, .025, 24, .85, plan[1][0].log_radius_scale_uv)
+        before = np.sqrt(np.mean((before_l - before_r) ** 2))
+        after = np.sqrt(np.mean((after_l - after_r) ** 2))
+        self.assertLess(after, 0.25 * before)
+
+    def test_anisotropic_query_warp_scales_uv_independently(self):
+        from seam_optimization import SeamCorrection
+        seam = SeamCorrection(
+            .5, .1, 0.0, 0.0,
+            log_radius_scale_uv=(math.log(2.0), math.log(0.5)),
+            log_radius_slope_uv=(0.0, 0.0),
+        )
+        queries = {
+            'samples_local': np.array([[.0, 1.0, 2.0]]),
+            'rho_n': np.array([np.hypot(1.0, 2.0)]),
+            'u_n': np.array([1.0]),
+            'v_n': np.array([2.0]),
+            'angles': np.array([math.atan2(2.0, 1.0)]),
+        }
+        out = warp_accessory_queries(queries, {'coords': np.array([.5])}, [seam])
+        np.testing.assert_allclose(out['samples_local'][0], [0.0, 0.5, 4.0])
+        np.testing.assert_allclose(out['rho_n'][0], np.hypot(.5, 4.0))
+        np.testing.assert_allclose(out['u_n'][0], .5)
+        np.testing.assert_allclose(out['v_n'][0], 4.0)
+        np.testing.assert_allclose(out['angles'][0], math.atan2(4.0, .5))
+        np.testing.assert_allclose(radius_scale_uv_at([.5], [seam])[0], [2.0, .5])
+        self.assertAlmostEqual(radius_scale_at([.5], [seam])[0], 1.0)
+
 
 
 if __name__ == '__main__':
