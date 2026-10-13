@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src' / 'app'))
-from seam_optimization import (build_seam_plan, radius_scale_at, radius_scale_uv_at,
-                               warp_accessory_queries)
+from seam_optimization import (SeamCorrection, build_seam_plan, radius_scale_at,
+                               radius_scale_uv_at, warp_accessory_queries)
 
 
 class FakeCore:
@@ -480,6 +480,50 @@ class SeamTests(unittest.TestCase):
         # center, so the automatic position fit should counter a real offset.
         self.assertGreater(np.linalg.norm(plan[0][0].position_uv), 0.0)
         self.assertGreater(np.linalg.norm(plan[1][0].position_uv), 0.0)
+
+    def test_wrap_query_warp_scales_about_tilted_axis(self):
+        class Core:
+            def calc_curve_length(self):
+                return 1.0, None
+
+        class Curve:
+            def __init__(self):
+                self.core = Core()
+
+        coord = 0.8
+        tilt_deg = -3.0
+        # Runtime _localize query centre after tilt_u:
+        # u_query = u_query - tan(tilt) * forward.
+        pivot_u = -np.tan(np.deg2rad(tilt_deg)) * (coord - 0.7)
+        queries = {
+            'samples_local': np.array([
+                [0.0, pivot_u, 0.0],
+                [0.0, pivot_u + 0.4, 0.0],
+            ], dtype=float),
+            'radius': np.ones((2, 2), dtype=float),
+            'coords': np.array([coord, coord], dtype=float),
+            'rho_n': np.zeros(2, dtype=float),
+            'u_n': np.zeros(2, dtype=float),
+            'v_n': np.zeros(2, dtype=float),
+            'angles': np.zeros(2, dtype=float),
+        }
+        seam = SeamCorrection(
+            source_s=.25, half_width=.1,
+            log_radius_scale=np.log(2.0), log_radius_slope=0.0,
+        )
+        adapt_arg = {
+            'wrap_radius': True,
+            'accessory_curve_handle': Curve(),
+            'tgt_0': .7, 'tgt_1': .9,
+            'tilt_u': tilt_deg, 'tilt_u_anchor': .7, 'tilt_u_end': .9,
+        }
+        out = warp_accessory_queries(
+            queries, {'coords': np.array([.25, .25])}, [seam], adapt_arg
+        )
+        # Axis itself must not move under radial scaling.
+        self.assertAlmostEqual(out['samples_local'][0, 1], pivot_u, places=10)
+        # Radial offset is halved by the inverse query warp around that axis.
+        self.assertAlmostEqual(out['samples_local'][1, 1], pivot_u + 0.2, places=10)
 
     def test_wrap_radius_nonzero_angular_follow_is_rejected(self):
         class MinimalWrapCore:

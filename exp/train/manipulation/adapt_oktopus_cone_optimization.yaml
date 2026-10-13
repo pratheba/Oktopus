@@ -1,24 +1,23 @@
 combine_adaptations: true
 
-# Both cone sections map to the same avatar body curve and are optimized only
-# against each other.  The wrap-aware seam planner currently requires
-# wrap_angular_follow: 0.0 so its pre-inference geometry prediction exactly
-# matches the angle-independent wrap mapping used below.
+# Cone keeps the original wrap/tilt mapping.  Seam fitting is deliberately
+# conservative: scalar radius + C0 position only.  Unlike the puffer, the cone
+# intentionally uses different one-sided tilt fields in its two sections, so
+# forcing their center tangents to agree would fight the designed shape.
 blend_groups:
   cone_body:
     seam_optimization:
       enabled: true
       optimize_radius: true
       optimize_position: true
-      radius_mode: anisotropic
+      radius_mode: isotropic
       radius_source: surface
-      max_radius_change: 0.20
-      max_anisotropic_change: 0.15
-      max_position_change: 0.05
-      transition_fraction: 0.20
+      max_radius_change: 0.10
+      max_position_change: 0.02
+      transition_fraction: 0.15
       position_sample_window: 0.025
       match_surface_tangent: true
-      match_position_tangent: true
+      match_position_tangent: false
 
 adaptations:
 - name: cone_body_1
@@ -36,30 +35,22 @@ adaptations:
   scale: 4.0
   rot_deg: 0.0
   cache_as: cone_1_v1|cone
-
-  # Required by the current wrap-aware seam predictor.
   wrap_angular_follow: 0.0
   tilt_v: -1.5
   tilt_v_anchor: 0.0
   tilt_v_end: 0.95
-
-  # First filtering gate
   use_adapt_control_filter_grid: true
   avatar_filter_radius_scale: 1.0
   avatar_filter_radius_add: 0.10
   avatar_filter_norm: 1.0
-
-  # Second localization cylinder
   avatar_cylinder_radius_scale: 1.0
   avatar_cylinder_radius_add: 0.10
   adapt_localize_norm: 1.0
-
   use_accessory_support_clamp: true
   support_rho_limit: 1.0
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
-
   cut_avatar: false
   auto_avatar_snug_field: true
   use_soft_snug: false
@@ -79,30 +70,22 @@ adaptations:
   scale: 1.0
   rot_deg: 0.0
   cache_as: cone_1_v1|cone
-
-  # Required by the current wrap-aware seam predictor.
   wrap_angular_follow: 0.0
   tilt_u: -3.0
   tilt_u_anchor: 0.7
   tilt_u_end: 0.9
-
-  # First filtering gate
   use_adapt_control_filter_grid: true
   avatar_filter_radius_scale: 1.0
   avatar_filter_radius_add: 0.10
   avatar_filter_norm: 1.0
-
-  # Second localization cylinder
   avatar_cylinder_radius_scale: 1.0
   avatar_cylinder_radius_add: 0.10
   adapt_localize_norm: 1.0
-
   use_accessory_support_clamp: true
   support_rho_limit: 1.0
   support_w_limit: 999.0
   support_positive_value: 1.0
   support_clamp_verbose: true
-
   cut_avatar: false
   auto_avatar_snug_field: true
   use_soft_snug: false

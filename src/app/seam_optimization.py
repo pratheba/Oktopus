@@ -1450,13 +1450,20 @@ def angular_radius_scale_at(source_coords, physical_angles, corrections):
     return np.exp(log_scale)
 
 
-def warp_accessory_queries(accessory_data, avatar_data, corrections):
+def warp_accessory_queries(accessory_data, avatar_data, corrections, adapt_arg=None):
     """Apply local translation and profile warps before model inference.
 
     Inverse-warp order matches the fitted forward geometry:
       translation -> angular radial scale -> anisotropic U/V scale.
-    Processing is chunked so seam fitting never allocates another full 512^3
-    working array.
+
+    For ``wrap_radius`` adaptations the runtime mapper may already have moved
+    the model query centre with ``tloc`` and/or one-sided tilt.  Radial seam
+    corrections must therefore be applied about that moved centre, not about
+    normalized UV=(0,0).  Scaling about the origin changes the cone axis itself
+    and can turn a small seam correction into a large global-looking spike.
+
+    Rigid-radius behavior intentionally keeps the historical zero pivot so the
+    puffer path is unchanged.
     """
     if not corrections:
         return accessory_data
@@ -1476,22 +1483,78 @@ def warp_accessory_queries(accessory_data, avatar_data, corrections):
         seam.angular_log_radius_coeffs is not None
         for seam in corrections
     )
-    if position_enabled or angular_enabled:
+    anisotropic_enabled = any(
+        seam.log_radius_scale_uv is not None or seam.log_radius_slope_uv is not None
+        for seam in corrections
+    )
+    wrap_mode = adapt_arg is not None and bool(adapt_arg.get("wrap_radius", False))
+    needs_radius = position_enabled or angular_enabled or wrap_mode
+    if needs_radius:
         radius = np.asarray(accessory_data["radius"])
         if radius.shape != (len(local), 2):
             raise ValueError(
-                "Position/angular seam fitting needs per-point accessory U/V radii"
+                "Position/radial seam fitting needs per-point accessory U/V radii"
             )
+
+    # Query-space pivot for wrap-radius pieces.  localize_samples_adapt builds
+    # u_acc/v_acc around the accessory curve, then subtracts tloc and one-sided
+    # tilt before normalizing by accessory radius.  Mirror exactly those query
+    # translations here so radial refinement changes the cross-section around
+    # its current axis instead of scaling the axis displacement itself.
+    wrap_pivot = None
+    if wrap_mode:
+        if bool(adapt_arg.get("use_tgt_runtime_uv_center", False)):
+            raise ValueError(
+                "Wrap seam pivot does not yet support use_tgt_runtime_uv_center"
+            )
+        if not needs_radius:
+            radius = np.asarray(accessory_data["radius"])
+        coords = np.asarray(accessory_data["coords"], dtype=np.float64).reshape(-1)
+        if len(coords) != len(local):
+            raise ValueError("Wrap seam pivot/query point count mismatch")
+        pivot_phys = np.zeros((len(local), 2), dtype=np.float64)
+
+        translate_local = adapt_arg.get("tloc", adapt_arg.get("translate_local", None))
+        if translate_local is not None:
+            tloc = np.asarray(translate_local, dtype=np.float64).reshape(3)
+            pivot_phys[:, 0] -= tloc[1]
+            pivot_phys[:, 1] -= tloc[2]
+
+        accessory_curve = adapt_arg.get("accessory_curve_handle", None)
+        if accessory_curve is None:
+            raise ValueError("Wrap seam pivot needs accessory_curve_handle")
+        curve_len, _ = accessory_curve.core.calc_curve_length()
+        curve_len = float(curve_len)
+        for axis, key in enumerate(("tilt_u", "tilt_v")):
+            if adapt_arg.get(key, None) is None:
+                continue
+            anchor = float(adapt_arg.get(f"{key}_anchor", adapt_arg["tgt_1"]))
+            end = float(adapt_arg.get(f"{key}_end", adapt_arg["tgt_0"]))
+            direction = float(np.sign(end - anchor))
+            if abs(direction) < 1e-12:
+                continue
+            forward = np.maximum(direction * (coords - anchor) * curve_len, 0.0)
+            # Runtime query tilt is: coord -= tan(tilt) * forward.
+            pivot_phys[:, axis] -= math.tan(
+                math.radians(float(adapt_arg[key]))
+            ) * forward
+
+        wrap_pivot = pivot_phys / np.maximum(np.asarray(radius, dtype=np.float64), 1e-12)
 
     chunk_size = 262144
     for start in range(0, len(local), chunk_size):
         stop = min(start + chunk_size, len(local))
         s = source_s[start:stop]
         piece = local[start:stop]
-        if position_enabled or angular_enabled:
+        if needs_radius:
             radii = radius[start:stop]
             if not np.all(np.isfinite(radii)) or np.any(radii <= 0.0):
                 raise ValueError("Invalid accessory radius for seam fitting")
+        if wrap_pivot is None:
+            pivot = np.zeros((len(piece), 2), dtype=np.float64)
+        else:
+            pivot = wrap_pivot[start:stop].copy()
+
         if position_enabled:
             for seam in corrections:
                 base = np.asarray(seam.position_uv, dtype=np.float64)
@@ -1504,30 +1567,32 @@ def warp_accessory_queries(accessory_data, avatar_data, corrections):
                 ds = s[active] - seam.source_s
                 fade = _smooth_fade(s[active], seam.source_s, seam.half_width)
                 shift = (base[None, :] + ds[:, None] * slope[None, :]) * fade[:, None]
+                shift_n = shift / radii[active]
                 # Matching _localize.py: moving geometry by +tloc means
                 # subtracting that displacement from its inference queries.
-                piece[active, 1] -= shift[:, 0] / radii[active, 0]
-                piece[active, 2] -= shift[:, 1] / radii[active, 1]
+                piece[active, 1:3] -= shift_n
+                # The cross-section axis moves with the same query translation;
+                # subsequent radius scaling must stay centered on that axis.
+                pivot[active] -= shift_n
 
         if angular_enabled:
-            # The angular field is defined in accessory-local *physical* angle
-            # after translation and before the U/V anisotropic inverse warp.
+            # Define angle relative to the current cross-section axis, not the
+            # normalized model origin. This matters for tilted wrap-radius cones.
+            rel = piece[:, 1:3] - pivot
             physical_angle = np.arctan2(
-                piece[:, 2] * radii[:, 1],
-                piece[:, 1] * radii[:, 0],
+                rel[:, 1] * radii[:, 1],
+                rel[:, 0] * radii[:, 0],
             )
             angular_scale = angular_radius_scale_at(s, physical_angle, corrections)
-            np.divide(piece[:, 1], angular_scale, out=piece[:, 1], casting="unsafe")
-            np.divide(piece[:, 2], angular_scale, out=piece[:, 2], casting="unsafe")
+            rel /= angular_scale[:, None]
+            piece[:, 1:3] = pivot + rel
 
         scale_uv = radius_scale_uv_at(s, corrections)
-        np.divide(piece[:, 1], scale_uv[:, 0], out=piece[:, 1], casting="unsafe")
-        np.divide(piece[:, 2], scale_uv[:, 1], out=piece[:, 2], casting="unsafe")
+        rel = piece[:, 1:3] - pivot
+        rel[:, 0] /= scale_uv[:, 0]
+        rel[:, 1] /= scale_uv[:, 1]
+        piece[:, 1:3] = pivot + rel
 
-        anisotropic_enabled = any(
-            seam.log_radius_scale_uv is not None or seam.log_radius_slope_uv is not None
-            for seam in corrections
-        )
         if position_enabled or anisotropic_enabled or angular_enabled:
             # Translation and anisotropic scaling both change rho and angle, so
             # rebuild support proxies from the warped model-local queries.

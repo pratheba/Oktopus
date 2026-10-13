@@ -1523,7 +1523,7 @@ class AgentSDF(AgentBase):
                 # not the output SDF or grid. Do this after any snug-field rerun.
                 if item_index in seam_plan:
                     accessory_data = warp_accessory_queries(
-                        accessory_data, avatar_data, seam_plan[item_index]
+                        accessory_data, avatar_data, seam_plan[item_index], adapt_arg
                     )
 
                 use_tiled_detail = bool(adapt_arg.get("use_tiled_detail", False))
