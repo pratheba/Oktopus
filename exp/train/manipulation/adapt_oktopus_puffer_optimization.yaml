@@ -5,16 +5,53 @@ blend_groups:
     seam_optimization:
       enabled: true
       optimize_radius: true
-      optimize_position: false
+      optimize_position: true
+      radius_mode: anisotropic
       max_radius_change: 0.20
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05  # accessory-local units, like tloc[1:3]
       transition_fraction: 0.20
+      position_sample_window: 0.025
   t2:
     seam_optimization:
       enabled: true
       optimize_radius: true
-      optimize_position: false
+      optimize_position: true
+      radius_mode: anisotropic
       max_radius_change: 0.20
+      max_anisotropic_change: 0.15
+      max_radius_change: 0.20
+      max_position_change: 0.05
       transition_fraction: 0.20
+      position_sample_window: 0.025
+  # Previously ungrouped t4/t5 are now blended and fitted independently.
+  t4:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true  # retain existing t4 radius behavior
+      optimize_position: true
+      radius_mode: angular
+      angular_profile_order: 3
+      max_angular_radius_change: 0.08
+      angular_deformation_weight: 0.02
+      max_angular_tangent_change: 1.0
+      max_radius_change: 0.20
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.20
+      position_sample_window: 0.025
+  t5:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true  # retain existing t5 radius behavior
+      optimize_position: true
+      radius_mode: anisotropic
+      max_radius_change: 0.20
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.20
+      position_sample_window: 0.025
+
 adaptations:
 - name: puffer_body_wrap_no_snug
   target_key: oktopus_9_v1|body
@@ -186,7 +223,7 @@ adaptations:
   src_1: 0.4
   tgt_0: 0.25
   tgt_1: 0.7
-  scale: 2.2
+  scale: 1.8
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
@@ -215,13 +252,14 @@ adaptations:
   target_key: oktopus_9_v1|t2
   accessory_key: puffer_3_v1|r_arm
   blend_group: t2
+  mesh_blend_delta: 0.005
   mode: direct
   cache_as: puffer_3_v1|r_arm
   src_0: 0.35
   src_1: 0.68
   tgt_0: 0.6
   tgt_1: 0.9
-  scale: 2.2
+  scale: 1.8
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
@@ -268,6 +306,8 @@ adaptations:
 - name: puffer_t4_1_rigid
   target_key: oktopus_9_v1|t4
   accessory_key: puffer_3_v1|r_arm
+  blend_group: t4
+  mesh_blend_delta: 0.005
   mode: direct
   cache_as: puffer_3_v1|r_arm
   src_0: 0.1
@@ -295,12 +335,14 @@ adaptations:
   target_key: oktopus_9_v1|t4
   accessory_key: puffer_3_v1|r_arm
   mode: direct
+  blend_group: t4
+  mesh_blend_delta: 0.005
   cache_as: puffer_3_v1|r_arm
   src_0: 0.38
   src_1: 0.68
   tgt_0: 0.25
   tgt_1: 0.7
-  scale: 1.8
+  scale: 1.7
   rot_deg: 0.0
   tloc: [0.0, 0.0, -0.05]
   wrap_radius: false
@@ -325,12 +367,14 @@ adaptations:
   target_key: oktopus_9_v1|t4
   accessory_key: puffer_3_v1|r_arm
   mode: direct
+  blend_group: t4
+  mesh_blend_delta: 0.005
   cache_as: puffer_3_v1|r_arm
   src_0: 0.66
   src_1: 0.9
   tgt_0: 0.55
   tgt_1: 0.9
-  scale: 1.8
+  scale: 1.7
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
@@ -352,6 +396,8 @@ adaptations:
   target_key: oktopus_9_v1|t5
   accessory_key: puffer_3_v1|r_arm
   mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
   cache_as: puffer_3_v1|r_arm
   src_0: 0.1
   src_1: 0.4
@@ -378,14 +424,16 @@ adaptations:
   target_key: oktopus_9_v1|t5
   accessory_key: puffer_3_v1|r_arm
   mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
   cache_as: puffer_3_v1|r_arm
   src_0: 0.38
   src_1: 0.68
   tgt_0: 0.25
   tgt_1: 0.7
-  scale: 1.8
+  scale: 1.7
   rot_deg: 0.0
-  tloc: [0.0, 0.0, 0.05]
+  tloc: [0.0, 0.0, -0.05]
   wrap_radius: false
   rigid_radius: true
   mode: direct
@@ -408,12 +456,14 @@ adaptations:
   target_key: oktopus_9_v1|t5
   accessory_key: puffer_3_v1|r_arm
   mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
   cache_as: puffer_3_v1|r_arm
   src_0: 0.66
   src_1: 0.9
   tgt_0: 0.55
   tgt_1: 0.9
-  scale: 1.8
+  scale: 1.7
   rot_deg: 0.0
   wrap_radius: false
   rigid_radius: true
@@ -436,9 +486,9 @@ adaptations:
   accessory_key: puffer_3_v1|r_arm
   mode: direct
   cache_as: puffer_3_v1|r_arm
-  src_0: 0.9
+  src_0: 0.98
   src_1: 0.4
-  tgt_0: 0.3
+  tgt_0: 0.2
   tgt_1: 0.9
   scale: 1.8
   rot_deg: 0.0
