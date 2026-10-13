@@ -414,5 +414,103 @@ class SeamTests(unittest.TestCase):
         self.assertAlmostEqual(factors[1], 1.1)
 
 
+    def test_wrap_radius_zero_angular_follow_is_supported(self):
+        class WrapCore:
+            def __init__(self, with_surface):
+                self.wrap_s_bins_full = np.linspace(0.0, 1.0, 9)
+                self.wrap_s_bins = self.wrap_s_bins_full.copy()
+                self.wrap_theta_bins = np.linspace(-np.pi, np.pi, 16, endpoint=False)
+                base = 1.0 + 0.08 * self.wrap_s_bins_full[:, None]
+                self.key_wrap_radius_full = np.broadcast_to(base, (9, 16)).copy()
+                self.key_wrap_radius = self.key_wrap_radius_full.copy()
+                if with_surface:
+                    theta = np.linspace(0.0, 2.0 * np.pi, 96, endpoint=False)
+                    grid_s = np.linspace(0.0, 1.0, 220)
+                    self.surface_points_owned = np.array([
+                        (ss,
+                         (1.0 + 0.05 * ss) * np.cos(tt),
+                         (0.95 + 0.04 * ss) * np.sin(tt))
+                        for ss in grid_s for tt in theta
+                    ], dtype=float)
+
+            def curve_projection(self, points):
+                return points[:, 0]
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': np.ones((len(s), 2)),
+                        'points': np.column_stack((s, np.zeros_like(s), np.zeros_like(s))),
+                        'frame': np.broadcast_to(np.eye(3), (len(s), 3, 3))}
+
+            def calc_curve_length(self):
+                return 1.0, None
+
+        class WrapCurve:
+            def __init__(self, with_surface):
+                self.core = WrapCore(with_surface)
+
+        avatar = WrapCurve(False)
+        accessory = WrapCurve(True)
+        curves = {'avatar|body': avatar, 'cone|cone': accessory}
+        pieces = [
+            {'name': 'cone_a', 'target_key': 'avatar|body', 'accessory_key': 'cone|cone',
+             'src_0': .0, 'src_1': .3, 'tgt_0': .0, 'tgt_1': .7,
+             'scale': 1.0, 'wrap_radius': True, 'rigid_radius': False,
+             'wrap_angular_follow': 0.0, 'mode': 'direct', 'blend_group': 'cone'},
+            {'name': 'cone_b', 'target_key': 'avatar|body', 'accessory_key': 'cone|cone',
+             'src_0': .2, 'src_1': .55, 'tgt_0': .7, 'tgt_1': .9,
+             'scale': 1.05, 'wrap_radius': True, 'rigid_radius': False,
+             'wrap_angular_follow': 0.0, 'tilt_u': -3.0,
+             'tilt_u_anchor': .7, 'tilt_u_end': .9,
+             'mode': 'direct', 'blend_group': 'cone'},
+        ]
+        spec = {'cone': {'seam_optimization': {
+            'enabled': True,
+            'optimize_radius': True,
+            'optimize_position': True,
+            'radius_source': 'surface',
+            'radius_mode': 'anisotropic',
+            'max_position_change': .08,
+        }}}
+        plan = build_seam_plan(pieces, spec, curves.__getitem__)
+        self.assertEqual(set(plan), {0, 1})
+        self.assertAlmostEqual(plan[0][0].source_s, .25)
+        self.assertIsNotNone(plan[0][0].log_radius_scale_uv)
+        # The second piece's one-sided tilt is part of the predicted output
+        # center, so the automatic position fit should counter a real offset.
+        self.assertGreater(np.linalg.norm(plan[0][0].position_uv), 0.0)
+        self.assertGreater(np.linalg.norm(plan[1][0].position_uv), 0.0)
+
+    def test_wrap_radius_nonzero_angular_follow_is_rejected(self):
+        class MinimalWrapCore:
+            def __init__(self):
+                self.wrap_s_bins_full = np.array([0.0, 1.0])
+                self.wrap_theta_bins = np.linspace(-np.pi, np.pi, 8, endpoint=False)
+                self.key_wrap_radius_full = np.ones((2, 8))
+
+            def interpolate(self, s, **kwargs):
+                s = np.asarray(s, dtype=float).reshape(-1)
+                return {'radius': np.ones((len(s), 2))}
+
+        class MinimalWrapCurve:
+            def __init__(self):
+                self.core = MinimalWrapCore()
+
+        curves = {'avatar|body': MinimalWrapCurve(), 'cone|cone': MinimalWrapCurve()}
+        pieces = [
+            {'name': 'a', 'target_key': 'avatar|body', 'accessory_key': 'cone|cone',
+             'src_0': .0, 'src_1': .3, 'tgt_0': .0, 'tgt_1': .7,
+             'scale': 1.0, 'wrap_radius': True, 'rigid_radius': False,
+             'wrap_angular_follow': 1.0, 'mode': 'direct', 'blend_group': 'cone'},
+            {'name': 'b', 'target_key': 'avatar|body', 'accessory_key': 'cone|cone',
+             'src_0': .2, 'src_1': .55, 'tgt_0': .7, 'tgt_1': .9,
+             'scale': 1.0, 'wrap_radius': True, 'rigid_radius': False,
+             'wrap_angular_follow': 1.0, 'mode': 'direct', 'blend_group': 'cone'},
+        ]
+        spec = {'cone': {'seam_optimization': {'enabled': True, 'radius_source': 'curve'}}}
+        with self.assertRaisesRegex(ValueError, 'wrap_angular_follow: 0.0'):
+            build_seam_plan(pieces, spec, curves.__getitem__)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -62,6 +62,107 @@ def _mapped_s(item, source_s):
     return float(item["tgt_0"]) + u * (float(item["tgt_1"]) - float(item["tgt_0"]))
 
 
+def _wrap_reference_radius(curve, s):
+    """Median directional wrap radius at one curve coordinate.
+
+    This mirrors the reference-radius term used by ``localize_samples_adapt``
+    for wrap-radius mapping.  The full-resolution wrap field is preferred so
+    seam planning observes the same geometry as the runtime mapper.
+    """
+    core = curve.core
+    wrap = getattr(core, "key_wrap_radius_full", None)
+    s_bins = getattr(core, "wrap_s_bins_full", None)
+    if wrap is None or s_bins is None:
+        wrap = getattr(core, "key_wrap_radius", None)
+        s_bins = getattr(core, "wrap_s_bins", None)
+    if wrap is None or s_bins is None:
+        # Defensive fallback for old assets without a directional wrap field.
+        return _positive_radius(curve, s)
+    wrap = np.asarray(wrap, dtype=np.float64)
+    s_bins = np.asarray(s_bins, dtype=np.float64).reshape(-1)
+    if wrap.ndim != 2 or wrap.shape[0] != len(s_bins) or len(s_bins) < 2:
+        raise ValueError("Invalid wrap-radius field for seam optimization")
+    reference = np.nanmedian(wrap, axis=1)
+    if not np.all(np.isfinite(reference)) or np.any(reference <= 0.0):
+        raise ValueError("Non-positive wrap-radius reference for seam optimization")
+    return float(np.interp(float(s), s_bins, reference))
+
+
+def _radial_query_scale(item, accessory_curve, source_s):
+    """Physical accessory-radius / avatar-radius scale before seam correction.
+
+    Rigid mode uses the YAML global scale directly.  For wrap mode we support
+    the exact angle-independent case (``wrap_angular_follow: 0``), which is the
+    cone configuration: ``scale * target_wrap_ref / avatar_wrap_ref``.
+
+    Angle-following wrap is deliberately rejected for now because its inverse
+    map is directional and must be fitted per angular sample rather than with a
+    single scalar conversion.
+    """
+    scale = float(item.get("scale", 1.0))
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"Expected positive finite scale, got {scale}")
+
+    if bool(item.get("wrap_radius", False)):
+        alpha = float(item.get("wrap_angular_follow", 1.0))
+        if abs(alpha) > 1e-12:
+            raise ValueError(
+                "Wrap seam optimization currently requires wrap_angular_follow: 0.0"
+            )
+        if item.get("wrap_adapt_n_keypoints", None) is not None:
+            raise ValueError(
+                "Wrap seam optimization does not yet mirror wrap_adapt_n_keypoints; "
+                "leave it unset"
+            )
+        if bool(item.get("use_attach_to_free_blend", item.get("use_wrap_to_rigid_blend", False))):
+            raise ValueError(
+                "Wrap seam optimization does not yet support attach-to-free radial blending"
+            )
+        avatar_curve = item.get("_seam_target_curve")
+        if avatar_curve is None:
+            raise ValueError("Wrap seam optimization is missing the avatar target curve")
+        target_s = _mapped_s(item, source_s)
+        src_ref = _wrap_reference_radius(avatar_curve, source_s)
+        tgt_ref = _wrap_reference_radius(accessory_curve, target_s)
+        value = scale * tgt_ref / max(src_ref, 1e-12)
+        if "wrap_scale_min" in item or "wrap_scale_max" in item:
+            value = float(np.clip(
+                value,
+                float(item.get("wrap_scale_min", 0.25)),
+                float(item.get("wrap_scale_max", 4.0)),
+            ))
+        return value
+
+    if bool(item.get("rigid_radius", False)):
+        return scale
+
+    raise ValueError("Seam optimization needs rigid_radius or wrap_radius mapping")
+
+
+def _tilt_geometry_uv(item, accessory_curve, target_s):
+    """Geometry-space U/V offset induced by localize_samples_adapt tilt.
+
+    Runtime tilt subtracts this value from the model query, therefore the
+    inferred geometry moves by the positive value returned here.
+    """
+    shift = np.zeros(2, dtype=np.float64)
+    if item.get("tilt_u", None) is None and item.get("tilt_v", None) is None:
+        return shift
+    curve_len, _ = accessory_curve.core.calc_curve_length()
+    curve_len = float(curve_len)
+    for axis, key in enumerate(("tilt_u", "tilt_v")):
+        if item.get(key, None) is None:
+            continue
+        anchor = float(item.get(f"{key}_anchor", item["tgt_1"]))
+        end = float(item.get(f"{key}_end", item["tgt_0"]))
+        direction = float(np.sign(end - anchor))
+        if abs(direction) < 1e-12:
+            continue
+        forward = max(direction * (float(target_s) - anchor) * curve_len, 0.0)
+        shift[axis] = math.tan(math.radians(float(item[key]))) * forward
+    return shift
+
+
 def _log_radius(item, curve, source_s):
     """Log physical output-radius proxy for the rigid-radius mapping.
 
@@ -70,10 +171,11 @@ def _log_radius(item, curve, source_s):
     R / global_scale (before this seam correction).  This inverse relationship
     is easy to accidentally reverse when fitting two adaptations.
     """
-    scale = float(item.get("scale", 1.0))
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError(f"Expected positive finite scale, got {scale}")
-    return math.log(_positive_radius(curve, _mapped_s(item, source_s))) - math.log(scale)
+    query_scale = _radial_query_scale(item, curve, source_s)
+    return (
+        math.log(_positive_radius(curve, _mapped_s(item, source_s)))
+        - math.log(query_scale)
+    )
 
 
 def _radius_slope(item, curve, source_s, step):
@@ -233,13 +335,18 @@ def _angular_log_radius_profile(common_uv, n_bins, radius_quantile):
 
 
 def _surface_ring_local(item, profile, source_s, half_window):
-    """Centered ring in physical accessory-local UV after global rigid scale."""
+    """Centered output ring in accessory-local axes before rot_deg alignment."""
     target_s = _mapped_s(item, source_s)
     ring_uv, center = _cross_section_points(profile, target_s, half_window)
-    scale = float(item.get("scale", 1.0))
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError("Surface radius fitting needs positive finite scale")
-    return (ring_uv - center) / scale
+    accessory_curve = item.get("_seam_accessory_curve")
+    if accessory_curve is None:
+        # Backward compatibility for direct helper tests of rigid-radius pieces.
+        query_scale = float(item.get("scale", 1.0))
+    else:
+        query_scale = _radial_query_scale(item, accessory_curve, source_s)
+    if not np.isfinite(query_scale) or query_scale <= 0.0:
+        raise ValueError("Surface radius fitting needs positive radial query scale")
+    return (ring_uv - center) / query_scale
 
 
 def _surface_log_radius_profile(
@@ -671,16 +778,19 @@ def _position_center(item, curve, profile, source_s, radius_factor, half_window)
         if field is None:
             raise ValueError("Unable to estimate the enabled runtime UV center field")
         model_center = curve.core.interpolate_uv_center_field(field, [target_s])[0]
-    scale = float(item.get("scale", 1.0))
     factor = np.asarray(radius_factor, dtype=np.float64)
     if factor.ndim == 0:
         factor = np.repeat(float(factor), 2)
     factor = factor.reshape(2)
+    query_scale = _radial_query_scale(item, curve, source_s)
+    target_s = _mapped_s(item, source_s)
+    tilt_uv = _tilt_geometry_uv(item, curve, target_s)
     # The inverse query warp expands geometry by factor[U,V] in accessory-local
-    # physical axes. Apply that same convention when estimating the fitted center.
+    # physical axes. Manual tloc and one-sided tilt are query translations, so
+    # they become positive geometry offsets before mapping back to avatar space.
     effective_center = (
-        factor * center - model_center + _manual_tloc_uv(item)
-    ) / scale
+        factor * center - model_center + _manual_tloc_uv(item) + tilt_uv
+    ) / query_scale
     return _rotate_uv(effective_center, -float(item.get("rot_deg", 0.0)))
 
 
@@ -850,12 +960,17 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
             raise ValueError(
                 f"Blend group {group_name!r} mixes avatar targets: {sorted(targets)}"
             )
-        for _, item in group_items:
-            if item.get("mode", "direct") != "direct" or not bool(
-                item.get("rigid_radius", False)
-            ):
+        prepared_items = []
+        for index, item in group_items:
+            if item.get("mode", "direct") != "direct":
                 raise ValueError(
-                    f"Group {group_name!r} supports direct rigid_radius pieces only"
+                    f"Group {group_name!r} supports direct adaptations only"
+                )
+            rigid = bool(item.get("rigid_radius", False))
+            wrap = bool(item.get("wrap_radius", False))
+            if rigid == wrap:
+                raise ValueError(
+                    f"Group {group_name!r} needs exactly one of rigid_radius/wrap_radius"
                 )
             lo, hi = sorted((float(item["src_0"]), float(item["src_1"])))
             if not (0.0 <= lo < hi <= 1.0):
@@ -867,9 +982,19 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                 raise ValueError(
                     f"Seam fitting needs positive finite scale in {group_name}"
                 )
+            fit_item = dict(item)
+            fit_item["_seam_accessory_curve"] = curve_lookup(item["accessory_key"])
+            if wrap:
+                fit_item["_seam_target_curve"] = curve_lookup(item["target_key"])
+            # Validate wrap restrictions up front so a long reconstruction does
+            # not fail only after the first adaptation has been inferred.
+            _radial_query_scale(
+                fit_item, fit_item["_seam_accessory_curve"], 0.5 * (lo + hi)
+            )
+            prepared_items.append((index, fit_item))
 
         ordered = sorted(
-            group_items,
+            prepared_items,
             key=lambda p: min(float(p[1]["src_0"]), float(p[1]["src_1"])),
         )
         surface_profiles = {}  # bounded projections only; never SDF grids
@@ -888,8 +1013,8 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                 raise ValueError(f"Group {group_name!r}: source intervals do not overlap")
 
             seam_s = 0.5 * (left_hi + right_lo)
-            curve_l = curve_lookup(left["accessory_key"])
-            curve_r = curve_lookup(right["accessory_key"])
+            curve_l = left["_seam_accessory_curve"]
+            curve_r = right["_seam_accessory_curve"]
             width_l = transition * abs(float(left["src_1"]) - float(left["src_0"]))
             width_r = transition * abs(float(right["src_1"]) - float(right["src_0"]))
             step_l = min(tangent_step, max(width_l / 5.0, 1e-4))
@@ -1123,16 +1248,18 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                 # common avatar transverse plane, converted to each part's
                 # physical accessory-local tloc frame.
                 gap = center_r - center_l
+                query_scale_l = _radial_query_scale(left, curve_l, seam_s)
+                query_scale_r = _radial_query_scale(right, curve_r, seam_s)
                 pos_l = _bound_translation(
                     _rotate_uv(
-                        0.5 * gap * float(left.get("scale", 1.0)),
+                        0.5 * gap * query_scale_l,
                         float(left.get("rot_deg", 0.0)),
                     ),
                     max_position,
                 )
                 pos_r = _bound_translation(
                     _rotate_uv(
-                        -0.5 * gap * float(right.get("scale", 1.0)),
+                        -0.5 * gap * query_scale_r,
                         float(right.get("rot_deg", 0.0)),
                     ),
                     max_position,
@@ -1163,11 +1290,11 @@ def build_seam_plan(adaptations, group_settings, curve_lookup):
                     )
                     tangent_gap = tangent_r - tangent_l
                     raw_l = _rotate_uv(
-                        0.5 * tangent_gap * float(left.get("scale", 1.0)),
+                        0.5 * tangent_gap * query_scale_l,
                         float(left.get("rot_deg", 0.0)),
                     )
                     raw_r = _rotate_uv(
-                        -0.5 * tangent_gap * float(right.get("scale", 1.0)),
+                        -0.5 * tangent_gap * query_scale_r,
                         float(right.get("rot_deg", 0.0)),
                     )
                     pos_slope_l = _bound_translation(
