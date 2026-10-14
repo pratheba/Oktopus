@@ -16,6 +16,9 @@ from snug_field_io import (
 )
 from agent_3dvec_base import AgentBase
 from seam_optimization import build_seam_plan, warp_accessory_queries
+from post_sdf_seam_blend import (
+    build_post_sdf_seam_plan, overlap_crossfade_sdf, overlap_crossfade_weights,
+)
 
 class AgentSDF(AgentBase):
     """Signed-distance agent: marching cubes, RFTA, sign conversion,
@@ -1305,6 +1308,14 @@ class AgentSDF(AgentBase):
             raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
             self.curve_from_key,
         )
+        # Some constructions (notably wrap-radius cone sections) must retain
+        # their original adaptation/tilt exactly.  For those groups, blend the
+        # already inferred SDFs only inside the explicit src overlap instead of
+        # warping accessory query coordinates before inference.
+        post_sdf_seam_plan = build_post_sdf_seam_plan(
+            adaptation_items,
+            raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
+        )
 
         adapted_support_cache = {}
         # Combine incrementally. Do not retain a complete grid per adaptation:
@@ -1988,15 +1999,57 @@ class AgentSDF(AgentBase):
                         group_vals = group["val_grid"]
                         group_empty = group["empty_marks"]
                         overlap = (~group_empty) & valid_i
-                        if group["blend_delta"] > 0.0 and np.any(overlap):
+
+                        post_pair = post_sdf_seam_plan.get(item_index)
+                        if post_pair is not None:
+                            if post_pair.group != blend_group:
+                                raise RuntimeError(
+                                    "Post-SDF seam plan/group mismatch: "
+                                    f"{post_pair.group!r} vs {blend_group!r}"
+                                )
+                            if avatar_data is None:
+                                raise RuntimeError(
+                                    f"Group {blend_group!r}: post-SDF seam blend "
+                                    "requires avatar source coordinates"
+                                )
+                            # kidx and avatar_data['coords'] are aligned for the
+                            # current adaptation.  Avoid allocating another full
+                            # 512^3 source-coordinate field: select only current
+                            # samples that also exist in the accumulated group.
+                            overlap_local = overlap[kidx]
+                            if np.any(overlap_local):
+                                overlap_idx = kidx[overlap_local]
+                                source_s = np.asarray(
+                                    avatar_data["coords"], dtype=np.float64
+                                ).reshape(-1)[overlap_local]
+                                before = group_vals[overlap_idx].copy()
+                                incoming = acc_grid.val_grid[overlap_idx]
+                                group_vals[overlap_idx] = overlap_crossfade_sdf(
+                                    before, incoming, source_s, post_pair
+                                )
+                                weights = overlap_crossfade_weights(
+                                    source_s, post_pair
+                                )
+                                print(
+                                    f"[seam_blend {blend_group}] "
+                                    f"src=[{post_pair.source_lo:.4f}, "
+                                    f"{post_pair.source_hi:.4f}] "
+                                    f"samples={int(overlap_idx.size)} "
+                                    f"weight_min/max="
+                                    f"{float(np.min(weights)):.3f}/"
+                                    f"{float(np.max(weights)):.3f}"
+                                )
+                                del before, incoming, source_s, weights, overlap_idx
+                            del overlap_local
+                        elif group["blend_delta"] > 0.0 and np.any(overlap):
                             group_vals[overlap] = self.smooth_union_sdf(
                                 group_vals[overlap],
                                 acc_grid.val_grid[overlap],
                                 group["blend_delta"],
                             )
-                        # The overlap has already been blended; hard-union only
-                        # cells that have a value in the new grid but not yet
-                        # in the group accumulator.
+                        # The overlap has already been blended/crossfaded; copy
+                        # only cells that exist in the new grid but not yet in
+                        # the group accumulator.
                         new_only = group_empty & valid_i
                         group_vals[new_only] = acc_grid.val_grid[new_only]
                         group_empty[valid_i] = False
