@@ -1,16 +1,14 @@
 combine_adaptations: true
 udf_cut_combined_transfer: true
 udf_cut_write_debug_outputs: false
-udf_cut_min_ring_contrast_world: 0.004
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
-udf_cut_combined_transfer_radius_edges: 1.5
-udf_cut_combined_transfer_seed_advantage_edges: 0.45
-udf_cut_combined_transfer_grow_advantage_edges: 0.1
+udf_cut_combined_transfer_radius_edges: 2.0
+udf_cut_combined_transfer_seed_advantage_edges: 0.30
+udf_cut_combined_transfer_grow_advantage_edges: 0.0
 udf_cut_combined_transfer_min_faces: 8
-udf_cut_combined_transfer_min_seed_faces: 3
-udf_cut_combined_transfer_min_seed_fraction: 0.15
-udf_cut_combined_transfer_min_valid_samples: 3
-udf_cut_combined_transfer_owner_margin_edges: 0.2
+udf_cut_combined_transfer_min_seed_faces: 2
+udf_cut_combined_transfer_min_seed_fraction: 0.05
+udf_cut_combined_transfer_min_valid_samples: 2
 blend_groups:
   t1:
     seam_optimization:

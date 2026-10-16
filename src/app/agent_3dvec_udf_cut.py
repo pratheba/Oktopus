@@ -50,7 +50,6 @@ class _ComponentDecision:
     score_max: float
     ring_face_count: int
     ring_score_median: Optional[float]
-    ring_contrast: Optional[float]
     touches_existing_boundary: bool
     reference_distance: Optional[float]
     accepted: bool
@@ -68,7 +67,6 @@ class _ComponentDecision:
             "score_max": self.score_max,
             "ring_face_count": self.ring_face_count,
             "ring_score_median": self.ring_score_median,
-            "ring_contrast": self.ring_contrast,
             "touches_existing_boundary": self.touches_existing_boundary,
             "reference_distance": self.reference_distance,
             "accepted": self.accepted,
@@ -450,7 +448,6 @@ class AgentUDFCut(AgentUDF):
         min_seed_faces: int,
         min_seed_fraction: float,
         min_area_world2: float,
-        min_ring_contrast_world: float,
         preserve_existing_boundaries: bool,
         reference_points: Optional[np.ndarray],
         reference_max_distance_world: Optional[float],
@@ -502,12 +499,6 @@ class AgentUDFCut(AgentUDF):
             ring_median = (
                 float(np.median(scores[ring_valid])) if len(ring_valid) else None
             )
-            component_median = float(np.median(comp_scores))
-            ring_contrast = (
-                component_median - ring_median
-                if ring_median is not None
-                else None
-            )
             touches_boundary = bool(np.any(existing_boundary_faces[face_ids]))
 
             reference_distance = None
@@ -528,14 +519,6 @@ class AgentUDFCut(AgentUDF):
                 accepted, reason = False, "seed_fraction_too_low"
             elif area < float(min_area_world2):
                 accepted, reason = False, "area_too_small"
-            elif float(min_ring_contrast_world) > 0.0 and ring_contrast is None:
-                accepted, reason = False, "no_valid_ring_for_contrast"
-            elif (
-                float(min_ring_contrast_world) > 0.0
-                and ring_contrast is not None
-                and ring_contrast < float(min_ring_contrast_world)
-            ):
-                accepted, reason = False, "insufficient_ring_contrast"
             elif preserve_existing_boundaries and touches_boundary:
                 accepted, reason = False, "touches_existing_boundary"
             elif (
@@ -557,11 +540,10 @@ class AgentUDFCut(AgentUDF):
                     seed_fraction=seed_fraction,
                     area=area,
                     score_min=float(np.min(comp_scores)),
-                    score_median=component_median,
+                    score_median=float(np.median(comp_scores)),
                     score_max=float(np.max(comp_scores)),
                     ring_face_count=int(len(ring)),
                     ring_score_median=ring_median,
-                    ring_contrast=ring_contrast,
                     touches_existing_boundary=touches_boundary,
                     reference_distance=reference_distance,
                     accepted=accepted,
@@ -730,7 +712,6 @@ class AgentUDFCut(AgentUDF):
             )
         combined_removed_references: List[trimesh.Trimesh] = []
         combined_kept_references: List[trimesh.Trimesh] = []
-        combined_reference_groups: List[str] = []
         write_debug_outputs = bool(
             extraction_config.get("udf_cut_write_debug_outputs", True)
         )
@@ -903,9 +884,6 @@ class AgentUDFCut(AgentUDF):
                 min_area_world2=float(
                     config.get("udf_cut_min_area_world2", 0.0)
                 ),
-                min_ring_contrast_world=float(
-                    config.get("udf_cut_min_ring_contrast_world", 0.0)
-                ),
                 preserve_existing_boundaries=preserve_existing_boundaries,
                 reference_points=reference_points,
                 reference_max_distance_world=reference_max_distance,
@@ -1022,10 +1000,6 @@ class AgentUDFCut(AgentUDF):
             if combined_transfer_enabled:
                 combined_removed_references.append(removed.copy())
                 combined_kept_references.append(kept_raw.copy())
-                blend_group = str(item.get("blend_group", "")).strip()
-                combined_reference_groups.append(
-                    blend_group if blend_group else str(target_key)
-                )
 
             safe_key = self._safe_label(accessory_key)
             prefix = f"{item_index}_{mode}_{safe_key}"
@@ -1128,9 +1102,6 @@ class AgentUDFCut(AgentUDF):
                     ),
                     "min_area_world2": float(
                         config.get("udf_cut_min_area_world2", 0.0)
-                    ),
-                    "min_ring_contrast_world": float(
-                        config.get("udf_cut_min_ring_contrast_world", 0.0)
                     ),
                     "preserve_existing_boundaries": preserve_existing_boundaries,
                     "reference_max_distance_world": reference_max_distance,
@@ -1239,7 +1210,6 @@ class AgentUDFCut(AgentUDF):
                     combined_mesh,
                     removed_reference_meshes=combined_removed_references,
                     kept_reference_meshes=combined_kept_references,
-                    reference_group_ids=combined_reference_groups,
                     radius_edge_fraction=float(
                         extraction_config.get(
                             "udf_cut_combined_transfer_radius_edges", 2.0
@@ -1275,11 +1245,6 @@ class AgentUDFCut(AgentUDF):
                     min_valid_samples=int(
                         extraction_config.get(
                             "udf_cut_combined_transfer_min_valid_samples", 2
-                        )
-                    ),
-                    owner_margin_edge_fraction=float(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_owner_margin_edges", 0.0
                         )
                     ),
                 )
