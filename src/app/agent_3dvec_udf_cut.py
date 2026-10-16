@@ -666,6 +666,14 @@ class AgentUDFCut(AgentUDF):
             raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
             self.curve_from_key,
         )
+        apply_seam_warp = bool(
+            extraction_config.get("udf_cut_apply_seam_warp", True)
+        )
+        if not apply_seam_warp:
+            print(
+                "[udf cut seam] query seam warp DISABLED; "
+                "using pre-0011 UDF query coordinates"
+            )
 
         handle = self.load_shape_handle(data_root, shape_name, "avatar")
         target_curves = {
@@ -744,7 +752,7 @@ class AgentUDFCut(AgentUDF):
                 "accessory_curve_idx": self.feat_dict[accessory_key],
             }
             adapt_arg.update(item)
-            if item_index in seam_plan:
+            if apply_seam_warp and item_index in seam_plan:
                 adapt_arg["_seam_corrections"] = seam_plan[item_index]
                 print(
                     f"[udf cut seam] item={item_index} "
