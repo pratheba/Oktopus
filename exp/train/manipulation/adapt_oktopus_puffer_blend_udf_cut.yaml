@@ -4,16 +4,20 @@ combine_adaptations: true
 # through --mc-mesh with {index}/{mode}/{accessory} placeholders.
 udf_cut_combined_transfer: true
 udf_cut_write_debug_outputs: false
+# Conservative cap detection: require a local UDF peak above the surrounding surface.
+udf_cut_min_ring_contrast_world: 0.004
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
 # Transfer is scaled by the combined mesh edge length so it behaves similarly
 # at 128/256 resolutions.
-udf_cut_combined_transfer_radius_edges: 2.0
-udf_cut_combined_transfer_seed_advantage_edges: 0.30
-udf_cut_combined_transfer_grow_advantage_edges: 0.0
+udf_cut_combined_transfer_radius_edges: 1.5
+udf_cut_combined_transfer_seed_advantage_edges: 0.45
+udf_cut_combined_transfer_grow_advantage_edges: 0.10
 udf_cut_combined_transfer_min_faces: 8
-udf_cut_combined_transfer_min_seed_faces: 2
-udf_cut_combined_transfer_min_seed_fraction: 0.05
-udf_cut_combined_transfer_min_valid_samples: 2
+udf_cut_combined_transfer_min_seed_faces: 3
+udf_cut_combined_transfer_min_seed_fraction: 0.15
+udf_cut_combined_transfer_min_valid_samples: 3
+# Do not transfer a cut where body/tentacle ownership is ambiguous.
+udf_cut_combined_transfer_owner_margin_edges: 0.20
 # Each group is fitted independently against its own avatar skeleton.
 blend_groups:
   t1:
