@@ -8,6 +8,7 @@ import trimesh
 
 import app_utils_3dvec as utils
 from agent_3dvec_base import AgentBase
+from seam_optimization import warp_accessory_queries
 from snug_field_io import (
     load_shared_snug_field,
     resolve_shared_snug_field_path,
@@ -173,12 +174,23 @@ class AgentUDF(AgentBase):
         output = np.full(world_points.shape[0], float(far_world), dtype=np.float64)
         valid = np.zeros(world_points.shape[0], dtype=bool)
 
-        accessory_data, _avatar_data, inside = (
+        accessory_data, avatar_data, inside = (
             avatar_curve.core.localize_samples_adapt(world_points, adapt_arg)
         )
         inside = np.asarray(inside, dtype=np.int64).reshape(-1)
         if inside.size == 0:
             return (output, valid) if return_valid else output
+
+        # Keep UDF queries in exactly the same seam-corrected coordinate
+        # system as the SDF adaptation.  AgentUDFCut injects the precomputed
+        # per-item corrections into adapt_arg.  Without this, a seam-optimized
+        # SDF mesh is tested against the *unoptimized* UDF mapping, so valid
+        # SDF surface can appear far from the UDF and be incorrectly removed.
+        seam_corrections = adapt_arg.get("_seam_corrections")
+        if seam_corrections:
+            accessory_data = warp_accessory_queries(
+                accessory_data, avatar_data, seam_corrections, adapt_arg
+            )
 
         inferred = self._inference_full_vals(
             accessory_data,

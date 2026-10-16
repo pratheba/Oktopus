@@ -24,6 +24,7 @@ import torch
 import trimesh
 
 from agent_3dvec_udf import AgentUDF
+from seam_optimization import build_seam_plan
 from udf_cut_boundary_cleanup import (
     boundary_point_cloud,
     cleanup_cut_boundary,
@@ -648,6 +649,24 @@ class AgentUDFCut(AgentUDF):
         root_path = arg.get("root_path", os.getcwd())
 
         adaptation_items, extraction_config = self._load_adaptations(arg)
+        raw_config = {}
+        try:
+            import app_utils_3dvec as _utils
+            loaded = _utils.load_yaml_file(arg["adapt_file"])
+            if isinstance(loaded, dict):
+                raw_config = loaded
+        except Exception as exc:
+            print("[udf cut] warning: could not reload seam config:", exc)
+
+        # Build the same per-blend-group seam corrections used by AgentSDF.
+        # The UDF is a classifier/filter for the already adapted SDF surface,
+        # so its query coordinates must receive the same radius/position warp.
+        seam_plan = build_seam_plan(
+            adaptation_items,
+            raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
+            self.curve_from_key,
+        )
+
         handle = self.load_shape_handle(data_root, shape_name, "avatar")
         target_curves = {
             self.encode_key(shape_name, curve.name): curve for curve in handle.curves
@@ -693,6 +712,14 @@ class AgentUDFCut(AgentUDF):
             )
         combined_removed_references: List[trimesh.Trimesh] = []
         combined_kept_references: List[trimesh.Trimesh] = []
+        write_debug_outputs = bool(
+            extraction_config.get("udf_cut_write_debug_outputs", True)
+        )
+        if not write_debug_outputs:
+            print(
+                "[udf cut] debug PLY/NPZ outputs disabled; "
+                "only the final cut mesh (and JSON report) will be written"
+            )
 
         for item_index, item in enumerate(adaptation_items):
             target_key = item["target_key"]
@@ -717,6 +744,12 @@ class AgentUDFCut(AgentUDF):
                 "accessory_curve_idx": self.feat_dict[accessory_key],
             }
             adapt_arg.update(item)
+            if item_index in seam_plan:
+                adapt_arg["_seam_corrections"] = seam_plan[item_index]
+                print(
+                    f"[udf cut seam] item={item_index} "
+                    f"corrections={len(seam_plan[item_index])}"
+                )
 
             shared_snug_path = None
             shared_snug_spec = adapt_arg.get("shared_snug_field", None)
@@ -1001,43 +1034,55 @@ class AgentUDFCut(AgentUDF):
             npz_path = op.join(output_folder, f"{prefix}_udf_cut_face_scores.npz")
             report_path = op.join(output_folder, f"{prefix}_udf_cut_report.json")
 
-            mesh.export(before_path)
-            self._mesh_from_face_mask(mesh, seed_mask).export(seed_path)
-            self._mesh_from_face_mask(mesh, grow_mask).export(grow_path)
-            removed.export(removed_path)
-            if subtriangle_enabled:
-                whole_face_kept.export(whole_face_after_path)
-            if cleanup_enabled:
-                kept_raw.export(raw_after_path)
-                if len(boundary_before_cloud.vertices):
-                    boundary_before_cloud.export(boundary_before_path)
-                else:
-                    boundary_before_path = None
-                if len(boundary_after_cloud.vertices):
-                    boundary_after_cloud.export(boundary_after_path)
-                else:
-                    boundary_after_path = None
-            kept.export(after_path)
-            np.savez_compressed(
-                npz_path,
-                face_scores=scores,
-                usable_faces=usable,
-                sample_values=sample_values,
-                sample_valid=sample_valid,
-                seed_mask=seed_mask,
-                grow_mask=grow_mask,
-                remove_face_mask=remove_face_mask,
-                vertex_values=(
-                    vertex_values
-                    if vertex_values is not None
-                    else np.zeros((0,), dtype=np.float64)
-                ),
-                vertex_valid=(
-                    vertex_valid
-                    if vertex_valid is not None
-                    else np.zeros((0,), dtype=bool)
-                ),
-            )
+            if write_debug_outputs:
+                mesh.export(before_path)
+                self._mesh_from_face_mask(mesh, seed_mask).export(seed_path)
+                self._mesh_from_face_mask(mesh, grow_mask).export(grow_path)
+                removed.export(removed_path)
+                if subtriangle_enabled:
+                    whole_face_kept.export(whole_face_after_path)
+                if cleanup_enabled:
+                    kept_raw.export(raw_after_path)
+                    if len(boundary_before_cloud.vertices):
+                        boundary_before_cloud.export(boundary_before_path)
+                    else:
+                        boundary_before_path = None
+                    if len(boundary_after_cloud.vertices):
+                        boundary_after_cloud.export(boundary_after_path)
+                    else:
+                        boundary_after_path = None
+                kept.export(after_path)
+                np.savez_compressed(
+                    npz_path,
+                    face_scores=scores,
+                    usable_faces=usable,
+                    sample_values=sample_values,
+                    sample_valid=sample_valid,
+                    seed_mask=seed_mask,
+                    grow_mask=grow_mask,
+                    remove_face_mask=remove_face_mask,
+                    vertex_values=(
+                        vertex_values
+                        if vertex_values is not None
+                        else np.zeros((0,), dtype=np.float64)
+                    ),
+                    vertex_valid=(
+                        vertex_valid
+                        if vertex_valid is not None
+                        else np.zeros((0,), dtype=bool)
+                    ),
+                )
+            else:
+                before_path = None
+                seed_path = None
+                grow_path = None
+                removed_path = None
+                whole_face_after_path = None
+                raw_after_path = None
+                boundary_before_path = None
+                boundary_after_path = None
+                after_path = None
+                npz_path = None
 
             report = {
                 "mc_input": mc_path,
@@ -1130,7 +1175,8 @@ class AgentUDFCut(AgentUDF):
                 f"before={report['before']}",
                 f"after={report['after']}",
             )
-            print("[udf cut saved]", after_path)
+            if after_path is not None:
+                print("[udf cut saved]", after_path)
 
         if combined_transfer_enabled:
             first_item = adaptation_items[0]
@@ -1228,9 +1274,15 @@ class AgentUDFCut(AgentUDF):
                 output_folder, "combined_udf_cut_report.json"
             )
 
-            combined_mesh.export(combined_before_path)
-            combined_removed.export(combined_removed_path)
-            combined_raw.export(combined_raw_path)
+            if write_debug_outputs:
+                combined_mesh.export(combined_before_path)
+                combined_removed.export(combined_removed_path)
+                combined_raw.export(combined_raw_path)
+            else:
+                combined_before_path = None
+                combined_removed_path = None
+                combined_raw_path = None
+            # The final adaptation is always written.
             combined_final.export(combined_after_path)
             with open(combined_report_path, "w", encoding="utf-8") as handle_out:
                 json.dump(
