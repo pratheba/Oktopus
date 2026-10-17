@@ -363,8 +363,8 @@ adaptations:
   use_adaptive_control_filter_grid: true
   avatar_filter_radius_scale: 1.2
   avatar_filter_norm: 1.2
-  avatar_cylinder_radius_scale: 1.2
-  adapt_localize_norm: 1.2
+  avatar_cylinder_radius_scale: 1.0
+  adapt_localize_norm: 1.0
   cut_avatar: false
 
 - name: puffer_t4_3_rigid
@@ -452,8 +452,8 @@ adaptations:
   use_adaptive_control_filter_grid: true
   avatar_filter_radius_scale: 1.2
   avatar_filter_norm: 1.2
-  avatar_cylinder_radius_scale: 1.2
-  adapt_localize_norm: 1.2
+  avatar_cylinder_radius_scale: 1.0
+  adapt_localize_norm: 1.0
   cut_avatar: false
 
 - name: puffer_t5_3_rigid
