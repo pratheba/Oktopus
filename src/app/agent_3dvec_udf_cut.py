@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import os.path as op
+from time import perf_counter
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -204,6 +205,379 @@ class AgentUDFCut(AgentUDF):
         )
         result[face_ids[counts[inverse] == 1]] = True
         return result
+
+    @staticmethod
+    def _face_components_fast(
+        mask: np.ndarray, adjacency: np.ndarray
+    ) -> Tuple[List[np.ndarray], np.ndarray]:
+        """Return active face components using SciPy's compiled graph traversal.
+
+        The automatic percentile search evaluates the same large MC mesh many
+        times.  The old helper ran a Python union/find loop over every face
+        adjacency for every candidate pair, which dominates runtime on 512+
+        meshes.  This helper preserves the same face-adjacency notion of a
+        component while moving the graph traversal into scipy.sparse.csgraph.
+
+        The returned ``labels`` array is indexed by global face id.  Inactive
+        faces are -1; active faces contain a compact component id matching the
+        returned component list.
+        """
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        active = np.flatnonzero(mask)
+        labels_out = np.full(mask.shape[0], -1, dtype=np.int64)
+        if active.size == 0:
+            return [], labels_out
+
+        adjacency = np.asarray(adjacency, dtype=np.int64)
+        if adjacency.size == 0:
+            labels_out[active] = np.arange(active.size, dtype=np.int64)
+            return [np.asarray([f], dtype=np.int64) for f in active], labels_out
+
+        try:
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.csgraph import connected_components
+        except Exception:
+            # Keep the historical implementation as a correctness fallback.
+            components = AgentUDFCut._face_components(mask, adjacency)
+            for component_id, face_ids in enumerate(components):
+                labels_out[face_ids] = component_id
+            return components, labels_out
+
+        # Work only on active faces so the sparse graph scales with the grow
+        # region rather than with the complete mesh.
+        local = np.full(mask.shape[0], -1, dtype=np.int64)
+        local[active] = np.arange(active.size, dtype=np.int64)
+        a = adjacency[:, 0]
+        b = adjacency[:, 1]
+        keep = mask[a] & mask[b]
+        aa = local[a[keep]]
+        bb = local[b[keep]]
+
+        rows = np.concatenate([aa, bb])
+        cols = np.concatenate([bb, aa])
+        data = np.ones(rows.shape[0], dtype=np.uint8)
+        graph = coo_matrix(
+            (data, (rows, cols)), shape=(active.size, active.size)
+        ).tocsr()
+        _n_components, local_labels = connected_components(
+            graph, directed=False, return_labels=True
+        )
+
+        # Group without a Python pass over every active face.  Stable sorting
+        # also leaves face ids ascending inside a component, matching the old
+        # helper's deterministic traversal closely.
+        order = np.argsort(local_labels, kind="stable")
+        sorted_faces = active[order]
+        sorted_labels = local_labels[order]
+        cuts = np.flatnonzero(np.diff(sorted_labels)) + 1
+        components = [
+            np.asarray(chunk, dtype=np.int64)
+            for chunk in np.split(sorted_faces, cuts)
+            if len(chunk)
+        ]
+        components.sort(key=lambda ids: int(ids[0]))
+        for component_id, face_ids in enumerate(components):
+            labels_out[face_ids] = component_id
+        return components, labels_out
+
+    @staticmethod
+    def _component_rings_fast(
+        grow_mask: np.ndarray,
+        component_labels: np.ndarray,
+        adjacency: np.ndarray,
+        n_components: int,
+    ) -> List[np.ndarray]:
+        """Compute all one-face component rings in one vectorized pass."""
+        rings = [np.zeros((0,), dtype=np.int64) for _ in range(n_components)]
+        if n_components == 0:
+            return rings
+
+        grow_mask = np.asarray(grow_mask, dtype=bool).reshape(-1)
+        adjacency = np.asarray(adjacency, dtype=np.int64)
+        if adjacency.size == 0:
+            return rings
+
+        a = adjacency[:, 0]
+        b = adjacency[:, 1]
+        cross = grow_mask[a] ^ grow_mask[b]
+        if not np.any(cross):
+            return rings
+
+        aa = a[cross]
+        bb = b[cross]
+        a_inside = grow_mask[aa]
+        inside = np.where(a_inside, aa, bb)
+        outside = np.where(a_inside, bb, aa)
+        comp = component_labels[inside]
+        valid = comp >= 0
+        if not np.any(valid):
+            return rings
+
+        pairs = np.stack([comp[valid], outside[valid]], axis=1)
+        pairs = np.unique(pairs, axis=0)
+        order = np.argsort(pairs[:, 0], kind="stable")
+        pairs = pairs[order]
+        comp_ids = pairs[:, 0]
+        cuts = np.flatnonzero(np.diff(comp_ids)) + 1
+        for chunk in np.split(pairs, cuts):
+            if len(chunk):
+                rings[int(chunk[0, 0])] = np.asarray(chunk[:, 1], dtype=np.int64)
+        return rings
+
+    @staticmethod
+    def _prepare_search_topology(mesh: trimesh.Trimesh) -> Dict[str, np.ndarray]:
+        """Precompute immutable edge data reused by every threshold pair."""
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if len(faces) == 0:
+            return {
+                "faces": faces,
+                "unique_edges": np.zeros((0, 2), dtype=np.int64),
+                "face_edge_ids": np.zeros((0, 3), dtype=np.int64),
+                "edge_total_counts": np.zeros((0,), dtype=np.int64),
+                "n_vertices": np.asarray([len(mesh.vertices)], dtype=np.int64),
+            }
+
+        face_edges = np.stack(
+            [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=1
+        )
+        flat_edges = np.sort(face_edges.reshape(-1, 2), axis=1)
+        unique_edges, inverse, counts = np.unique(
+            flat_edges, axis=0, return_inverse=True, return_counts=True
+        )
+        return {
+            "faces": faces,
+            "unique_edges": np.asarray(unique_edges, dtype=np.int64),
+            "face_edge_ids": np.asarray(inverse, dtype=np.int64).reshape(-1, 3),
+            "edge_total_counts": np.asarray(counts, dtype=np.int64),
+            "n_vertices": np.asarray([len(mesh.vertices)], dtype=np.int64),
+        }
+
+    @staticmethod
+    def _component_count_from_edge_counts(
+        topology: Dict[str, np.ndarray], edge_counts: np.ndarray
+    ) -> Tuple[int, int]:
+        """Return (used vertex count, vertex-connected component count)."""
+        edge_counts = np.asarray(edge_counts, dtype=np.int64).reshape(-1)
+        selected_edges = topology["unique_edges"][edge_counts > 0]
+        if len(selected_edges) == 0:
+            return 0, 0
+
+        used_vertices = np.unique(selected_edges.reshape(-1))
+        try:
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.csgraph import connected_components
+        except Exception:
+            # Rare fallback: a compact union/find over only selected edges.
+            parent = np.arange(used_vertices.size, dtype=np.int64)
+            rank = np.zeros(used_vertices.size, dtype=np.int8)
+            local = np.full(
+                int(topology["n_vertices"][0]), -1, dtype=np.int64
+            )
+            local[used_vertices] = np.arange(used_vertices.size, dtype=np.int64)
+
+            def find(x: int) -> int:
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = int(parent[x])
+                return x
+
+            def union(a: int, b: int) -> None:
+                ra, rb = find(a), find(b)
+                if ra == rb:
+                    return
+                if rank[ra] < rank[rb]:
+                    parent[ra] = rb
+                elif rank[ra] > rank[rb]:
+                    parent[rb] = ra
+                else:
+                    parent[rb] = ra
+                    rank[ra] += 1
+
+            for a, b in local[selected_edges]:
+                union(int(a), int(b))
+            roots = {find(i) for i in range(used_vertices.size)}
+            return int(used_vertices.size), int(len(roots))
+
+        local = np.full(int(topology["n_vertices"][0]), -1, dtype=np.int64)
+        local[used_vertices] = np.arange(used_vertices.size, dtype=np.int64)
+        local_edges = local[selected_edges]
+        rows = np.concatenate([local_edges[:, 0], local_edges[:, 1]])
+        cols = np.concatenate([local_edges[:, 1], local_edges[:, 0]])
+        data = np.ones(rows.shape[0], dtype=np.uint8)
+        graph = coo_matrix(
+            (data, (rows, cols)),
+            shape=(used_vertices.size, used_vertices.size),
+        ).tocsr()
+        n_components = connected_components(
+            graph, directed=False, return_labels=False
+        )
+        return int(used_vertices.size), int(n_components)
+
+    @classmethod
+    def _topology_stats_from_remove_mask(
+        cls,
+        topology: Dict[str, np.ndarray],
+        remove_mask: np.ndarray,
+    ) -> Tuple[Dict[str, object], Dict[str, object]]:
+        """Compute kept/removed topology directly from a face mask.
+
+        This avoids constructing two Trimesh objects and calling ``np.unique``
+        on all triangle edges for every percentile candidate.
+        """
+        remove_mask = np.asarray(remove_mask, dtype=bool).reshape(-1)
+        face_edge_ids = topology["face_edge_ids"]
+        n_edges = len(topology["edge_total_counts"])
+        if np.any(remove_mask):
+            removed_edge_counts = np.bincount(
+                face_edge_ids[remove_mask].reshape(-1), minlength=n_edges
+            ).astype(np.int64, copy=False)
+        else:
+            removed_edge_counts = np.zeros(n_edges, dtype=np.int64)
+        kept_edge_counts = topology["edge_total_counts"] - removed_edge_counts
+
+        kept_vertices, kept_components = cls._component_count_from_edge_counts(
+            topology, kept_edge_counts
+        )
+        removed_vertices, removed_components = cls._component_count_from_edge_counts(
+            topology, removed_edge_counts
+        )
+
+        kept_stats = {
+            "vertices": kept_vertices,
+            "faces": int(np.sum(~remove_mask)),
+            "boundary_edges": int(np.sum(kept_edge_counts == 1)),
+            "nonmanifold_edges": int(np.sum(kept_edge_counts > 2)),
+            "components": kept_components,
+        }
+        removed_stats = {
+            "vertices": removed_vertices,
+            "faces": int(np.sum(remove_mask)),
+            "boundary_edges": int(np.sum(removed_edge_counts == 1)),
+            "nonmanifold_edges": int(np.sum(removed_edge_counts > 2)),
+            "components": removed_components,
+        }
+        return kept_stats, removed_stats
+
+    @classmethod
+    def _evaluate_cut_candidate_fast(
+        cls,
+        mesh: trimesh.Trimesh,
+        *,
+        face_scores: np.ndarray,
+        usable_faces: np.ndarray,
+        seed_world: float,
+        grow_world: float,
+        min_faces: int,
+        min_seed_faces: int,
+        min_seed_fraction: float,
+        min_area_world2: float,
+        preserve_existing_boundaries: bool,
+        reference_tree,
+        reference_max_distance_world: Optional[float],
+        adjacency: np.ndarray,
+        face_areas: np.ndarray,
+        existing_boundary_faces: np.ndarray,
+        centroids: np.ndarray,
+        topology: Dict[str, np.ndarray],
+    ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
+        List[_ComponentDecision],
+        np.ndarray,
+        Dict[str, object],
+        Dict[str, object],
+    ]:
+        """Evaluate one seed/grow pair without materializing candidate meshes."""
+        if grow_world > seed_world:
+            raise ValueError(
+                f"udf_cut_grow_world ({grow_world}) must be <= "
+                f"udf_cut_seed_world ({seed_world})."
+            )
+
+        scores = np.asarray(face_scores, dtype=np.float64).reshape(-1)
+        usable = np.asarray(usable_faces, dtype=bool).reshape(-1)
+        seed_mask = usable & (scores >= float(seed_world))
+        grow_mask = usable & (scores >= float(grow_world))
+
+        components, labels = cls._face_components_fast(grow_mask, adjacency)
+        rings = cls._component_rings_fast(
+            grow_mask, labels, adjacency, len(components)
+        )
+        remove_mask = np.zeros(len(mesh.faces), dtype=bool)
+        decisions: List[_ComponentDecision] = []
+
+        for component_id, face_ids in enumerate(components):
+            seed_count = int(np.sum(seed_mask[face_ids]))
+            face_count = int(len(face_ids))
+            seed_fraction = float(seed_count / max(face_count, 1))
+            area = float(np.sum(face_areas[face_ids]))
+            comp_scores = scores[face_ids]
+            ring = rings[component_id]
+            ring_valid = ring[np.isfinite(scores[ring])] if len(ring) else ring
+            ring_median = (
+                float(np.median(scores[ring_valid])) if len(ring_valid) else None
+            )
+            touches_boundary = bool(np.any(existing_boundary_faces[face_ids]))
+
+            reference_distance = None
+            if reference_tree is not None:
+                probe_faces = ring if len(ring) else face_ids
+                distances, _ = reference_tree.query(centroids[probe_faces], k=1)
+                reference_distance = float(np.min(np.asarray(distances)))
+
+            accepted = True
+            reason = "accepted"
+            if face_count < int(min_faces):
+                accepted, reason = False, "too_few_faces"
+            elif seed_count < int(min_seed_faces):
+                accepted, reason = False, "too_few_seed_faces"
+            elif seed_fraction < float(min_seed_fraction):
+                accepted, reason = False, "seed_fraction_too_low"
+            elif area < float(min_area_world2):
+                accepted, reason = False, "area_too_small"
+            elif preserve_existing_boundaries and touches_boundary:
+                accepted, reason = False, "touches_existing_boundary"
+            elif (
+                reference_tree is not None
+                and reference_max_distance_world is not None
+                and reference_distance is not None
+                and reference_distance > float(reference_max_distance_world)
+            ):
+                accepted, reason = False, "far_from_reference_boundary"
+
+            if accepted:
+                remove_mask[face_ids] = True
+
+            decisions.append(
+                _ComponentDecision(
+                    component_id=component_id,
+                    face_count=face_count,
+                    seed_count=seed_count,
+                    seed_fraction=seed_fraction,
+                    area=area,
+                    score_min=float(np.min(comp_scores)),
+                    score_median=float(np.median(comp_scores)),
+                    score_max=float(np.max(comp_scores)),
+                    ring_face_count=int(len(ring)),
+                    ring_score_median=ring_median,
+                    touches_existing_boundary=touches_boundary,
+                    reference_distance=reference_distance,
+                    accepted=accepted,
+                    reason=reason,
+                )
+            )
+
+        kept_stats, removed_stats = cls._topology_stats_from_remove_mask(
+            topology, remove_mask
+        )
+        return (
+            seed_mask,
+            grow_mask,
+            decisions,
+            remove_mask,
+            kept_stats,
+            removed_stats,
+        )
 
     @staticmethod
     def _face_components(mask: np.ndarray, adjacency: np.ndarray) -> List[np.ndarray]:
@@ -1112,6 +1486,38 @@ class AgentUDFCut(AgentUDF):
                 input_boundary_edges = int(input_stats["boundary_edges"])
                 candidate_rows = []
 
+                # Everything below is invariant across percentile pairs.  The
+                # old implementation rebuilt these arrays/KD-tree, constructed
+                # kept+removed Trimesh objects, and reran full topology scans
+                # for every candidate.  On a ~380k-face 512 mesh that turns a
+                # 5x5 threshold search into millions of Python graph operations.
+                # Build the immutable search context once and keep candidates as
+                # face masks until a winner needs to be exported.
+                search_adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64)
+                search_face_areas = np.asarray(mesh.area_faces, dtype=np.float64)
+                search_boundary_faces = self._existing_boundary_faces(mesh)
+                search_centroids = np.asarray(mesh.triangles_center, dtype=np.float64)
+                search_topology = self._prepare_search_topology(mesh)
+                search_reference_tree = None
+                if reference_points is not None and len(reference_points):
+                    try:
+                        from scipy.spatial import cKDTree
+
+                        search_reference_tree = cKDTree(
+                            np.asarray(reference_points, dtype=np.float64)
+                        )
+                    except Exception as exc:
+                        print("[udf cut] reference KD-tree unavailable:", exc)
+
+                search_t0 = perf_counter()
+                search_evaluated = 0
+                print(
+                    "[udf cut auto search]",
+                    f"item={item_index}",
+                    f"grid={len(seed_percentiles)}x{len(grow_percentiles)}",
+                    "mode=fast_mask_only",
+                )
+
                 seed_values = {
                     q: float(np.percentile(usable_scores, q))
                     for q in seed_percentiles
@@ -1129,13 +1535,13 @@ class AgentUDFCut(AgentUDF):
                             continue
 
                         (
-                            candidate_kept,
-                            candidate_removed,
                             candidate_seed_mask,
                             candidate_grow_mask,
                             candidate_decisions,
-                            _candidate_remove_mask,
-                        ) = self._cut_mesh(
+                            candidate_remove_mask,
+                            kept_stats,
+                            removed_stats,
+                        ) = self._evaluate_cut_candidate_fast(
                             mesh,
                             face_scores=scores,
                             usable_faces=usable,
@@ -1156,7 +1562,7 @@ class AgentUDFCut(AgentUDF):
                                     "udf_cut_preserve_existing_boundaries", True
                                 )
                             ),
-                            reference_points=reference_points,
+                            reference_tree=search_reference_tree,
                             reference_max_distance_world=(
                                 float(config["udf_cut_reference_max_distance_world"])
                                 if config.get(
@@ -1164,10 +1570,13 @@ class AgentUDFCut(AgentUDF):
                                 ) is not None
                                 else None
                             ),
+                            adjacency=search_adjacency,
+                            face_areas=search_face_areas,
+                            existing_boundary_faces=search_boundary_faces,
+                            centroids=search_centroids,
+                            topology=search_topology,
                         )
-
-                        kept_stats = self._topology_stats(candidate_kept)
-                        removed_stats = self._topology_stats(candidate_removed)
+                        search_evaluated += 1
                         accepted = [
                             decision
                             for decision in candidate_decisions
@@ -1206,7 +1615,7 @@ class AgentUDFCut(AgentUDF):
                             float(np.median(contrasts)) if contrasts else None
                         )
                         removed_fraction = float(
-                            len(candidate_removed.faces) / max(len(mesh.faces), 1)
+                            int(removed_stats["faces"]) / max(len(mesh.faces), 1)
                         )
                         topology_preserved = (
                             int(kept_stats["components"]) == input_components
@@ -1217,12 +1626,12 @@ class AgentUDFCut(AgentUDF):
                             - input_boundary_edges,
                         )
                         boundary_per_removed = float(
-                            boundary_delta / max(len(candidate_removed.faces), 1)
+                            boundary_delta / max(int(removed_stats["faces"]), 1)
                         )
 
                         eligible = (
                             len(accepted) > 0
-                            and len(candidate_removed.faces) > 0
+                            and int(removed_stats["faces"]) > 0
                             and removed_fraction >= min_removed_fraction
                             and removed_fraction <= max_removed_fraction
                             and (
@@ -1266,7 +1675,7 @@ class AgentUDFCut(AgentUDF):
                                 "grow_world": candidate_grow,
                                 "seed_faces": int(np.sum(candidate_seed_mask)),
                                 "grow_faces": int(np.sum(candidate_grow_mask)),
-                                "removed_faces": int(len(candidate_removed.faces)),
+                                "removed_faces": int(removed_stats["faces"]),
                                 "removed_fraction": removed_fraction,
                                 "accepted_components": int(len(accepted)),
                                 "after_components": int(kept_stats["components"]),
@@ -1288,6 +1697,13 @@ class AgentUDFCut(AgentUDF):
                                 "eligible": bool(eligible),
                             }
                         )
+
+                print(
+                    "[udf cut auto search]",
+                    f"item={item_index}",
+                    f"evaluated={search_evaluated}",
+                    f"elapsed_s={perf_counter() - search_t0:.3f}",
+                )
 
                 eligible_rows = [
                     row for row in candidate_rows if row["eligible"]
@@ -1337,7 +1753,14 @@ class AgentUDFCut(AgentUDF):
                         for rank, row in enumerate(
                             eligible_rows[:save_best_n], start=1
                         ):
-                            best_kept, _, _, _, _, _ = self._cut_mesh(
+                            (
+                                _best_seed_mask,
+                                _best_grow_mask,
+                                _best_decisions,
+                                best_remove_mask,
+                                _best_kept_stats,
+                                _best_removed_stats,
+                            ) = self._evaluate_cut_candidate_fast(
                                 mesh,
                                 face_scores=scores,
                                 usable_faces=usable,
@@ -1363,7 +1786,7 @@ class AgentUDFCut(AgentUDF):
                                         True,
                                     )
                                 ),
-                                reference_points=reference_points,
+                                reference_tree=search_reference_tree,
                                 reference_max_distance_world=(
                                     float(
                                         config[
@@ -1377,6 +1800,14 @@ class AgentUDFCut(AgentUDF):
                                     is not None
                                     else None
                                 ),
+                                adjacency=search_adjacency,
+                                face_areas=search_face_areas,
+                                existing_boundary_faces=search_boundary_faces,
+                                centroids=search_centroids,
+                                topology=search_topology,
+                            )
+                            best_kept = self._mesh_from_face_mask(
+                                mesh, ~best_remove_mask
                             )
                             best_path = op.join(
                                 output_folder,
