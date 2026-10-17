@@ -1165,6 +1165,7 @@ class AgentSDF(AgentBase):
                     key_text.startswith('rfta_')
                     or key_text in {
                         'combine_adaptations',
+                        'individual_support_aware_mc',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1933,6 +1934,31 @@ class AgentSDF(AgentBase):
 
 
                 # Extract and save this adaptation independently.
+                #
+                # Blend-group members are partial SDF fields. Unknown voxels in
+                # MCGrid carry the +10 background sentinel; ordinary Marching
+                # Cubes can therefore fabricate a closing surface where a
+                # negative partial field touches the edge of sampled support.
+                # Masked MC keeps those voxels unknown and allows an open support
+                # boundary instead of inventing a zero set there. The final
+                # combined/group extraction is intentionally unchanged.
+                blend_group_name = str(adapt_arg.get("blend_group", "none"))
+                use_support_aware_individual_mc = (
+                    bool(extraction_config.get("individual_support_aware_mc", False))
+                    and blend_group_name.lower() not in {"none", "", "false"}
+                )
+                individual_mc_method = (
+                    "extract_mesh_masked"
+                    if use_support_aware_individual_mc
+                    else "extract_mesh"
+                )
+                if use_support_aware_individual_mc:
+                    print(
+                        "[part_adapt support-aware MC]",
+                        f"item={item_index}",
+                        f"group={blend_group_name}",
+                    )
+
                 # The output prefix is the concrete adaptation order:
                 #   first run -> 0_..., second run -> 1_..., etc.
                 # This is independent of any later union/blending task.
@@ -1946,6 +1972,7 @@ class AgentSDF(AgentBase):
                 mesh_acc = self.extract_surface_mesh(
                     acc_grid,
                     individual_extraction_config,
+                    mc_method=individual_mc_method,
                     context=f"adapt_{item_index}",
                 )
                 if len(mesh_acc.faces) > 0:
