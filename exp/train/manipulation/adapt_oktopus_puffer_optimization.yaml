@@ -354,7 +354,7 @@ adaptations:
   tgt_1: 0.7
   scale: 1.7
   rot_deg: 0.0
-  tloc: [0.0, 0.0, -0.05]
+  #tloc: [0.0, 0.0, -0.05]
   wrap_radius: false
   rigid_radius: true
   mode: direct
@@ -443,7 +443,7 @@ adaptations:
   tgt_1: 0.7
   scale: 1.7
   rot_deg: 0.0
-  tloc: [0.0, 0.0, -0.05]
+  #tloc: [0.0, 0.0, -0.05]
   wrap_radius: false
   rigid_radius: true
   mode: direct
