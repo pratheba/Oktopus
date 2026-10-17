@@ -1,6 +1,6 @@
 combine_adaptations: true
 udf_cut_combined_transfer: true
-udf_cut_write_debug_outputs: false
+udf_cut_write_debug_outputs: true
 # Search seed/grow independently for every piece from that piece's own UDF
 # score distribution. No global seed/grow multiplier is shared across pieces.
 udf_cut_auto_thresholds:
