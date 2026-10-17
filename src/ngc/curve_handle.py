@@ -1,4 +1,5 @@
 import os, pickle
+from time import perf_counter
 import numpy as np
 import os.path as op
 import trimesh
@@ -296,6 +297,17 @@ class CurveHandle():
             avatar_filter_radius_scale/add/norm  : first gate
             avatar_cylinder_radius_scale/add     : fallback for first gate + second gate
             adapt_localize_norm                  : second gate in PWLA localize_samples_adapt
+
+        High-resolution broad-phase optimization:
+            adapt_filter_use_src_interval        : restrict the first cylinder gate to
+                                                   a padded src_0/src_1 interval
+            adapt_filter_src_interval_pad        : conservative parameter-space padding
+                                                   on each side (default 0.10)
+
+        The control field is still built on the full [0, 1] curve before it is
+        sliced.  Therefore this optimization does not change the smoothing/control
+        field itself; it only avoids sending obviously out-of-interval voxels to
+        the expensive exact localizer.
         """
 
         filter_radius_scale = float(
@@ -323,11 +335,65 @@ class CurveHandle():
             adapt_arg.get("use_adapt_control_filter_grid", False)
         )
 
-        if use_control_filter:
-            s = np.linspace(0.0, 1.0, n_sample_curve)
+        # localize_samples_adapt() already constrains direct projection to
+        # src_0/src_1 by default.  At high resolution it is wasteful to build a
+        # candidate cylinder over the entire avatar curve first.  Build the exact
+        # same full control/interpolation field, then retain only a conservative
+        # padded interval for the broad-phase cylinder.
+        use_interval_projection = bool(
+            adapt_arg.get("use_interval_projection", True)
+        )
+        use_src_interval_filter = bool(
+            adapt_arg.get("adapt_filter_use_src_interval", False)
+        ) and use_interval_projection
 
+        s_full = np.linspace(0.0, 1.0, n_sample_curve)
+        interval_lo = 0.0
+        interval_hi = 1.0
+        interval_slice = slice(None)
+
+        if use_src_interval_filter:
+            src_0 = float(adapt_arg["src_0"])
+            src_1 = float(adapt_arg["src_1"])
+            src_lo = min(src_0, src_1)
+            src_hi = max(src_0, src_1)
+            interval_pad = max(
+                0.0,
+                float(adapt_arg.get("adapt_filter_src_interval_pad", 0.10)),
+            )
+            interval_lo = max(0.0, src_lo - interval_pad)
+            interval_hi = min(1.0, src_hi + interval_pad)
+
+            # Include one dense curve sample outside each requested bound when
+            # possible.  This makes the broad phase conservative at the caps and
+            # avoids numerical loss from sampling the interval boundary.
+            i0 = max(
+                0,
+                int(np.searchsorted(s_full, interval_lo, side="left")) - 1,
+            )
+            i1 = min(
+                len(s_full),
+                int(np.searchsorted(s_full, interval_hi, side="right")) + 1,
+            )
+            if i1 - i0 >= 2:
+                interval_slice = slice(i0, i1)
+                interval_lo = float(s_full[i0])
+                interval_hi = float(s_full[i1 - 1])
+            else:
+                # Defensive fallback: never create a degenerate cylinder.
+                use_src_interval_filter = False
+                interval_lo = 0.0
+                interval_hi = 1.0
+                interval_slice = slice(None)
+
+        broad_t0 = perf_counter()
+
+        if use_control_filter:
+            # IMPORTANT: build the control field on full [0, 1] exactly as before.
+            # Slicing only after this point preserves the previous smoothing and
+            # frame reconstruction; only the broad-phase support extent changes.
             ctrl = self.core.build_adapt_control_field(
-                s,
+                s_full,
                 n_control=int(adapt_arg.get("adapt_control_n_keypoints", 12)),
                 smooth_points_sigma=float(
                     adapt_arg.get("avatar_control_smooth_points_sigma", 8.0)
@@ -349,9 +415,9 @@ class CurveHandle():
             radius = radius * filter_norm
 
             intpl = {
-                "points": ctrl["points"],
-                "frame": ctrl["frame"],
-                "radius": radius,
+                "points": np.asarray(ctrl["points"])[interval_slice],
+                "frame": np.asarray(ctrl["frame"])[interval_slice],
+                "radius": radius[interval_slice],
                 "thetas": (2.0 * np.pi)
                 * np.linspace(0, 1, n_sample_circle, endpoint=False),
             }
@@ -366,11 +432,9 @@ class CurveHandle():
                 or abs(filter_norm - 1.0) > 1e-12
             )
 
-            if needs_runtime_filter:
-                s = np.linspace(0.0, 1.0, n_sample_curve)
-
+            if needs_runtime_filter or use_src_interval_filter:
                 intpl = self.core.interpolate(
-                    s,
+                    s_full,
                     radius_type="cylinder",
                     radius=True,
                     frame=True,
@@ -380,13 +444,17 @@ class CurveHandle():
                 radius = radius * filter_radius_scale + filter_radius_add
                 radius = radius * filter_norm
 
-                intpl["radius"] = radius
-                intpl["thetas"] = (2.0 * np.pi) * np.linspace(
-                    0,
-                    1,
-                    n_sample_circle,
-                    endpoint=False,
-                )
+                intpl = {
+                    "points": np.asarray(intpl["points"])[interval_slice],
+                    "frame": np.asarray(intpl["frame"])[interval_slice],
+                    "radius": radius[interval_slice],
+                    "thetas": (2.0 * np.pi) * np.linspace(
+                        0,
+                        1,
+                        n_sample_circle,
+                        endpoint=False,
+                    ),
+                }
 
                 cyl_mesh = self.__gen_cyl_mesh(intpl)
                 samples, kidx = cyl_mesh.filter_grid(mc_grid)
@@ -394,7 +462,9 @@ class CurveHandle():
             else:
                 samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
 
+        broad_s = perf_counter() - broad_t0
         mode = adapt_arg.get("mode", "direct")
+        localize_t0 = perf_counter()
 
         if mode == "direct":
             accessory_data, avatar_data, inside = self.core.localize_samples_adapt(
@@ -404,17 +474,22 @@ class CurveHandle():
         else:
             raise ValueError(f"Unknown adapt mode: {mode}")
 
+        localize_s = perf_counter() - localize_t0
         kidx = kidx[inside]
 
         if adapt_arg.get("adapt_debug_counts", True):
             print(
                 "[filter_grid_adapt]",
                 "use_control_filter=", use_control_filter,
+                "src_interval_filter=", use_src_interval_filter,
+                "filter_s=", f"{interval_lo:.4f}->{interval_hi:.4f}",
                 "filter_radius_scale=", filter_radius_scale,
                 "filter_radius_add=", filter_radius_add,
                 "filter_norm=", filter_norm,
                 "candidate_samples=", len(samples),
                 "after_localize=", len(inside),
+                "broad_s=", f"{broad_s:.3f}",
+                "localize_s=", f"{localize_s:.3f}",
             )
 
         return accessory_data, avatar_data, kidx, inside

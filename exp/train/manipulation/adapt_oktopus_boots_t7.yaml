@@ -20,6 +20,10 @@
   avatar_filter_radius_add: 0.03
   avatar_filter_radius_scale: 1.0
   avatar_filter_norm: 1.0
+  # High-resolution broad phase: keep the exact localizer unchanged, but do
+  # not send voxels far outside this adaptation's src interval to it.
+  adapt_filter_use_src_interval: true
+  adapt_filter_src_interval_pad: 0.10
 
   avatar_cylinder_radius_scale: 3.0
   avatar_cylinder_radius_add: 0.03
@@ -56,6 +60,10 @@
   avatar_filter_radius_add: 0.03
   avatar_filter_radius_scale: 1.0
   avatar_filter_norm: 1.0
+  # High-resolution broad phase: keep the exact localizer unchanged, but do
+  # not send voxels far outside this adaptation's src interval to it.
+  adapt_filter_use_src_interval: true
+  adapt_filter_src_interval_pad: 0.10
 
   avatar_cylinder_radius_scale: 3.0
   avatar_cylinder_radius_add: 0.03
