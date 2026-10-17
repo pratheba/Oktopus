@@ -862,6 +862,157 @@ class AgentUDFCut(AgentUDF):
 
             seed_world = float(config.get("udf_cut_seed_world", 0.02))
             grow_world = float(config.get("udf_cut_grow_world", 0.01))
+
+            # Optional threshold sweep for diagnostics/tuning.  The expensive
+            # adapted-UDF query above is performed only once; every candidate
+            # reuses the same per-face scores and only reruns the cheap
+            # connectivity/component decision.  Put udf_cut_sweep on a single
+            # adaptation item to avoid generating candidates for every piece.
+            sweep_config = config.get("udf_cut_sweep", None)
+            if isinstance(sweep_config, dict) and bool(
+                sweep_config.get("enabled", True)
+            ):
+                seed_values = [
+                    float(v) for v in sweep_config.get(
+                        "seed_values", [seed_world]
+                    )
+                ]
+                grow_values = [
+                    float(v) for v in sweep_config.get(
+                        "grow_values", [grow_world]
+                    )
+                ]
+                save_meshes = bool(sweep_config.get("save_meshes", True))
+                sweep_rows = []
+                safe_key_sweep = self._safe_label(accessory_key)
+                sweep_prefix = f"{item_index}_{mode}_{safe_key_sweep}"
+
+                for sweep_seed in seed_values:
+                    for sweep_grow in grow_values:
+                        if sweep_grow > sweep_seed:
+                            continue
+                        (
+                            sweep_kept,
+                            sweep_removed,
+                            sweep_seed_mask,
+                            sweep_grow_mask,
+                            sweep_decisions,
+                            _sweep_remove_mask,
+                        ) = self._cut_mesh(
+                            mesh,
+                            face_scores=scores,
+                            usable_faces=usable,
+                            seed_world=sweep_seed,
+                            grow_world=sweep_grow,
+                            min_faces=int(config.get("udf_cut_min_faces", 8)),
+                            min_seed_faces=int(
+                                config.get("udf_cut_min_seed_faces", 2)
+                            ),
+                            min_seed_fraction=float(
+                                config.get("udf_cut_min_seed_fraction", 0.05)
+                            ),
+                            min_area_world2=float(
+                                config.get("udf_cut_min_area_world2", 0.0)
+                            ),
+                            preserve_existing_boundaries=bool(
+                                config.get(
+                                    "udf_cut_preserve_existing_boundaries", True
+                                )
+                            ),
+                            reference_points=reference_points,
+                            reference_max_distance_world=(
+                                float(config["udf_cut_reference_max_distance_world"])
+                                if config.get(
+                                    "udf_cut_reference_max_distance_world", None
+                                ) is not None
+                                else None
+                            ),
+                        )
+
+                        kept_stats = self._topology_stats(sweep_kept)
+                        removed_stats = self._topology_stats(sweep_removed)
+                        accepted_components = sum(
+                            1 for decision in sweep_decisions if decision.accepted
+                        )
+                        row = {
+                            "seed_world": sweep_seed,
+                            "grow_world": sweep_grow,
+                            "seed_faces": int(np.sum(sweep_seed_mask)),
+                            "grow_faces": int(np.sum(sweep_grow_mask)),
+                            "removed_faces": int(len(sweep_removed.faces)),
+                            "removed_fraction": float(
+                                len(sweep_removed.faces) / max(len(mesh.faces), 1)
+                            ),
+                            "accepted_components": int(accepted_components),
+                            "after_faces": int(len(sweep_kept.faces)),
+                            "after_components": int(kept_stats["components"]),
+                            "after_boundary_edges": int(
+                                kept_stats["boundary_edges"]
+                            ),
+                            "removed_components": int(
+                                removed_stats["components"]
+                            ),
+                        }
+
+                        seed_tag = (
+                            f"{sweep_seed:.4f}".rstrip("0").rstrip(".")
+                            .replace("-", "m")
+                            .replace(".", "p")
+                        )
+                        grow_tag = (
+                            f"{sweep_grow:.4f}".rstrip("0").rstrip(".")
+                            .replace("-", "m")
+                            .replace(".", "p")
+                        )
+                        if save_meshes:
+                            candidate_path = op.join(
+                                output_folder,
+                                f"{sweep_prefix}_sweep_seed{seed_tag}_grow{grow_tag}.ply",
+                            )
+                            sweep_kept.export(candidate_path)
+                            row["mesh"] = candidate_path
+                        sweep_rows.append(row)
+
+                sweep_rows.sort(
+                    key=lambda row: (
+                        row["removed_fraction"],
+                        row["after_boundary_edges"],
+                        row["seed_world"],
+                        row["grow_world"],
+                    )
+                )
+                sweep_report_path = op.join(
+                    output_folder, f"{sweep_prefix}_udf_cut_sweep.json"
+                )
+                with open(sweep_report_path, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "item_index": item_index,
+                            "target_key": target_key,
+                            "accessory_key": accessory_key,
+                            "input_faces": int(len(mesh.faces)),
+                            "score_percentiles": score_percentiles,
+                            "candidates": sweep_rows,
+                        },
+                        handle,
+                        indent=2,
+                    )
+                print(
+                    "[udf cut sweep]",
+                    f"item={item_index}",
+                    f"candidates={len(sweep_rows)}",
+                    f"report={sweep_report_path}",
+                )
+                for row in sweep_rows:
+                    print(
+                        "[udf cut sweep candidate]",
+                        f"seed={row['seed_world']:.6g}",
+                        f"grow={row['grow_world']:.6g}",
+                        f"removed={row['removed_faces']}",
+                        f"removed_pct={100.0 * row['removed_fraction']:.2f}",
+                        f"boundary_edges={row['after_boundary_edges']}",
+                        f"components={row['after_components']}",
+                    )
             preserve_existing_boundaries = bool(
                 config.get("udf_cut_preserve_existing_boundaries", True)
             )
