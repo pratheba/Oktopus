@@ -1480,6 +1480,7 @@ class AgentUDFCut(AgentUDF):
                     auto_spec.get("boundary_penalty", 2.0)
                 )
                 save_best_n = max(0, int(auto_spec.get("save_best_n", 3)))
+                report_top_n = max(0, int(auto_spec.get("report_top_n", 5)))
 
                 input_stats = self._topology_stats(mesh)
                 input_components = int(input_stats["components"])
@@ -1717,6 +1718,45 @@ class AgentUDFCut(AgentUDF):
                     )
                 )
                 selected = eligible_rows[0] if eligible_rows else None
+
+                # The fast search makes it cheap to inspect a wider percentile
+                # grid. Report the leading candidates so we can distinguish
+                # conservative UDF evidence from conservative ranking.
+                if report_top_n > 0 and eligible_rows:
+                    for rank, row in enumerate(eligible_rows[:report_top_n], start=1):
+                        print(
+                            "[udf cut auto candidate]",
+                            f"item={item_index}",
+                            f"rank={rank}",
+                            f"seed=P{row['seed_percentile']:g}={row['seed_world']:.6g}",
+                            f"grow=P{row['grow_percentile']:g}={row['grow_world']:.6g}",
+                            f"removed_pct={100.0 * row['removed_fraction']:.2f}",
+                            f"contrast={row['median_ring_contrast']:.6g}",
+                            f"ring_positive={row['positive_ring_fraction']:.3f}",
+                            f"boundary_delta={row['boundary_delta']}",
+                            f"removed_components={row['removed_components']}",
+                            f"objective={row['objective']:.6g}",
+                        )
+
+                    most_removed = max(
+                        eligible_rows,
+                        key=lambda row: (
+                            row["removed_fraction"],
+                            row["median_ring_contrast"],
+                            -row["after_boundary_edges"],
+                        ),
+                    )
+                    print(
+                        "[udf cut auto most-removed]",
+                        f"item={item_index}",
+                        f"seed=P{most_removed['seed_percentile']:g}={most_removed['seed_world']:.6g}",
+                        f"grow=P{most_removed['grow_percentile']:g}={most_removed['grow_world']:.6g}",
+                        f"removed_pct={100.0 * most_removed['removed_fraction']:.2f}",
+                        f"contrast={most_removed['median_ring_contrast']:.6g}",
+                        f"ring_positive={most_removed['positive_ring_fraction']:.3f}",
+                        f"boundary_delta={most_removed['boundary_delta']}",
+                        f"objective={most_removed['objective']:.6g}",
+                    )
 
                 if selected is None:
                     # No candidate has enough local/topological evidence.  Make

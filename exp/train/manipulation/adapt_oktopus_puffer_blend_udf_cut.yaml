@@ -5,8 +5,11 @@ udf_cut_write_debug_outputs: false
 # score distribution. No global seed/grow multiplier is shared across pieces.
 udf_cut_auto_thresholds:
   enabled: true
-  seed_percentiles: [95, 96, 97, 98, 99]
-  grow_percentiles: [80, 85, 90, 92, 94]
+  # 0026: widen the fast search downward. The previous P95-P99 /
+  # P80-P94 grid only offered conservative high-tail cuts. Topology, ring
+  # evidence, and max_removed_fraction remain the safety gates.
+  seed_percentiles: [85, 90, 92, 94, 96, 98]
+  grow_percentiles: [60, 65, 70, 75, 80, 85, 90]
   min_removed_fraction: 0.002
   max_removed_fraction: 0.15
   require_topology_preserved: true
@@ -14,6 +17,7 @@ udf_cut_auto_thresholds:
   min_ring_contrast_world: 0.0
   boundary_penalty: 2.0
   save_best_n: 3
+  report_top_n: 5
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
 udf_cut_combined_transfer_radius_edges: 2.0
 udf_cut_combined_transfer_seed_advantage_edges: 0.30
