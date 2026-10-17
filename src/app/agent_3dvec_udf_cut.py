@@ -868,12 +868,11 @@ class AgentUDFCut(AgentUDF):
             grow_world = float(config.get("udf_cut_grow_world", 0.01))
             auto_threshold_report = None
 
-            # Optional per-piece threshold calibration from this piece's own
-            # UDF score distribution.  This avoids assuming that a single
-            # absolute distance threshold is comparable across differently
-            # scaled/adapted pieces.  The default multipliers are deliberately
-            # anchored to the t5_2 sweep: p95=0.04556 -> seed~=0.0501 and
-            # grow~=0.0296, very close to the visually good 0.05 / 0.03 pair.
+            # Optional per-piece threshold search from this piece's own UDF
+            # score distribution.  Seed and grow are calibrated independently:
+            # no global multiplier is shared across adaptations.  Candidate
+            # cuts reuse the already-computed face scores, so the search is
+            # graph/topology work only (no extra neural UDF queries).
             auto_thresholds = config.get("udf_cut_auto_thresholds", False)
             if isinstance(auto_thresholds, dict):
                 auto_enabled = bool(auto_thresholds.get("enabled", True))
@@ -890,60 +889,338 @@ class AgentUDFCut(AgentUDF):
                         f"finite face score for item {item_index}"
                     )
 
-                percentile = float(auto_spec.get("percentile", 95.0))
-                if not (0.0 < percentile < 100.0):
-                    raise ValueError(
-                        "udf_cut_auto_thresholds.percentile must be in (0, 100)"
+                seed_percentiles = [
+                    float(v) for v in auto_spec.get(
+                        "seed_percentiles", [95, 96, 97, 98, 99]
                     )
-                p_ref = float(np.percentile(usable_scores, percentile))
-                seed_multiplier = float(
-                    auto_spec.get("seed_multiplier", 1.10)
+                ]
+                grow_percentiles = [
+                    float(v) for v in auto_spec.get(
+                        "grow_percentiles", [80, 85, 90, 92, 94]
+                    )
+                ]
+                for q in seed_percentiles + grow_percentiles:
+                    if not (0.0 < q < 100.0):
+                        raise ValueError(
+                            "udf_cut_auto_thresholds percentiles must be in (0, 100)"
+                        )
+
+                min_removed_fraction = float(
+                    auto_spec.get("min_removed_fraction", 0.002)
                 )
-                grow_multiplier = float(
-                    auto_spec.get("grow_multiplier", 0.65)
+                max_removed_fraction = float(
+                    auto_spec.get("max_removed_fraction", 0.15)
                 )
-                if seed_multiplier <= 0.0 or grow_multiplier <= 0.0:
-                    raise ValueError(
-                        "udf_cut_auto_thresholds multipliers must be positive"
+                require_topology_preserved = bool(
+                    auto_spec.get("require_topology_preserved", True)
+                )
+                min_positive_ring_fraction = float(
+                    auto_spec.get("min_positive_ring_fraction", 0.80)
+                )
+                min_ring_contrast_world = float(
+                    auto_spec.get("min_ring_contrast_world", 0.0)
+                )
+                boundary_penalty = float(
+                    auto_spec.get("boundary_penalty", 2.0)
+                )
+                save_best_n = max(0, int(auto_spec.get("save_best_n", 3)))
+
+                input_stats = self._topology_stats(mesh)
+                input_components = int(input_stats["components"])
+                input_boundary_edges = int(input_stats["boundary_edges"])
+                candidate_rows = []
+
+                seed_values = {
+                    q: float(np.percentile(usable_scores, q))
+                    for q in seed_percentiles
+                }
+                grow_values = {
+                    q: float(np.percentile(usable_scores, q))
+                    for q in grow_percentiles
+                }
+
+                for seed_q in seed_percentiles:
+                    candidate_seed = seed_values[seed_q]
+                    for grow_q in grow_percentiles:
+                        candidate_grow = grow_values[grow_q]
+                        if candidate_grow > candidate_seed:
+                            continue
+
+                        (
+                            candidate_kept,
+                            candidate_removed,
+                            candidate_seed_mask,
+                            candidate_grow_mask,
+                            candidate_decisions,
+                            _candidate_remove_mask,
+                        ) = self._cut_mesh(
+                            mesh,
+                            face_scores=scores,
+                            usable_faces=usable,
+                            seed_world=candidate_seed,
+                            grow_world=candidate_grow,
+                            min_faces=int(config.get("udf_cut_min_faces", 8)),
+                            min_seed_faces=int(
+                                config.get("udf_cut_min_seed_faces", 2)
+                            ),
+                            min_seed_fraction=float(
+                                config.get("udf_cut_min_seed_fraction", 0.05)
+                            ),
+                            min_area_world2=float(
+                                config.get("udf_cut_min_area_world2", 0.0)
+                            ),
+                            preserve_existing_boundaries=bool(
+                                config.get(
+                                    "udf_cut_preserve_existing_boundaries", True
+                                )
+                            ),
+                            reference_points=reference_points,
+                            reference_max_distance_world=(
+                                float(config["udf_cut_reference_max_distance_world"])
+                                if config.get(
+                                    "udf_cut_reference_max_distance_world", None
+                                ) is not None
+                                else None
+                            ),
+                        )
+
+                        kept_stats = self._topology_stats(candidate_kept)
+                        removed_stats = self._topology_stats(candidate_removed)
+                        accepted = [
+                            decision
+                            for decision in candidate_decisions
+                            if decision.accepted
+                        ]
+                        ring_evidence = [
+                            decision
+                            for decision in accepted
+                            if decision.ring_score_median is not None
+                        ]
+                        contrasts = [
+                            float(
+                                decision.score_median
+                                - float(decision.ring_score_median)
+                            )
+                            for decision in ring_evidence
+                        ]
+                        ring_weight = float(
+                            sum(decision.face_count for decision in ring_evidence)
+                        )
+                        positive_ring_weight = float(
+                            sum(
+                                decision.face_count
+                                for decision, contrast in zip(
+                                    ring_evidence, contrasts
+                                )
+                                if contrast > 0.0
+                            )
+                        )
+                        positive_ring_fraction = (
+                            positive_ring_weight / ring_weight
+                            if ring_weight > 0.0
+                            else 0.0
+                        )
+                        median_ring_contrast = (
+                            float(np.median(contrasts)) if contrasts else None
+                        )
+                        removed_fraction = float(
+                            len(candidate_removed.faces) / max(len(mesh.faces), 1)
+                        )
+                        topology_preserved = (
+                            int(kept_stats["components"]) == input_components
+                        )
+                        boundary_delta = max(
+                            0,
+                            int(kept_stats["boundary_edges"])
+                            - input_boundary_edges,
+                        )
+                        boundary_per_removed = float(
+                            boundary_delta / max(len(candidate_removed.faces), 1)
+                        )
+
+                        eligible = (
+                            len(accepted) > 0
+                            and len(candidate_removed.faces) > 0
+                            and removed_fraction >= min_removed_fraction
+                            and removed_fraction <= max_removed_fraction
+                            and (
+                                topology_preserved
+                                or not require_topology_preserved
+                            )
+                            and median_ring_contrast is not None
+                            and median_ring_contrast >= min_ring_contrast_world
+                            and positive_ring_fraction
+                            >= min_positive_ring_fraction
+                        )
+
+                        # Prefer strong local UDF evidence first.  Once a cut
+                        # has good contrast against its surrounding ring, reward
+                        # useful cleanup rather than always choosing the tiniest
+                        # possible patch.  Penalize ragged/fragmented boundaries.
+                        contrast_scale = max(abs(candidate_seed), 1.0e-8)
+                        contrast_score = (
+                            float(median_ring_contrast) / contrast_scale
+                            if median_ring_contrast is not None
+                            else -1.0
+                        )
+                        removal_reward = float(
+                            removed_fraction / max(max_removed_fraction, 1.0e-8)
+                        )
+                        fragmentation_penalty = float(
+                            max(int(removed_stats["components"]) - 1, 0)
+                        )
+                        objective = (
+                            contrast_score
+                            + 0.35 * removal_reward
+                            - boundary_penalty * boundary_per_removed
+                            - 0.05 * fragmentation_penalty
+                        )
+
+                        candidate_rows.append(
+                            {
+                                "seed_percentile": seed_q,
+                                "grow_percentile": grow_q,
+                                "seed_world": candidate_seed,
+                                "grow_world": candidate_grow,
+                                "seed_faces": int(np.sum(candidate_seed_mask)),
+                                "grow_faces": int(np.sum(candidate_grow_mask)),
+                                "removed_faces": int(len(candidate_removed.faces)),
+                                "removed_fraction": removed_fraction,
+                                "accepted_components": int(len(accepted)),
+                                "after_components": int(kept_stats["components"]),
+                                "after_boundary_edges": int(
+                                    kept_stats["boundary_edges"]
+                                ),
+                                "removed_components": int(
+                                    removed_stats["components"]
+                                ),
+                                "topology_preserved": bool(
+                                    topology_preserved
+                                ),
+                                "positive_ring_fraction": float(
+                                    positive_ring_fraction
+                                ),
+                                "median_ring_contrast": median_ring_contrast,
+                                "boundary_delta": int(boundary_delta),
+                                "objective": float(objective),
+                                "eligible": bool(eligible),
+                            }
+                        )
+
+                eligible_rows = [
+                    row for row in candidate_rows if row["eligible"]
+                ]
+                eligible_rows.sort(
+                    key=lambda row: (
+                        -row["objective"],
+                        -row["median_ring_contrast"],
+                        -row["removed_fraction"],
+                        row["after_boundary_edges"],
+                    )
+                )
+                selected = eligible_rows[0] if eligible_rows else None
+
+                if selected is None:
+                    # No candidate has enough local/topological evidence.  Make
+                    # the normal cut below an explicit no-op instead of falling
+                    # back to one global absolute threshold.
+                    score_max = float(np.max(usable_scores))
+                    margin = max(1.0e-6, abs(score_max) * 1.0e-6)
+                    seed_world = score_max + margin
+                    grow_world = seed_world
+                    print(
+                        "[udf cut auto search]",
+                        f"item={item_index}",
+                        "selected=none",
+                        "action=no_cut",
+                    )
+                else:
+                    seed_world = float(selected["seed_world"])
+                    grow_world = float(selected["grow_world"])
+                    print(
+                        "[udf cut auto search]",
+                        f"item={item_index}",
+                        f"seed=P{selected['seed_percentile']:g}={seed_world:.6g}",
+                        f"grow=P{selected['grow_percentile']:g}={grow_world:.6g}",
+                        f"removed={selected['removed_faces']}",
+                        f"removed_pct={100.0 * selected['removed_fraction']:.2f}",
+                        f"contrast={selected['median_ring_contrast']:.6g}",
+                        f"ring_positive={selected['positive_ring_fraction']:.3f}",
+                        f"objective={selected['objective']:.6g}",
                     )
 
-                seed_world = p_ref * seed_multiplier
-                grow_world = p_ref * grow_multiplier
-
-                min_seed = auto_spec.get("min_seed_world", None)
-                min_grow = auto_spec.get("min_grow_world", None)
-                max_seed = auto_spec.get("max_seed_world", None)
-                max_grow = auto_spec.get("max_grow_world", None)
-                if min_seed is not None:
-                    seed_world = max(seed_world, float(min_seed))
-                if min_grow is not None:
-                    grow_world = max(grow_world, float(min_grow))
-                if max_seed is not None:
-                    seed_world = min(seed_world, float(max_seed))
-                if max_grow is not None:
-                    grow_world = min(grow_world, float(max_grow))
-
-                # Grow is a lower threshold than seed: a component must first
-                # contain strong seed evidence, then may expand through weaker
-                # but still suspicious faces.
-                grow_world = min(grow_world, seed_world)
+                    if save_best_n > 0:
+                        safe_key_auto = self._safe_label(accessory_key)
+                        auto_prefix = f"{item_index}_{mode}_{safe_key_auto}"
+                        for rank, row in enumerate(
+                            eligible_rows[:save_best_n], start=1
+                        ):
+                            best_kept, _, _, _, _, _ = self._cut_mesh(
+                                mesh,
+                                face_scores=scores,
+                                usable_faces=usable,
+                                seed_world=float(row["seed_world"]),
+                                grow_world=float(row["grow_world"]),
+                                min_faces=int(
+                                    config.get("udf_cut_min_faces", 8)
+                                ),
+                                min_seed_faces=int(
+                                    config.get("udf_cut_min_seed_faces", 2)
+                                ),
+                                min_seed_fraction=float(
+                                    config.get(
+                                        "udf_cut_min_seed_fraction", 0.05
+                                    )
+                                ),
+                                min_area_world2=float(
+                                    config.get("udf_cut_min_area_world2", 0.0)
+                                ),
+                                preserve_existing_boundaries=bool(
+                                    config.get(
+                                        "udf_cut_preserve_existing_boundaries",
+                                        True,
+                                    )
+                                ),
+                                reference_points=reference_points,
+                                reference_max_distance_world=(
+                                    float(
+                                        config[
+                                            "udf_cut_reference_max_distance_world"
+                                        ]
+                                    )
+                                    if config.get(
+                                        "udf_cut_reference_max_distance_world",
+                                        None,
+                                    )
+                                    is not None
+                                    else None
+                                ),
+                            )
+                            best_path = op.join(
+                                output_folder,
+                                f"{auto_prefix}_auto_best{rank}_"
+                                f"seedP{row['seed_percentile']:g}_"
+                                f"growP{row['grow_percentile']:g}.ply",
+                            )
+                            best_kept.export(best_path)
+                            row["mesh"] = best_path
 
                 auto_threshold_report = {
                     "enabled": True,
-                    "percentile": percentile,
-                    "reference_value": p_ref,
-                    "seed_multiplier": seed_multiplier,
-                    "grow_multiplier": grow_multiplier,
+                    "mode": "independent_percentile_search",
+                    "seed_percentiles": seed_percentiles,
+                    "grow_percentiles": grow_percentiles,
+                    "min_removed_fraction": min_removed_fraction,
+                    "max_removed_fraction": max_removed_fraction,
+                    "require_topology_preserved": require_topology_preserved,
+                    "min_positive_ring_fraction": min_positive_ring_fraction,
+                    "min_ring_contrast_world": min_ring_contrast_world,
+                    "boundary_penalty": boundary_penalty,
+                    "selected": dict(selected) if selected is not None else None,
+                    "candidates": candidate_rows,
                     "seed_world": seed_world,
                     "grow_world": grow_world,
                 }
-                print(
-                    "[udf cut auto threshold]",
-                    f"item={item_index}",
-                    f"p{percentile:g}={p_ref:.6g}",
-                    f"seed={seed_world:.6g}",
-                    f"grow={grow_world:.6g}",
-                )
 
             # Optional threshold sweep for diagnostics/tuning.  The expensive
             # adapted-UDF query above is performed only once; every candidate
