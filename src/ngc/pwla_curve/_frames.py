@@ -240,26 +240,40 @@ class _FramesMixin:
         self.rot_slerp = Slerp(self.key_ts, self.rotation)
 
     def _interp_frames(self, s_src, F_src, s_q):
+        """Interpolate and re-orthonormalize frames without a Python per-point loop.
+
+        The previous implementation performed the Gram-Schmidt step one query
+        at a time. Adaptation can call this with millions of grid samples (and
+        does so once for the avatar control field and again for the accessory),
+        making this tiny 3-vector calculation a major high-resolution cost.
+        The equations below are identical, just evaluated in NumPy batches.
+        """
         s_src = np.asarray(s_src, dtype=np.float64)
         F_src = np.asarray(F_src, dtype=np.float64)
         s_q = np.asarray(s_q, dtype=np.float64)
 
-        out = np.zeros((len(s_q), 3, 3), dtype=np.float64)
+        out = np.empty((len(s_q), 3, 3), dtype=np.float64)
         for a in range(3):
             for b in range(3):
                 out[:, a, b] = np.interp(s_q, s_src, F_src[:, a, b])
 
-        for i in range(len(s_q)):
-            T = out[i, 0]
-            N = out[i, 1]
+        if len(s_q) == 0:
+            return out
 
-            T = T / (np.linalg.norm(T) + 1e-12)
-            N = N - np.dot(N, T) * T
-            N = N / (np.linalg.norm(N) + 1e-12)
-            B = np.cross(T, N)
-            B = B / (np.linalg.norm(B) + 1e-12)
+        # Same Gram-Schmidt operations as the old per-row loop.
+        T = out[:, 0, :]
+        T /= np.linalg.norm(T, axis=1, keepdims=True) + 1e-12
 
-            out[i] = np.stack([T, N, B], axis=0)
+        N = out[:, 1, :]
+        N -= np.einsum("ij,ij->i", N, T)[:, None] * T
+        N /= np.linalg.norm(N, axis=1, keepdims=True) + 1e-12
+
+        B = np.cross(T, N)
+        B /= np.linalg.norm(B, axis=1, keepdims=True) + 1e-12
+
+        out[:, 0, :] = T
+        out[:, 1, :] = N
+        out[:, 2, :] = B
         return out
 
 

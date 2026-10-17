@@ -57,62 +57,103 @@ class _GeometryMixin:
         return non_uniform_linear_points, skeletal_verts, tree
 
     def _assign_ts(self, samples, vidx, non_uniform_linear_points, skeletal_verts, outside):
-        """Refine one arc-length param per sample given an assigned skeleton vertex id.
+        """Refine nearest-skeleton assignments onto adjacent curve edges in O(N).
 
-        This is exactly the per-vertex edge-projection logic that curve_projection
-        used inline; factored out so it can be reused per candidate column.
+        The reference implementation scanned the full ``vidx`` array once for
+        every skeleton vertex. With ~200 curve samples and millions of grid
+        candidates that creates a large O(N*V) memory-scan cost. Each query
+        only depends on its own nearest vertex and at most two adjacent edges,
+        so the same endpoint/XOR rules can be evaluated point-wise.
         """
-        samples3D_to_skeleton = -1 * np.ones(samples.shape[0])
-        num_vert = skeletal_verts.shape[0]
-        for vid in range(num_vert):
-            sample_index = np.argwhere(vidx == vid).flatten()
-            if len(sample_index) == 0:
-                continue
+        samples = np.asarray(samples, dtype=np.float64)
+        vidx = np.asarray(vidx, dtype=np.int64).reshape(-1)
+        params = np.asarray(non_uniform_linear_points, dtype=np.float64).reshape(-1)
+        verts = np.asarray(skeletal_verts, dtype=np.float64)
 
-            samples_v = samples[sample_index]
+        if samples.shape[0] != vidx.shape[0]:
+            raise ValueError(
+                "Projection sample/index length mismatch: "
+                f"samples={samples.shape[0]} vidx={vidx.shape[0]}"
+            )
 
-            if 0 < vid < num_vert - 1:
-                # middle part
-                samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
+        n = samples.shape[0]
+        num_vert = verts.shape[0]
+        result = np.full(n, -1.0, dtype=np.float64)
+        if n == 0 or num_vert == 0:
+            return result
+        if num_vert == 1:
+            result[:] = params[0]
+            return result
+        if np.any((vidx < 0) | (vidx >= num_vert)):
+            raise ValueError("Projection vertex index out of range")
 
-                in1, px1 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
-                )
-                in2, px2 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]),
-                    (skeletal_verts[vid], non_uniform_linear_points[vid])
-                )
-                in_p = np.logical_xor(in1, in2)
-                px = (in1*px1 + in2*px2)[in_p]
-                samples3D_to_skeleton[sample_index[in_p]] = px
+        middle = (vidx > 0) & (vidx < num_vert - 1)
+        first = vidx == 0
+        last = vidx == num_vert - 1
 
-            elif vid == 0:
-                if num_vert == 1:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-                    continue
-                in1, px1 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                    (skeletal_verts[vid+1], non_uniform_linear_points[vid+1])
-                )
-                if outside:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-                samples3D_to_skeleton[sample_index[in1]] = px1[in1]
+        # Interior points default to the nearest skeleton vertex parameter.
+        result[middle] = params[vidx[middle]]
+        if outside:
+            result[first] = params[0]
+            result[last] = params[-1]
 
-            else:
-                in2, px2 = self.is_points_in_edge(
-                    samples_v,
-                    (skeletal_verts[vid-1], non_uniform_linear_points[vid-1]),
-                    (skeletal_verts[vid], non_uniform_linear_points[vid]),
-                )
-                if outside:
-                    samples3D_to_skeleton[sample_index] = non_uniform_linear_points[vid]
-                samples3D_to_skeleton[sample_index[in2]] = px2[in2]
+        def project_edges(mask, i0, i1):
+            ids = np.flatnonzero(mask)
+            if ids.size == 0:
+                return ids, np.zeros(0, dtype=bool), np.zeros(0, dtype=np.float64)
 
-        return samples3D_to_skeleton
+            a = verts[i0[ids]]
+            b = verts[i1[ids]]
+            t0 = params[i0[ids]]
+            t1 = params[i1[ids]]
+            edge = b - a
+            length = np.linalg.norm(edge, axis=1)
+            length_safe = length + 1e-12
+            direction = edge / length_safe[:, None]
+            proj_len = np.einsum("ij,ij->i", samples[ids] - a, direction)
+            inside = (proj_len >= 0.0) & (proj_len <= length)
+            ts = t0 + ((t1 - t0) / length_safe) * proj_len
+            return ids, inside, ts
+
+        right_ids, right_inside, right_ts = project_edges(
+            vidx < num_vert - 1,
+            vidx,
+            np.minimum(vidx + 1, num_vert - 1),
+        )
+        left_ids, left_inside, left_ts = project_edges(
+            vidx > 0,
+            np.maximum(vidx - 1, 0),
+            vidx,
+        )
+
+        # Endpoint semantics are identical to the reference implementation.
+        if right_ids.size:
+            take = (vidx[right_ids] == 0) & right_inside
+            result[right_ids[take]] = right_ts[take]
+        if left_ids.size:
+            take = (vidx[left_ids] == num_vert - 1) & left_inside
+            result[left_ids[take]] = left_ts[take]
+
+        if np.any(middle):
+            # Interior vertices use XOR: exactly one adjacent segment must
+            # accept the projection, otherwise retain the nearest vertex t.
+            right_ok = np.zeros(n, dtype=bool)
+            left_ok = np.zeros(n, dtype=bool)
+            right_value = np.zeros(n, dtype=np.float64)
+            left_value = np.zeros(n, dtype=np.float64)
+            right_ok[right_ids] = right_inside
+            left_ok[left_ids] = left_inside
+            right_value[right_ids] = right_ts
+            left_value[left_ids] = left_ts
+
+            mid_ids = np.flatnonzero(middle)
+            use_edge = right_ok[mid_ids] ^ left_ok[mid_ids]
+            chosen = mid_ids[use_edge]
+            choose_right = right_ok[chosen]
+            result[chosen[choose_right]] = right_value[chosen[choose_right]]
+            result[chosen[~choose_right]] = left_value[chosen[~choose_right]]
+
+        return result
 
     def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
         non_uniform_linear_points, skeletal_verts, tree = self._projection_skeleton(N_discrete)

@@ -965,10 +965,18 @@ class _LocalizeMixin:
         #    nearby wrong branch of the full avatar curve and being discarded
         #    by the later source-interval crop.
         # ------------------------------------------------------------
+        # Normal SDF/UDF adaptation keeps the historical endpoint behavior.
+        # Seam-aware UDF *cut* queries can opt into endpoint clamping so a point
+        # displaced by the seam is not discarded before its inverse seam warp is
+        # applied. The flag is private and is set only by AgentUDFCut's query
+        # path; regular adaptation geometry is unchanged.
+        projection_outside = bool(
+            adapt_arg.get("_udf_seam_query_projection_outside", False)
+        )
         avatar_data, inside = self.localize_samples(
             vs,
             norm=float(adapt_arg.get("adapt_localize_norm", 1.0)),
-            outside=False,
+            outside=projection_outside,
             runtime_cylinder_radius_scale=float(adapt_arg.get("avatar_cylinder_radius_scale", 1.0)),
             runtime_cylinder_radius_add=float(adapt_arg.get("avatar_cylinder_radius_add", 0.0)),
             projection_s0=src_0 if use_interval_projection else None,

@@ -900,7 +900,7 @@ class AgentUDFCut(AgentUDF):
 
             if usable_count == 0:
                 if valid_total == 0:
-                    no_support_reason = "localize_samples_adapt_returned_no_points"
+                    no_support_reason = "query_validity_rejected_all_samples"
                 elif finite_valid_total == 0:
                     no_support_reason = "all_valid_udf_values_nonfinite"
                 elif centroid_valid == 0:

@@ -174,19 +174,34 @@ class AgentUDF(AgentBase):
         output = np.full(world_points.shape[0], float(far_world), dtype=np.float64)
         valid = np.zeros(world_points.shape[0], dtype=bool)
 
+        # A seam-optimized SDF surface is displaced in query space. The old
+        # UDF path first applied the *pre-seam* avatar-cylinder support gate and
+        # only warped the surviving points afterwards. At a strong seam this
+        # can reject valid surface samples before the seam correction ever gets
+        # a chance to map them back to the learned accessory field.
+        #
+        # AgentUDFCut is the only caller that injects _seam_corrections. For
+        # those cut queries, project all finite samples onto the requested source
+        # interval first, defer support judgement to the warped model query, and
+        # then evaluate the UDF. Direct UDF extraction without seam corrections
+        # keeps the historical localization gate unchanged.
+        seam_corrections = adapt_arg.get("_seam_corrections")
+        localize_arg = adapt_arg
+        if seam_corrections:
+            localize_arg = dict(adapt_arg)
+            localize_arg["adapt_localize_norm"] = np.inf
+            localize_arg["_udf_seam_query_projection_outside"] = True
+
         accessory_data, avatar_data, inside = (
-            avatar_curve.core.localize_samples_adapt(world_points, adapt_arg)
+            avatar_curve.core.localize_samples_adapt(world_points, localize_arg)
         )
         inside = np.asarray(inside, dtype=np.int64).reshape(-1)
         if inside.size == 0:
             return (output, valid) if return_valid else output
 
-        # Keep UDF queries in exactly the same seam-corrected coordinate
-        # system as the SDF adaptation.  AgentUDFCut injects the precomputed
-        # per-item corrections into adapt_arg.  Without this, a seam-optimized
-        # SDF mesh is tested against the *unoptimized* UDF mapping, so valid
-        # SDF surface can appear far from the UDF and be incorrectly removed.
-        seam_corrections = adapt_arg.get("_seam_corrections")
+        # Apply the seam correction before model inference. Query values are
+        # otherwise identical to the SDF seam mapping; only the premature
+        # pre-warp support rejection above has been removed for seam cut queries.
         if seam_corrections:
             accessory_data = warp_accessory_queries(
                 accessory_data, avatar_data, seam_corrections, adapt_arg
