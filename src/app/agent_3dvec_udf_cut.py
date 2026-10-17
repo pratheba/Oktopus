@@ -858,6 +858,188 @@ class AgentUDFCut(AgentUDF):
                 far_world=far_world,
             )
 
+            # Diagnose UDF support before threshold selection.  `sample_valid`
+            # comes directly from _query_adapted_raw_udf(), where a point is
+            # marked valid only when localize_samples_adapt() returns it as an
+            # inside point.  This lets us distinguish a localization/support
+            # failure from a threshold-search failure.
+            valid_counts = np.asarray(sample_valid, dtype=bool).sum(axis=1)
+            finite_valid = np.asarray(sample_valid, dtype=bool) & np.isfinite(
+                sample_values
+            )
+            finite_valid_counts = finite_valid.sum(axis=1)
+            valid_total = int(np.sum(sample_valid))
+            finite_valid_total = int(np.sum(finite_valid))
+            centroid_valid = int(np.sum(sample_valid[:, 0]))
+            centroid_finite = int(np.sum(finite_valid[:, 0]))
+            faces_any_valid = int(np.sum(valid_counts >= 1))
+            faces_two_valid = int(np.sum(valid_counts >= 2))
+            faces_centroid_plus_one = int(
+                np.sum(sample_valid[:, 0] & (valid_counts >= 2))
+            )
+            usable_count = int(np.sum(usable))
+
+            print(
+                "[udf cut validity]",
+                f"item={item_index}",
+                f"faces={len(mesh.faces)}",
+                f"query_points={sample_valid.size}",
+                f"valid_total={valid_total}",
+                f"finite_valid_total={finite_valid_total}",
+                f"centroid_valid={centroid_valid}",
+                f"centroid_finite={centroid_finite}",
+                f"edge_valid={[int(np.sum(sample_valid[:, i])) for i in (1, 2, 3)]}",
+                f"faces_any_valid={faces_any_valid}",
+                f"faces_2plus_valid={faces_two_valid}",
+                f"faces_centroid_plus_one={faces_centroid_plus_one}",
+                f"usable_faces={usable_count}",
+                f"src={adapt_arg.get('src_0', None)}->{adapt_arg.get('src_1', None)}",
+                f"cylinder_scale={adapt_arg.get('avatar_cylinder_radius_scale', 1.0)}",
+                f"localize_norm={adapt_arg.get('adapt_localize_norm', 1.0)}",
+            )
+
+            if usable_count == 0:
+                if valid_total == 0:
+                    no_support_reason = "localize_samples_adapt_returned_no_points"
+                elif finite_valid_total == 0:
+                    no_support_reason = "all_valid_udf_values_nonfinite"
+                elif centroid_valid == 0:
+                    no_support_reason = "no_valid_face_centroids"
+                elif faces_centroid_plus_one == 0:
+                    no_support_reason = "insufficient_valid_samples_per_face"
+                else:
+                    no_support_reason = "no_usable_finite_face_scores"
+
+                safe_key_diag = self._safe_label(accessory_key)
+                diag_prefix = f"{item_index}_{mode}_{safe_key_diag}"
+                diag_npz_path = op.join(
+                    output_folder,
+                    f"{diag_prefix}_udf_cut_no_valid_support.npz",
+                )
+                diag_report_path = op.join(
+                    output_folder,
+                    f"{diag_prefix}_udf_cut_no_valid_support.json",
+                )
+                diag_before_path = op.join(
+                    output_folder,
+                    f"{diag_prefix}_mc_before_udf_cut.ply",
+                )
+                diag_after_path = op.join(
+                    output_folder,
+                    f"{diag_prefix}_mc_after_udf_cut.ply",
+                )
+                valid_points_path = op.join(
+                    output_folder,
+                    f"{diag_prefix}_udf_cut_valid_query_points.ply",
+                )
+
+                # Reconstruct the same four query points per face so that any
+                # valid subset can be inspected directly in a viewer.
+                diag_vertices = np.asarray(mesh.vertices, dtype=np.float64)
+                diag_faces = np.asarray(mesh.faces, dtype=np.int64)
+                diag_tri = diag_vertices[diag_faces]
+                diag_samples = np.stack(
+                    [
+                        diag_tri.mean(axis=1),
+                        0.5 * (diag_tri[:, 0] + diag_tri[:, 1]),
+                        0.5 * (diag_tri[:, 1] + diag_tri[:, 2]),
+                        0.5 * (diag_tri[:, 2] + diag_tri[:, 0]),
+                    ],
+                    axis=1,
+                )
+                valid_query_points = diag_samples[np.asarray(sample_valid, dtype=bool)]
+
+                mesh.export(diag_before_path)
+                mesh.export(diag_after_path)  # explicit no-cut output
+                if len(valid_query_points):
+                    trimesh.points.PointCloud(valid_query_points).export(
+                        valid_points_path
+                    )
+                else:
+                    valid_points_path = None
+
+                np.savez_compressed(
+                    diag_npz_path,
+                    face_scores=scores,
+                    usable_faces=usable,
+                    sample_values=sample_values,
+                    sample_valid=sample_valid,
+                    valid_counts=valid_counts,
+                    finite_valid=finite_valid,
+                    finite_valid_counts=finite_valid_counts,
+                )
+
+                no_support_report = {
+                    "item_index": int(item_index),
+                    "target_key": target_key,
+                    "accessory_key": accessory_key,
+                    "mc_input": mc_path,
+                    "reason": no_support_reason,
+                    "action": "no_cut_continue",
+                    "adaptation": {
+                        "src_0": adapt_arg.get("src_0", None),
+                        "src_1": adapt_arg.get("src_1", None),
+                        "avatar_cylinder_radius_scale": adapt_arg.get(
+                            "avatar_cylinder_radius_scale", 1.0
+                        ),
+                        "avatar_cylinder_radius_add": adapt_arg.get(
+                            "avatar_cylinder_radius_add", 0.0
+                        ),
+                        "adapt_localize_norm": adapt_arg.get(
+                            "adapt_localize_norm", 1.0
+                        ),
+                        "loop_projection_candidates": adapt_arg.get(
+                            "loop_projection_candidates", 1
+                        ),
+                    },
+                    "counts": {
+                        "faces": int(len(mesh.faces)),
+                        "query_points": int(sample_valid.size),
+                        "valid_total": valid_total,
+                        "finite_valid_total": finite_valid_total,
+                        "centroid_valid": centroid_valid,
+                        "centroid_finite": centroid_finite,
+                        "edge_valid": [
+                            int(np.sum(sample_valid[:, i])) for i in (1, 2, 3)
+                        ],
+                        "faces_any_valid": faces_any_valid,
+                        "faces_2plus_valid": faces_two_valid,
+                        "faces_centroid_plus_one": faces_centroid_plus_one,
+                        "usable_faces": usable_count,
+                    },
+                    "outputs": {
+                        "diagnostic_npz": diag_npz_path,
+                        "report": diag_report_path,
+                        "before": diag_before_path,
+                        "after_no_cut": diag_after_path,
+                        "valid_query_points": valid_points_path,
+                    },
+                }
+                with open(diag_report_path, "w", encoding="utf-8") as handle_out:
+                    json.dump(no_support_report, handle_out, indent=2)
+
+                # Keep combined-transfer ownership aligned with the adaptation
+                # list, but contribute no removed surface for this item.
+                if combined_transfer_enabled:
+                    empty_removed = self._mesh_from_face_mask(
+                        mesh, np.zeros(len(mesh.faces), dtype=bool)
+                    )
+                    combined_removed_references.append(empty_removed)
+                    combined_kept_references.append(mesh.copy())
+                    blend_group = str(item.get("blend_group", "")).strip()
+                    combined_reference_groups.append(
+                        blend_group if blend_group else str(target_key)
+                    )
+
+                print(
+                    "[udf cut skip]",
+                    f"item={item_index}",
+                    f"reason={no_support_reason}",
+                    "action=no_cut_continue",
+                    f"diagnostic={diag_report_path}",
+                )
+                continue
+
             finite_scores = scores[np.isfinite(scores)]
             score_percentiles = {}
             if len(finite_scores):
