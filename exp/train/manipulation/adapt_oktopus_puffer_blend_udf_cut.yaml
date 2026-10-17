@@ -1,5 +1,9 @@
 combine_adaptations: true
-udf_cut_combined_transfer: true
+# 0027: score the actual final combined SDF mesh directly with the learned UDFs.
+# The old removed-vs-kept nearest-reference transfer is retained in code as a
+# fallback mode, but is no longer the final authority for this experiment.
+udf_cut_combined_mode: direct_udf
+udf_cut_combined_transfer: false
 udf_cut_write_debug_outputs: false
 # Search seed/grow independently for every piece from that piece's own UDF
 # score distribution. No global seed/grow multiplier is shared across pieces.
@@ -19,6 +23,17 @@ udf_cut_auto_thresholds:
   save_best_n: 3
   report_top_n: 5
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
+# Direct combined-UDF ownership is geometric only: it decides which exact
+# adaptation mappings should be queried for a final face.  Removal evidence
+# comes from those UDF queries, not from distance to cut/kept intermediate PLYs.
+udf_cut_combined_direct_owner_radius_edges: 3.0
+udf_cut_combined_direct_owner_fallback_radius_edges: 8.0
+udf_cut_combined_direct_min_faces: 8
+udf_cut_combined_direct_min_seed_faces: 2
+udf_cut_combined_direct_min_seed_fraction: 0.05
+udf_cut_combined_direct_min_area_world2: 0.0
+udf_cut_combined_direct_preserve_existing_boundaries: true
+udf_cut_combined_direct_preserve_components: true
 udf_cut_combined_transfer_radius_edges: 2.0
 udf_cut_combined_transfer_seed_advantage_edges: 0.30
 udf_cut_combined_transfer_grow_advantage_edges: 0.0
