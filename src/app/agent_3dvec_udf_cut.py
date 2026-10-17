@@ -729,6 +729,10 @@ class AgentUDFCut(AgentUDF):
                 "only the final cut mesh (and JSON report) will be written"
             )
 
+        # Optional sweep summaries are collected across all adaptations so one
+        # run can tune every piece with a single UDF query per piece.
+        all_sweep_summaries = []
+
         for item_index, item in enumerate(adaptation_items):
             target_key = item["target_key"]
             accessory_key = item["accessory_key"]
@@ -866,8 +870,8 @@ class AgentUDFCut(AgentUDF):
             # Optional threshold sweep for diagnostics/tuning.  The expensive
             # adapted-UDF query above is performed only once; every candidate
             # reuses the same per-face scores and only reruns the cheap
-            # connectivity/component decision.  Put udf_cut_sweep on a single
-            # adaptation item to avoid generating candidates for every piece.
+            # connectivity/component decision.  When configured at YAML top
+            # level this applies to every adaptation item.
             sweep_config = config.get("udf_cut_sweep", None)
             if isinstance(sweep_config, dict) and bool(
                 sweep_config.get("enabled", True)
@@ -882,7 +886,18 @@ class AgentUDFCut(AgentUDF):
                         "grow_values", [grow_world]
                     )
                 ]
-                save_meshes = bool(sweep_config.get("save_meshes", True))
+                save_all_meshes = bool(sweep_config.get("save_meshes", False))
+                save_best_n = max(
+                    0, int(sweep_config.get("save_best_n", 3))
+                )
+                max_removed_fraction = float(
+                    sweep_config.get("max_removed_fraction", 0.20)
+                )
+                require_topology_preserved = bool(
+                    sweep_config.get("require_topology_preserved", True)
+                )
+                input_stats = self._topology_stats(mesh)
+                input_components = int(input_stats["components"])
                 sweep_rows = []
                 safe_key_sweep = self._safe_label(accessory_key)
                 sweep_prefix = f"{item_index}_{mode}_{safe_key_sweep}"
@@ -934,15 +949,28 @@ class AgentUDFCut(AgentUDF):
                         accepted_components = sum(
                             1 for decision in sweep_decisions if decision.accepted
                         )
+                        removed_fraction = float(
+                            len(sweep_removed.faces) / max(len(mesh.faces), 1)
+                        )
+                        topology_preserved = (
+                            int(kept_stats["components"]) == input_components
+                        )
+                        eligible = (
+                            accepted_components > 0
+                            and len(sweep_removed.faces) > 0
+                            and removed_fraction <= max_removed_fraction
+                            and (
+                                topology_preserved
+                                or not require_topology_preserved
+                            )
+                        )
                         row = {
                             "seed_world": sweep_seed,
                             "grow_world": sweep_grow,
                             "seed_faces": int(np.sum(sweep_seed_mask)),
                             "grow_faces": int(np.sum(sweep_grow_mask)),
                             "removed_faces": int(len(sweep_removed.faces)),
-                            "removed_fraction": float(
-                                len(sweep_removed.faces) / max(len(mesh.faces), 1)
-                            ),
+                            "removed_fraction": removed_fraction,
                             "accepted_components": int(accepted_components),
                             "after_faces": int(len(sweep_kept.faces)),
                             "after_components": int(kept_stats["components"]),
@@ -952,6 +980,8 @@ class AgentUDFCut(AgentUDF):
                             "removed_components": int(
                                 removed_stats["components"]
                             ),
+                            "topology_preserved": bool(topology_preserved),
+                            "eligible": bool(eligible),
                         }
 
                         seed_tag = (
@@ -964,7 +994,7 @@ class AgentUDFCut(AgentUDF):
                             .replace("-", "m")
                             .replace(".", "p")
                         )
-                        if save_meshes:
+                        if save_all_meshes:
                             candidate_path = op.join(
                                 output_folder,
                                 f"{sweep_prefix}_sweep_seed{seed_tag}_grow{grow_tag}.ply",
@@ -973,45 +1003,143 @@ class AgentUDFCut(AgentUDF):
                             row["mesh"] = candidate_path
                         sweep_rows.append(row)
 
+                # Prefer a topology-preserving, non-empty cut and among those
+                # remove as little as possible.  Boundary complexity is the
+                # tie-breaker.  This is only a diagnostic recommendation, not
+                # a production guarantee that the removed patch is semantic.
+                eligible_rows = [row for row in sweep_rows if row["eligible"]]
+                eligible_rows.sort(
+                    key=lambda row: (
+                        row["removed_fraction"],
+                        row["after_boundary_edges"],
+                        -row["grow_world"],
+                        row["seed_world"],
+                    )
+                )
+                recommended = eligible_rows[0] if eligible_rows else None
+
+                # Save only the best few candidates by default.  This avoids
+                # hundreds of 512-resolution PLYs when sweeping all items.
+                if save_best_n > 0:
+                    for rank, row in enumerate(eligible_rows[:save_best_n], 1):
+                        (
+                            best_kept,
+                            _best_removed,
+                            _best_seed_mask,
+                            _best_grow_mask,
+                            _best_decisions,
+                            _best_remove_mask,
+                        ) = self._cut_mesh(
+                            mesh,
+                            face_scores=scores,
+                            usable_faces=usable,
+                            seed_world=float(row["seed_world"]),
+                            grow_world=float(row["grow_world"]),
+                            min_faces=int(config.get("udf_cut_min_faces", 8)),
+                            min_seed_faces=int(
+                                config.get("udf_cut_min_seed_faces", 2)
+                            ),
+                            min_seed_fraction=float(
+                                config.get("udf_cut_min_seed_fraction", 0.05)
+                            ),
+                            min_area_world2=float(
+                                config.get("udf_cut_min_area_world2", 0.0)
+                            ),
+                            preserve_existing_boundaries=bool(
+                                config.get(
+                                    "udf_cut_preserve_existing_boundaries", True
+                                )
+                            ),
+                            reference_points=reference_points,
+                            reference_max_distance_world=(
+                                float(config["udf_cut_reference_max_distance_world"])
+                                if config.get(
+                                    "udf_cut_reference_max_distance_world", None
+                                ) is not None
+                                else None
+                            ),
+                        )
+                        best_path = op.join(
+                            output_folder,
+                            f"{sweep_prefix}_sweep_best{rank}_"
+                            f"seed{str(row['seed_world']).replace('.', 'p')}_"
+                            f"grow{str(row['grow_world']).replace('.', 'p')}.ply",
+                        )
+                        best_kept.export(best_path)
+                        row["best_rank"] = rank
+                        row["best_mesh"] = best_path
+
+                # Keep the complete candidate table deterministic and easy to
+                # inspect after the ranked candidates have been selected.
                 sweep_rows.sort(
                     key=lambda row: (
+                        not row["eligible"],
                         row["removed_fraction"],
                         row["after_boundary_edges"],
                         row["seed_world"],
                         row["grow_world"],
                     )
                 )
+                if recommended is not None:
+                    recommended = dict(recommended)
+
                 sweep_report_path = op.join(
                     output_folder, f"{sweep_prefix}_udf_cut_sweep.json"
                 )
+                sweep_report = {
+                    "item_index": item_index,
+                    "name": item.get("name"),
+                    "target_key": target_key,
+                    "accessory_key": accessory_key,
+                    "input_faces": int(len(mesh.faces)),
+                    "input_topology": input_stats,
+                    "score_percentiles": score_percentiles,
+                    "selection": {
+                        "require_topology_preserved": require_topology_preserved,
+                        "max_removed_fraction": max_removed_fraction,
+                        "recommended": recommended,
+                    },
+                    "candidates": sweep_rows,
+                }
                 with open(sweep_report_path, "w", encoding="utf-8") as handle:
-                    json.dump(
-                        {
-                            "item_index": item_index,
-                            "target_key": target_key,
-                            "accessory_key": accessory_key,
-                            "input_faces": int(len(mesh.faces)),
-                            "score_percentiles": score_percentiles,
-                            "candidates": sweep_rows,
-                        },
-                        handle,
-                        indent=2,
-                    )
+                    json.dump(sweep_report, handle, indent=2)
+
+                summary_row = {
+                    "item_index": item_index,
+                    "name": item.get("name"),
+                    "target_key": target_key,
+                    "accessory_key": accessory_key,
+                    "input_faces": int(len(mesh.faces)),
+                    "input_components": input_components,
+                    "score_percentiles": score_percentiles,
+                    "recommended": recommended,
+                    "report": sweep_report_path,
+                }
+                all_sweep_summaries.append(summary_row)
+
                 print(
                     "[udf cut sweep]",
                     f"item={item_index}",
                     f"candidates={len(sweep_rows)}",
+                    f"eligible={len(eligible_rows)}",
                     f"report={sweep_report_path}",
                 )
-                for row in sweep_rows:
+                if recommended is None:
                     print(
-                        "[udf cut sweep candidate]",
-                        f"seed={row['seed_world']:.6g}",
-                        f"grow={row['grow_world']:.6g}",
-                        f"removed={row['removed_faces']}",
-                        f"removed_pct={100.0 * row['removed_fraction']:.2f}",
-                        f"boundary_edges={row['after_boundary_edges']}",
-                        f"components={row['after_components']}",
+                        "[udf cut sweep recommended]",
+                        f"item={item_index}",
+                        "NONE",
+                    )
+                else:
+                    print(
+                        "[udf cut sweep recommended]",
+                        f"item={item_index}",
+                        f"seed={recommended['seed_world']:.6g}",
+                        f"grow={recommended['grow_world']:.6g}",
+                        f"removed={recommended['removed_faces']}",
+                        f"removed_pct={100.0 * recommended['removed_fraction']:.2f}",
+                        f"components={recommended['after_components']}",
+                        f"boundary_edges={recommended['after_boundary_edges']}",
                     )
             preserve_existing_boundaries = bool(
                 config.get("udf_cut_preserve_existing_boundaries", True)
@@ -1336,6 +1464,25 @@ class AgentUDFCut(AgentUDF):
             )
             if after_path is not None:
                 print("[udf cut saved]", after_path)
+
+        if all_sweep_summaries:
+            all_sweep_report_path = op.join(
+                output_folder, "udf_cut_sweep_all.json"
+            )
+            with open(all_sweep_report_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "items": all_sweep_summaries,
+                        "count": len(all_sweep_summaries),
+                    },
+                    handle,
+                    indent=2,
+                )
+            print(
+                "[udf cut sweep all]",
+                f"items={len(all_sweep_summaries)}",
+                f"report={all_sweep_report_path}",
+            )
 
         if combined_transfer_enabled:
             first_item = adaptation_items[0]
