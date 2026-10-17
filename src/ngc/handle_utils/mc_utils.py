@@ -256,6 +256,65 @@ class MCGrid():
         )
         return mesh
 
+    def extract_mesh_masked(self, face_flip=True):
+        """Marching Cubes only where the SDF was actually evaluated.
+
+        ``clear_grid()`` stores +10 in unknown voxels.  Plain Marching Cubes
+        treats that sentinel as a real outside-SDF value.  If a partial adapted
+        piece has negative samples at the edge of its active support, MC then
+        interpolates an artificial zero crossing between the negative sample
+        and +10 and closes the support boundary with a bogus sheet/blob.
+
+        skimage's ``mask`` argument makes the active-support validity explicit
+        and permits an open surface at that boundary instead of inventing a
+        zero set in voxels where no SDF was queried.
+        """
+        config = self.grid_config
+        N1 = self.reso + 1
+        sdf_val = self.val_grid.reshape(N1, N1, N1)
+        valid = (~self.empty_marks).reshape(N1, N1, N1)
+
+        if not np.any(valid):
+            return trimesh.Trimesh(
+                vertices=np.zeros((0, 3), dtype=np.float64),
+                faces=np.zeros((0, 3), dtype=np.int64),
+                process=False,
+            )
+
+        level = float(config['level'])
+        valid_values = sdf_val[valid]
+        if not (np.any(valid_values < level) and np.any(valid_values > level)):
+            return trimesh.Trimesh(
+                vertices=np.zeros((0, 3), dtype=np.float64),
+                faces=np.zeros((0, 3), dtype=np.int64),
+                process=False,
+            )
+
+        verts, faces, _, _ = skimage.measure.marching_cubes(
+            sdf_val,
+            level=level,
+            spacing=[config['step']] * 3,
+            mask=valid,
+        )
+
+        verts = verts + config['origin']
+        if config['do_flip']:
+            verts_align = np.zeros_like(verts)
+            verts_align[:, 0] = verts[:, 2]
+            verts_align[:, 1] = verts[:, 1]
+            verts_align[:, 2] = verts[:, 0]
+        else:
+            verts_align = verts
+
+        if face_flip:
+            faces = faces[:, [0, 2, 1]]
+
+        return trimesh.Trimesh(
+            vertices=verts_align,
+            faces=faces,
+            process=False,
+        )
+
 # Temp  
 # def calc_sdf_batch(self, proxy_shape, samples, batch_size):
 #     n_samples = samples.shape[0]

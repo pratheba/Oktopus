@@ -1,6 +1,13 @@
 combine_adaptations: true
 udf_cut_combined_transfer: true
 udf_cut_write_debug_outputs: false
+# Calibrate the cut independently for every adapted piece from its own UDF
+# score distribution.  For t5_2, p95=0.04556 gives ~0.050 / 0.030.
+udf_cut_auto_thresholds:
+  enabled: true
+  percentile: 95.0
+  seed_multiplier: 1.10
+  grow_multiplier: 0.65
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
 udf_cut_combined_transfer_radius_edges: 2.0
 udf_cut_combined_transfer_seed_advantage_edges: 0.30

@@ -866,6 +866,84 @@ class AgentUDFCut(AgentUDF):
 
             seed_world = float(config.get("udf_cut_seed_world", 0.02))
             grow_world = float(config.get("udf_cut_grow_world", 0.01))
+            auto_threshold_report = None
+
+            # Optional per-piece threshold calibration from this piece's own
+            # UDF score distribution.  This avoids assuming that a single
+            # absolute distance threshold is comparable across differently
+            # scaled/adapted pieces.  The default multipliers are deliberately
+            # anchored to the t5_2 sweep: p95=0.04556 -> seed~=0.0501 and
+            # grow~=0.0296, very close to the visually good 0.05 / 0.03 pair.
+            auto_thresholds = config.get("udf_cut_auto_thresholds", False)
+            if isinstance(auto_thresholds, dict):
+                auto_enabled = bool(auto_thresholds.get("enabled", True))
+                auto_spec = auto_thresholds
+            else:
+                auto_enabled = bool(auto_thresholds)
+                auto_spec = {}
+
+            usable_scores = scores[usable & np.isfinite(scores)]
+            if auto_enabled:
+                if len(usable_scores) == 0:
+                    raise RuntimeError(
+                        "udf_cut_auto_thresholds needs at least one usable "
+                        f"finite face score for item {item_index}"
+                    )
+
+                percentile = float(auto_spec.get("percentile", 95.0))
+                if not (0.0 < percentile < 100.0):
+                    raise ValueError(
+                        "udf_cut_auto_thresholds.percentile must be in (0, 100)"
+                    )
+                p_ref = float(np.percentile(usable_scores, percentile))
+                seed_multiplier = float(
+                    auto_spec.get("seed_multiplier", 1.10)
+                )
+                grow_multiplier = float(
+                    auto_spec.get("grow_multiplier", 0.65)
+                )
+                if seed_multiplier <= 0.0 or grow_multiplier <= 0.0:
+                    raise ValueError(
+                        "udf_cut_auto_thresholds multipliers must be positive"
+                    )
+
+                seed_world = p_ref * seed_multiplier
+                grow_world = p_ref * grow_multiplier
+
+                min_seed = auto_spec.get("min_seed_world", None)
+                min_grow = auto_spec.get("min_grow_world", None)
+                max_seed = auto_spec.get("max_seed_world", None)
+                max_grow = auto_spec.get("max_grow_world", None)
+                if min_seed is not None:
+                    seed_world = max(seed_world, float(min_seed))
+                if min_grow is not None:
+                    grow_world = max(grow_world, float(min_grow))
+                if max_seed is not None:
+                    seed_world = min(seed_world, float(max_seed))
+                if max_grow is not None:
+                    grow_world = min(grow_world, float(max_grow))
+
+                # Grow is a lower threshold than seed: a component must first
+                # contain strong seed evidence, then may expand through weaker
+                # but still suspicious faces.
+                grow_world = min(grow_world, seed_world)
+
+                auto_threshold_report = {
+                    "enabled": True,
+                    "percentile": percentile,
+                    "reference_value": p_ref,
+                    "seed_multiplier": seed_multiplier,
+                    "grow_multiplier": grow_multiplier,
+                    "seed_world": seed_world,
+                    "grow_world": grow_world,
+                }
+                print(
+                    "[udf cut auto threshold]",
+                    f"item={item_index}",
+                    f"p{percentile:g}={p_ref:.6g}",
+                    f"seed={seed_world:.6g}",
+                    f"grow={grow_world:.6g}",
+                )
 
             # Optional threshold sweep for diagnostics/tuning.  The expensive
             # adapted-UDF query above is performed only once; every candidate
@@ -1392,6 +1470,7 @@ class AgentUDFCut(AgentUDF):
                     ),
                     "preserve_existing_boundaries": preserve_existing_boundaries,
                     "reference_max_distance_world": reference_max_distance,
+                    "auto_thresholds": auto_threshold_report,
                     "subtriangle": subtriangle_enabled,
                     "subtriangle_threshold_world": (
                         None

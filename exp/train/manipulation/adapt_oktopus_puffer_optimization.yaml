@@ -1,4 +1,8 @@
 combine_adaptations: true
+# Individual blend-group pieces are sparse/partial SDF fields. Use the grid
+# validity mask during MC so +10 background sentinels cannot create fake
+# support-boundary closures (the t4_2 / item-8 blob).
+individual_support_aware_mc: true
 # Each group is fitted independently against its own avatar skeleton.
 blend_groups:
   t1:
