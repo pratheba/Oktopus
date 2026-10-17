@@ -775,6 +775,362 @@ class AgentUDFCut(AgentUDF):
         scores[~usable] = np.nan
         return scores, usable, values, valid
 
+    def _query_face_scores_for_ids(
+        self,
+        mesh: trimesh.Trimesh,
+        face_ids: np.ndarray,
+        *,
+        avatar_curve,
+        adapt_arg: dict,
+        accessory_key: str,
+        model_batch_size: int,
+        query_batch_size: int,
+        far_world: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Query UDF scores for a selected set of faces without remeshing.
+
+        Combined direct-UDF mode first determines which adaptation item(s) can
+        own each final combined face.  Only those faces are queried through a
+        given item's exact seam-corrected mapping, avoiding an all-items x
+        all-faces neural query.
+        """
+        face_ids = np.asarray(face_ids, dtype=np.int64).reshape(-1)
+        if face_ids.size == 0:
+            return (
+                np.zeros((0,), dtype=np.float64),
+                np.zeros((0,), dtype=bool),
+            )
+
+        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        tri = vertices[faces[face_ids]]
+        samples = np.stack(
+            [
+                tri.mean(axis=1),
+                0.5 * (tri[:, 0] + tri[:, 1]),
+                0.5 * (tri[:, 1] + tri[:, 2]),
+                0.5 * (tri[:, 2] + tri[:, 0]),
+            ],
+            axis=1,
+        )
+        flat = samples.reshape(-1, 3)
+        values = np.empty(flat.shape[0], dtype=np.float64)
+        valid = np.zeros(flat.shape[0], dtype=bool)
+        query_batch_size = max(1, int(query_batch_size))
+        for start in range(0, flat.shape[0], query_batch_size):
+            end = min(start + query_batch_size, flat.shape[0])
+            value_chunk, valid_chunk = self._query_adapted_raw_udf(
+                flat[start:end],
+                avatar_curve=avatar_curve,
+                adapt_arg=adapt_arg,
+                accessory_key=accessory_key,
+                batch_size=int(model_batch_size),
+                far_world=float(far_world),
+                return_valid=True,
+            )
+            values[start:end] = np.asarray(value_chunk, dtype=np.float64)
+            valid[start:end] = np.asarray(valid_chunk, dtype=bool)
+
+        values = values.reshape(face_ids.size, 4)
+        valid = valid.reshape(face_ids.size, 4)
+        valid_counts = valid.sum(axis=1)
+        usable = valid[:, 0] & (valid_counts >= 2)
+        masked = np.where(valid, values, np.nan)
+        scores = np.full(face_ids.size, np.nan, dtype=np.float64)
+        if np.any(usable):
+            scores[usable] = np.nanmedian(masked[usable], axis=1)
+        usable &= np.isfinite(scores)
+        scores[~usable] = np.nan
+        return scores, usable
+
+    @staticmethod
+    def _normalize_owner_evidence(
+        scores: np.ndarray,
+        *,
+        grow_world: float,
+        seed_world: float,
+    ) -> np.ndarray:
+        """Map one owner's raw UDF score onto common grow=1 / seed=2 units.
+
+        Different adaptations have very different UDF score scales.  The
+        per-piece automatic search already calibrates a grow and seed threshold
+        for each item.  This mapping preserves those thresholds while making
+        evidence comparable across overlapping owners:
+
+          raw == grow -> normalized == 1
+          raw == seed -> normalized == 2
+
+        A final face takes the minimum evidence across all relevant owners, so
+        one legitimate owner is sufficient to support/keep the surface.
+        """
+        scores = np.asarray(scores, dtype=np.float64)
+        grow = float(grow_world)
+        seed = float(seed_world)
+        eps = max(1.0e-12, 1.0e-9 * max(abs(grow), abs(seed), 1.0))
+        out = np.full(scores.shape, np.nan, dtype=np.float64)
+        finite = np.isfinite(scores)
+        if not np.any(finite):
+            return out
+
+        x = scores[finite]
+        if seed > grow + eps:
+            out[finite] = 1.0 + (x - grow) / (seed - grow)
+        else:
+            # Equal seed/grow is a legitimate degenerate hysteresis choice
+            # (several current pieces select P90/P90).  Keep the same binary
+            # threshold semantics: below threshold is support, at/above is seed.
+            scale = max(abs(grow), eps)
+            out_x = x / scale
+            out_x = np.where(x >= grow, 2.0 + (x - grow) / scale, out_x)
+            out[finite] = out_x
+        return out
+
+    def _direct_udf_cut_combined_mesh(
+        self,
+        combined_mesh: trimesh.Trimesh,
+        *,
+        owners: Sequence[Dict[str, object]],
+        config: dict,
+        model_batch_size: int,
+        query_batch_size: int,
+        far_world: float,
+    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object], np.ndarray]:
+        """Score and cut the *actual final combined SDF mesh* with UDFs.
+
+        Ownership is inferred only to decide which learned adaptation mappings
+        are relevant to a final face.  Removal evidence itself comes directly
+        from those learned UDFs, not from proximity to previously removed/kept
+        intermediate meshes.  In overlap regions, the minimum normalized UDF
+        evidence is used: if any relevant owner supports the face, it is kept.
+        """
+        if not owners:
+            raise ValueError("direct combined UDF cut requires at least one owner")
+
+        from scipy.spatial import cKDTree
+
+        faces = np.asarray(combined_mesh.faces, dtype=np.int64)
+        centroids = np.asarray(combined_mesh.triangles_center, dtype=np.float64)
+        n_faces = len(faces)
+        edges = np.asarray(combined_mesh.edges_unique, dtype=np.int64)
+        vertices = np.asarray(combined_mesh.vertices, dtype=np.float64)
+        if len(edges) == 0:
+            raise ValueError("combined mesh has no usable edges")
+        edge_lengths = np.linalg.norm(
+            vertices[edges[:, 1]] - vertices[edges[:, 0]], axis=1
+        )
+        edge_lengths = edge_lengths[np.isfinite(edge_lengths) & (edge_lengths > 1e-15)]
+        if len(edge_lengths) == 0:
+            raise ValueError("could not determine combined-mesh edge scale")
+        edge_scale = float(np.median(edge_lengths))
+
+        radius_edges = float(
+            config.get("udf_cut_combined_direct_owner_radius_edges", 3.0)
+        )
+        fallback_edges = float(
+            config.get("udf_cut_combined_direct_owner_fallback_radius_edges", 8.0)
+        )
+        radius_world = max(0.0, radius_edges) * edge_scale
+        fallback_world = max(radius_world, max(0.0, fallback_edges) * edge_scale)
+
+        owner_masks: List[np.ndarray] = []
+        best_distance = np.full(n_faces, np.inf, dtype=np.float64)
+        best_owner = np.full(n_faces, -1, dtype=np.int64)
+        for owner_index, owner in enumerate(owners):
+            ref_points = np.asarray(owner["ownership_points"], dtype=np.float64)
+            if len(ref_points) == 0:
+                distances = np.full(n_faces, np.inf, dtype=np.float64)
+            else:
+                distances, _ = cKDTree(ref_points).query(centroids, k=1)
+                distances = np.asarray(distances, dtype=np.float64)
+            owner_masks.append(distances <= radius_world)
+            better = distances < best_distance
+            best_distance[better] = distances[better]
+            best_owner[better] = int(owner_index)
+
+        owner_count = np.zeros(n_faces, dtype=np.int16)
+        for mask in owner_masks:
+            owner_count += np.asarray(mask, dtype=np.int16)
+
+        # Smooth-union surfaces can sit a few cells away from every isolated
+        # member.  Give otherwise-unowned faces to their nearest item within a
+        # wider fallback radius; beyond that, keep them rather than guessing.
+        unowned = owner_count == 0
+        fallback = unowned & (best_owner >= 0) & (best_distance <= fallback_world)
+        if np.any(fallback):
+            for owner_index, mask in enumerate(owner_masks):
+                add = fallback & (best_owner == owner_index)
+                if np.any(add):
+                    mask[add] = True
+                    owner_count[add] += 1
+
+        valid_owner_count = np.zeros(n_faces, dtype=np.int16)
+        fused_evidence = np.full(n_faces, np.inf, dtype=np.float64)
+        owner_reports: List[Dict[str, object]] = []
+
+        for owner_index, (owner, owner_mask) in enumerate(zip(owners, owner_masks)):
+            face_ids = np.flatnonzero(owner_mask)
+            if face_ids.size == 0:
+                owner_reports.append(
+                    {
+                        "item_index": int(owner["item_index"]),
+                        "target_key": str(owner["target_key"]),
+                        "accessory_key": str(owner["accessory_key"]),
+                        "owned_faces": 0,
+                        "usable_faces": 0,
+                    }
+                )
+                continue
+
+            scores, usable = self._query_face_scores_for_ids(
+                combined_mesh,
+                face_ids,
+                avatar_curve=owner["avatar_curve"],
+                adapt_arg=owner["adapt_arg"],
+                accessory_key=str(owner["accessory_key"]),
+                model_batch_size=model_batch_size,
+                query_batch_size=query_batch_size,
+                far_world=far_world,
+            )
+            valid_ids = face_ids[usable]
+            valid_owner_count[valid_ids] += 1
+            evidence = self._normalize_owner_evidence(
+                scores[usable],
+                grow_world=float(owner["grow_world"]),
+                seed_world=float(owner["seed_world"]),
+            )
+            fused_evidence[valid_ids] = np.minimum(
+                fused_evidence[valid_ids], evidence
+            )
+            owner_reports.append(
+                {
+                    "item_index": int(owner["item_index"]),
+                    "target_key": str(owner["target_key"]),
+                    "accessory_key": str(owner["accessory_key"]),
+                    "owned_faces": int(face_ids.size),
+                    "usable_faces": int(np.sum(usable)),
+                    "seed_world": float(owner["seed_world"]),
+                    "grow_world": float(owner["grow_world"]),
+                }
+            )
+            print(
+                "[udf cut combined direct owner]",
+                f"item={int(owner['item_index'])}",
+                f"owned={face_ids.size}",
+                f"usable={int(np.sum(usable))}",
+                f"seed={float(owner['seed_world']):.6g}",
+                f"grow={float(owner['grow_world']):.6g}",
+            )
+
+        # Conservative validity: all geometrically relevant owners must have
+        # produced a valid score. Unknown owner evidence can never cause a cut.
+        usable = (owner_count > 0) & (valid_owner_count == owner_count)
+        usable &= np.isfinite(fused_evidence)
+        fused_evidence[~usable] = np.nan
+
+        adjacency = np.asarray(combined_mesh.face_adjacency, dtype=np.int64)
+        face_areas = np.asarray(combined_mesh.area_faces, dtype=np.float64)
+        existing_boundary_faces = self._existing_boundary_faces(combined_mesh)
+        topology = self._prepare_search_topology(combined_mesh)
+        input_stats = self._topology_stats(combined_mesh)
+        (
+            seed_mask,
+            grow_mask,
+            decisions,
+            remove_mask,
+            kept_stats,
+            removed_stats,
+        ) = self._evaluate_cut_candidate_fast(
+            combined_mesh,
+            face_scores=fused_evidence,
+            usable_faces=usable,
+            seed_world=2.0,
+            grow_world=1.0,
+            min_faces=int(config.get("udf_cut_combined_direct_min_faces", 8)),
+            min_seed_faces=int(
+                config.get("udf_cut_combined_direct_min_seed_faces", 2)
+            ),
+            min_seed_fraction=float(
+                config.get("udf_cut_combined_direct_min_seed_fraction", 0.05)
+            ),
+            min_area_world2=float(
+                config.get("udf_cut_combined_direct_min_area_world2", 0.0)
+            ),
+            preserve_existing_boundaries=bool(
+                config.get("udf_cut_combined_direct_preserve_existing_boundaries", True)
+            ),
+            reference_tree=None,
+            reference_max_distance_world=None,
+            adjacency=adjacency,
+            face_areas=face_areas,
+            existing_boundary_faces=existing_boundary_faces,
+            centroids=centroids,
+            topology=topology,
+        )
+
+        topology_pruned = 0
+        if bool(config.get("udf_cut_combined_direct_preserve_components", True)):
+            max_components = int(input_stats["components"])
+            max_nonmanifold = int(input_stats["nonmanifold_edges"])
+            if (
+                int(kept_stats["components"]) > max_components
+                or int(kept_stats["nonmanifold_edges"]) > max_nonmanifold
+            ):
+                components, _labels = self._face_components_fast(grow_mask, adjacency)
+                accepted_ids = [
+                    i for i, decision in enumerate(decisions) if decision.accepted
+                ]
+                accepted_ids.sort(
+                    key=lambda i: decisions[i].score_median, reverse=True
+                )
+                safe_remove = np.zeros(n_faces, dtype=bool)
+                for component_id in accepted_ids:
+                    trial = safe_remove.copy()
+                    trial[components[component_id]] = True
+                    trial_kept, _trial_removed = self._topology_stats_from_remove_mask(
+                        topology, trial
+                    )
+                    if (
+                        int(trial_kept["components"]) <= max_components
+                        and int(trial_kept["nonmanifold_edges"]) <= max_nonmanifold
+                    ):
+                        safe_remove = trial
+                    else:
+                        topology_pruned += 1
+                remove_mask = safe_remove
+                kept_stats, removed_stats = self._topology_stats_from_remove_mask(
+                    topology, remove_mask
+                )
+
+        kept = self._mesh_from_face_mask(combined_mesh, ~remove_mask)
+        removed = self._mesh_from_face_mask(combined_mesh, remove_mask)
+        owner_hist = np.bincount(owner_count.astype(np.int64), minlength=2)
+        report = {
+            "mode": "direct_udf",
+            "median_edge_length": edge_scale,
+            "owner_radius_edges": radius_edges,
+            "owner_radius_world": radius_world,
+            "owner_fallback_radius_edges": fallback_edges,
+            "owner_fallback_radius_world": fallback_world,
+            "faces": n_faces,
+            "owned_faces": int(np.sum(owner_count > 0)),
+            "fallback_owned_faces": int(np.sum(fallback)),
+            "unowned_faces": int(np.sum(owner_count == 0)),
+            "all_owner_queries_valid_faces": int(np.sum(usable)),
+            "seed_faces": int(np.sum(seed_mask)),
+            "grow_faces": int(np.sum(grow_mask)),
+            "removed_faces": int(np.sum(remove_mask)),
+            "owner_count_histogram": {
+                str(i): int(v) for i, v in enumerate(owner_hist) if int(v)
+            },
+            "topology_pruned_components": int(topology_pruned),
+            "before": input_stats,
+            "after_raw": kept_stats,
+            "removed": removed_stats,
+            "owners": owner_reports,
+            "components": [decision.as_dict() for decision in decisions],
+        }
+        return kept, removed, report, fused_evidence
+
     def _query_vertex_values(
         self,
         mesh: trimesh.Trimesh,
@@ -1083,17 +1439,34 @@ class AgentUDFCut(AgentUDF):
             raise ValueError("part_adapt_udf_cut requires --mc-mesh / mc_mesh.")
         reference_spec = extraction_config.get("nsdudf_reference_mesh")
 
-        combined_transfer_enabled = bool(
-            extraction_config.get("udf_cut_combined_transfer", False)
-        )
-        combined_mc_spec = extraction_config.get("udf_cut_combined_mc_mesh")
-        if combined_transfer_enabled and not combined_mc_spec:
+        combined_mode = str(
+            extraction_config.get(
+                "udf_cut_combined_mode",
+                "transfer"
+                if extraction_config.get("udf_cut_combined_transfer", False)
+                else "none",
+            )
+        ).strip().lower()
+        if combined_mode not in {"none", "transfer", "direct_udf"}:
             raise ValueError(
-                "udf_cut_combined_transfer=true requires "
+                "udf_cut_combined_mode must be one of: none, transfer, direct_udf; "
+                f"got {combined_mode!r}"
+            )
+        combined_transfer_enabled = combined_mode == "transfer"
+        combined_direct_enabled = combined_mode == "direct_udf"
+        combined_mc_spec = extraction_config.get("udf_cut_combined_mc_mesh")
+        if (combined_transfer_enabled or combined_direct_enabled) and not combined_mc_spec:
+            raise ValueError(
+                f"udf_cut_combined_mode={combined_mode!r} requires "
                 "udf_cut_combined_mc_mesh at YAML top level."
             )
         combined_removed_references: List[trimesh.Trimesh] = []
         combined_kept_references: List[trimesh.Trimesh] = []
+        # Direct mode keeps the exact per-item UDF mapping and the threshold
+        # pair selected for that item.  The final combined SDF mesh is queried
+        # against these owners directly; no removed/kept geometry is used as a
+        # surrogate for learned UDF evidence.
+        combined_direct_owners: List[Dict[str, object]] = []
         write_debug_outputs = bool(
             extraction_config.get("udf_cut_write_debug_outputs", True)
         )
@@ -1392,7 +1765,7 @@ class AgentUDFCut(AgentUDF):
                 with open(diag_report_path, "w", encoding="utf-8") as handle_out:
                     json.dump(no_support_report, handle_out, indent=2)
 
-                # Keep combined-transfer ownership aligned with the adaptation
+                # Keep legacy transfer references aligned with the adaptation
                 # list, but contribute no removed surface for this item.
                 if combined_transfer_enabled:
                     empty_removed = self._mesh_from_face_mask(
@@ -1400,9 +1773,32 @@ class AgentUDFCut(AgentUDF):
                     )
                     combined_removed_references.append(empty_removed)
                     combined_kept_references.append(mesh.copy())
-                    blend_group = str(item.get("blend_group", "")).strip()
-                    combined_reference_groups.append(
-                        blend_group if blend_group else str(target_key)
+
+                # Direct-combined mode remains conservative when an individual
+                # item cannot produce usable scores: the item can still own
+                # nearby final faces, but its deliberately unreachable
+                # thresholds make it a KEEP/unknown vote rather than a removal
+                # vote.
+                if combined_direct_enabled:
+                    no_cut_threshold = max(1.0, abs(float(far_world)) * 10.0)
+                    combined_direct_owners.append(
+                        {
+                            "item_index": int(item_index),
+                            "target_key": target_key,
+                            "accessory_key": accessory_key,
+                            "avatar_curve": avatar_curve,
+                            "adapt_arg": dict(adapt_arg),
+                            "seed_world": no_cut_threshold,
+                            "grow_world": no_cut_threshold,
+                            "ownership_points": np.concatenate(
+                                [
+                                    np.asarray(mesh.vertices, dtype=np.float64),
+                                    np.asarray(mesh.triangles_center, dtype=np.float64),
+                                ],
+                                axis=0,
+                            ),
+                            "individual_query_usable": False,
+                        }
                     )
 
                 print(
@@ -2184,6 +2580,30 @@ class AgentUDFCut(AgentUDF):
                 reference_max_distance_world=reference_max_distance,
             )
 
+            if combined_direct_enabled:
+                combined_direct_owners.append(
+                    {
+                        "item_index": int(item_index),
+                        "target_key": target_key,
+                        "accessory_key": accessory_key,
+                        "avatar_curve": avatar_curve,
+                        "adapt_arg": dict(adapt_arg),
+                        "seed_world": float(seed_world),
+                        "grow_world": float(grow_world),
+                        # Ownership uses the original individual SDF surface,
+                        # not the cut mesh.  This prevents a deleted patch from
+                        # making its own owner disappear before final scoring.
+                        "ownership_points": np.concatenate(
+                            [
+                                np.asarray(mesh.vertices, dtype=np.float64),
+                                np.asarray(mesh.triangles_center, dtype=np.float64),
+                            ],
+                            axis=0,
+                        ),
+                        "individual_query_usable": True,
+                    }
+                )
+
             whole_face_kept = kept.copy()
             subtriangle_enabled = bool(config.get("udf_cut_subtriangle", False))
             subtriangle_report = None
@@ -2493,7 +2913,7 @@ class AgentUDFCut(AgentUDF):
                 f"report={all_sweep_report_path}",
             )
 
-        if combined_transfer_enabled:
+        if combined_transfer_enabled or combined_direct_enabled:
             first_item = adaptation_items[0]
             combined_path = self._resolve_path_spec(
                 str(combined_mc_spec),
@@ -2514,56 +2934,87 @@ class AgentUDFCut(AgentUDF):
                     f"Combined MC input is empty or not a triangle mesh: {combined_path}"
                 )
 
-            print(
-                "[udf cut combined transfer]",
-                f"combined_mc={combined_path}",
-                f"removed_refs={len(combined_removed_references)}",
-                f"kept_refs={len(combined_kept_references)}",
-            )
-            combined_raw, combined_removed, combined_transfer_report = (
-                transfer_udf_cut_to_combined_mesh(
-                    combined_mesh,
-                    removed_reference_meshes=combined_removed_references,
-                    kept_reference_meshes=combined_kept_references,
-                    radius_edge_fraction=float(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_radius_edges", 2.0
-                        )
-                    ),
-                    seed_advantage_edge_fraction=float(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_seed_advantage_edges",
-                            0.30,
-                        )
-                    ),
-                    grow_advantage_edge_fraction=float(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_grow_advantage_edges",
-                            0.0,
-                        )
-                    ),
-                    min_faces=int(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_min_faces", 8
-                        )
-                    ),
-                    min_seed_faces=int(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_min_seed_faces", 2
-                        )
-                    ),
-                    min_seed_fraction=float(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_min_seed_fraction", 0.05
-                        )
-                    ),
-                    min_valid_samples=int(
-                        extraction_config.get(
-                            "udf_cut_combined_transfer_min_valid_samples", 2
-                        )
-                    ),
+            if combined_direct_enabled:
+                print(
+                    "[udf cut combined direct]",
+                    f"combined_mc={combined_path}",
+                    f"owners={len(combined_direct_owners)}",
                 )
-            )
+                (
+                    combined_raw,
+                    combined_removed,
+                    combined_direct_report,
+                    combined_fused_evidence,
+                ) = self._direct_udf_cut_combined_mesh(
+                    combined_mesh,
+                    owners=combined_direct_owners,
+                    config=extraction_config,
+                    model_batch_size=model_batch_size,
+                    query_batch_size=query_batch_size,
+                    far_world=far_world,
+                )
+                combined_method_report = {
+                    "direct_udf": combined_direct_report
+                }
+                removed_output_name = "combined_udf_direct_removed.ply"
+                before_output_name = "combined_mc_before_udf_direct.ply"
+            else:
+                print(
+                    "[udf cut combined transfer]",
+                    f"combined_mc={combined_path}",
+                    f"removed_refs={len(combined_removed_references)}",
+                    f"kept_refs={len(combined_kept_references)}",
+                )
+                combined_raw, combined_removed, combined_transfer_report = (
+                    transfer_udf_cut_to_combined_mesh(
+                        combined_mesh,
+                        removed_reference_meshes=combined_removed_references,
+                        kept_reference_meshes=combined_kept_references,
+                        radius_edge_fraction=float(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_radius_edges", 2.0
+                            )
+                        ),
+                        seed_advantage_edge_fraction=float(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_seed_advantage_edges",
+                                0.30,
+                            )
+                        ),
+                        grow_advantage_edge_fraction=float(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_grow_advantage_edges",
+                                0.0,
+                            )
+                        ),
+                        min_faces=int(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_min_faces", 8
+                            )
+                        ),
+                        min_seed_faces=int(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_min_seed_faces", 2
+                            )
+                        ),
+                        min_seed_fraction=float(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_min_seed_fraction", 0.05
+                            )
+                        ),
+                        min_valid_samples=int(
+                            extraction_config.get(
+                                "udf_cut_combined_transfer_min_valid_samples", 2
+                            )
+                        ),
+                    )
+                )
+                combined_method_report = {
+                    "transfer": combined_transfer_report
+                }
+                combined_fused_evidence = None
+                removed_output_name = "combined_udf_transfer_removed.ply"
+                before_output_name = "combined_mc_before_udf_transfer.ply"
 
             combined_cleanup_report = None
             combined_final = combined_raw
@@ -2573,11 +3024,9 @@ class AgentUDFCut(AgentUDF):
                     **self._boundary_cleanup_kwargs(extraction_config),
                 )
 
-            combined_before_path = op.join(
-                output_folder, "combined_mc_before_udf_transfer.ply"
-            )
+            combined_before_path = op.join(output_folder, before_output_name)
             combined_removed_path = op.join(
-                output_folder, "combined_udf_transfer_removed.ply"
+                output_folder, removed_output_name
             )
             combined_raw_path = op.join(
                 output_folder, "combined_mc_after_udf_cut_raw.ply"
@@ -2588,11 +3037,21 @@ class AgentUDFCut(AgentUDF):
             combined_report_path = op.join(
                 output_folder, "combined_udf_cut_report.json"
             )
+            combined_evidence_path = (
+                op.join(output_folder, "combined_udf_direct_evidence.npz")
+                if combined_direct_enabled and write_debug_outputs
+                else None
+            )
 
             if write_debug_outputs:
                 combined_mesh.export(combined_before_path)
                 combined_removed.export(combined_removed_path)
                 combined_raw.export(combined_raw_path)
+                if combined_evidence_path is not None:
+                    np.savez_compressed(
+                        combined_evidence_path,
+                        fused_evidence=combined_fused_evidence,
+                    )
             else:
                 combined_before_path = None
                 combined_removed_path = None
@@ -2603,16 +3062,18 @@ class AgentUDFCut(AgentUDF):
                 json.dump(
                     {
                         "combined_mc_input": combined_path,
+                        "mode": combined_mode,
                         "before": self._topology_stats(combined_mesh),
                         "after_raw": self._topology_stats(combined_raw),
                         "after": self._topology_stats(combined_final),
-                        "transfer": combined_transfer_report,
+                        **combined_method_report,
                         "boundary_cleanup": combined_cleanup_report,
                         "outputs": {
                             "before": combined_before_path,
                             "removed": combined_removed_path,
                             "after_raw": combined_raw_path,
                             "after": combined_after_path,
+                            "direct_evidence": combined_evidence_path,
                         },
                     },
                     handle_out,
@@ -2621,6 +3082,7 @@ class AgentUDFCut(AgentUDF):
 
             print(
                 "[udf cut combined result]",
+                f"mode={combined_mode}",
                 f"removed_faces={len(combined_removed.faces)}",
                 f"before={self._topology_stats(combined_mesh)}",
                 f"after={self._topology_stats(combined_final)}",
