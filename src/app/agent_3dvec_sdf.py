@@ -1166,6 +1166,9 @@ class AgentSDF(AgentBase):
                     or key_text in {
                         'combine_adaptations',
                         'individual_support_aware_mc',
+                        'export_individual_meshes',
+                        'sdf_inference_batch_size',
+                        'sdf_perf_timing',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1297,7 +1300,22 @@ class AgentSDF(AgentBase):
         out_name = f'{shape_name}_{exp_name}'
         os.makedirs(output_folder, exist_ok=True)
 
-        batch_size = 64**3
+        batch_size = int(extraction_config.get('sdf_inference_batch_size', 64**3))
+        if batch_size <= 0:
+            raise ValueError(
+                f"sdf_inference_batch_size must be positive, got {batch_size}"
+            )
+        export_individual_meshes = bool(
+            extraction_config.get('export_individual_meshes', True)
+        )
+        perf_timing = bool(extraction_config.get('sdf_perf_timing', True))
+        part_adapt_t0 = time()
+        print(
+            "[part_adapt execution]",
+            f"batch_size={batch_size}",
+            f"export_individual_meshes={export_individual_meshes}",
+            f"resolution={getattr(mc_grid, 'reso', 'unknown')}",
+        )
         #mc_grid.clear_grid(val=10.0)
         mc_grid.clear_grid()
 
@@ -1323,7 +1341,21 @@ class AgentSDF(AgentBase):
         # one 512^3 value grid plus its occupancy mask can exceed 1 GiB.
         # mc_grid is already cleared above and is the ungrouped union accumulator.
         blend_groups = {}
+        # Track how many members remain in each blend group. Once the last
+        # member has been accumulated we can merge that group immediately into
+        # the final grid and free its dense buffer instead of retaining every
+        # group until the end of a high-resolution run.
+        blend_group_remaining = {}
+        if combine_adaptations:
+            for planned_item in adaptation_items:
+                planned_group = str(planned_item.get('blend_group', 'none'))
+                if planned_group not in ('none', '', 'false'):
+                    blend_group_remaining[planned_group] = (
+                        blend_group_remaining.get(planned_group, 0) + 1
+                    )
+
         for item_index, item in enumerate(adaptation_items):
+            item_t0 = time()
             target_key = item['target_key']
             accessory_key = item['accessory_key']
             mode = item.get('mode', 'direct')
@@ -1353,10 +1385,10 @@ class AgentSDF(AgentBase):
                     f"matched {key}"
                 )
 
-                curve_grid = utils.create_grid_like(mc_grid)
-                #curve_grid.clear_grid(val=10.0)
-                curve_grid.clear_grid()
-
+                # filter_grid_adapt only needs the grid geometry/indexing;
+                # it does not write SDF values into the supplied grid. Reuse the
+                # final accumulator here instead of allocating and clearing a
+                # complete temporary (N+1)^3 SDF grid for every adaptation.
                 adapt_arg = {
                     'mode': mode,
                     'avatar_curve_handle': curve,
@@ -1379,7 +1411,11 @@ class AgentSDF(AgentBase):
                     )
                     adapt_arg['accessory_curve_handle'] = accessory_curve_handle
 
-                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(curve_grid, adapt_arg)
+                    filter_t0 = time()
+                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
+                        mc_grid, adapt_arg
+                    )
+                    filter_elapsed = time() - filter_t0
 
                     cache_key = item.get("cache_as", accessory_key)
 
@@ -1508,11 +1544,10 @@ class AgentSDF(AgentBase):
                             adapt_arg["avatar_snug_scale_field"] = snug_field
 
                             # Rerun direct adaptation with the correction field.
-                            curve_grid = utils.create_grid_like(mc_grid)
-                            curve_grid.clear_grid()
-
+                            # Reuse mc_grid as the geometry/indexing source; this
+                            # call does not mutate its SDF accumulator.
                             accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
-                                curve_grid,
+                                mc_grid,
                                 adapt_arg,
                             )
 
@@ -1608,18 +1643,9 @@ class AgentSDF(AgentBase):
 #                    name=accessory_key,
 #                )
 
-                #delta = 0.01
-                acc_grid = utils.create_grid_like(mc_grid)
-                acc_grid_base = utils.create_grid_like(mc_grid)
-                #acc_grid.clear_grid(val=10.0)
-                acc_grid.clear_grid()
-                acc_grid_base.clear_grid()
-                #acc_grid.update_grid(acc_vals - delta, kidx, mark=True, mode="overwrite")
-                acc_grid.update_grid(acc_vals, kidx, mark=True, mode="overwrite")
-                acc_grid_base.update_grid(acc_vals_base, kidx, mark=True, mode="overwrite")
-
-                #print("num valid voxels:", np.sum(~acc_grid.empty_marks))
-                #print("num total voxels:", acc_grid.empty_marks.shape[0])
+                # Keep the inferred values sparse (kidx + arrays) until an
+                # individual mesh is explicitly requested. Dense per-item grids
+                # are unnecessary for fitting, carving, or group accumulation.
 
                 # Collision/snug operations happen on BASE only.
                 vals_base_fit = acc_vals_base.copy()
@@ -1906,106 +1932,88 @@ class AgentSDF(AgentBase):
                             float(np.max(clearance_local)),
                         )
 
-                acc_grid_base_fit = utils.create_grid_like(mc_grid)
-                acc_grid_base_fit.clear_grid()
-                acc_grid_base_fit.update_grid(vals_base_fit, kidx, mark=True, mode="overwrite")
-
-                # mesh_acc_base_fit = acc_grid_base_fit.extract_mesh()  # dead debug (result unused; direct MC crashes on an all-positive UDF grid)
-#                if len(mesh_acc_base_fit.faces) > 0:
-#                    parts = mesh_acc_base_fit.split(only_watertight=False)
-#                    if len(parts) > 0:
-#                        mesh_acc_base_fit = max(parts, key=lambda m: len(m.faces))
-#                    mesh_acc_base_fit.export(
-#                        op.join(
-#                            output_folder,
-#                            f"{cc}_{mode}_basefit_{accessory_key.replace('|','_')}.ply"
-#                        )
-#                    )
+                # No dense base-fit grid is built here; the old debug extraction
+                # was disabled and the values already live in vals_base_fit.
 
 
 
-                # 3) Debug/export this individual accessory after offset/cut/detail-reapply
-                acc_grid = utils.create_grid_like(mc_grid)
-                acc_grid.clear_grid()
-                acc_grid.update_grid(vals_final, kidx, mark=True, mode="overwrite")
 
-                # raw base debug
-                acc_grid_base.update_grid(acc_vals_base, kidx, mark=True, mode="overwrite")
-
-
-                # Extract and save this adaptation independently.
+                # 3) Optional individual accessory export.
                 #
-                # Blend-group members are partial SDF fields. Unknown voxels in
-                # MCGrid carry the +10 background sentinel; ordinary Marching
-                # Cubes can therefore fabricate a closing surface where a
-                # negative partial field touches the edge of sampled support.
-                # Masked MC keeps those voxels unknown and allows an open support
-                # boundary instead of inventing a zero set there. The final
-                # combined/group extraction is intentionally unchanged.
-                blend_group_name = str(adapt_arg.get("blend_group", "none"))
-                use_support_aware_individual_mc = (
-                    bool(extraction_config.get("individual_support_aware_mc", False))
-                    and blend_group_name.lower() not in {"none", "", "false"}
-                )
-                individual_mc_method = (
-                    "extract_mesh_masked"
-                    if use_support_aware_individual_mc
-                    else "extract_mesh"
-                )
-                if use_support_aware_individual_mc:
-                    print(
-                        "[part_adapt support-aware MC]",
-                        f"item={item_index}",
-                        f"group={blend_group_name}",
+                # UDF-cut runs currently consume these per-item meshes, so the
+                # default remains True. High-resolution final-SDF-only runs can
+                # set export_individual_meshes: false to skip both the dense
+                # per-item grid construction and its Marching Cubes pass.
+                mesh_acc = None
+                individual_mesh_elapsed = 0.0
+                if export_individual_meshes:
+                    mesh_t0 = time()
+                    acc_grid = utils.create_grid_like(mc_grid)
+                    acc_grid.clear_grid()
+                    acc_grid.update_grid(
+                        vals_final, kidx, mark=True, mode="overwrite"
                     )
 
-                # The output prefix is the concrete adaptation order:
-                #   first run -> 0_..., second run -> 1_..., etc.
-                # This is independent of any later union/blending task.
-                individual_extraction_config = dict(extraction_config)
-                if hasattr(self, "run_all_reconstructions"):
-                    accessory_label = accessory_key.replace("|", "_")
-                    individual_extraction_config["dcsdd_output_pattern"] = (
-                        f"{item_index}_{{method}}_{mode}_{accessory_label}.ply"
-                    )
-
-                mesh_acc = self.extract_surface_mesh(
-                    acc_grid,
-                    individual_extraction_config,
-                    mc_method=individual_mc_method,
-                    context=f"adapt_{item_index}",
-                )
-                if len(mesh_acc.faces) > 0:
-                    parts = mesh_acc.split(only_watertight=False)
-                    if len(parts) > 0:
-                        mesh_acc = max(parts, key=lambda m: len(m.faces))
-
-                    # AgentSDFDC already saved every requested method under
-                    # output_folder/<method>/. Avoid a duplicate root-level mesh.
-                    if "dcsdd_output_pattern" not in individual_extraction_config:
-                        individual_mesh_file = op.join(
-                            output_folder,
-                            f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+                    # Blend-group members are partial SDF fields. Unknown voxels
+                    # carry the +10 background sentinel; masked MC prevents an
+                    # artificial support-boundary closure.
+                    blend_group_name = str(adapt_arg.get("blend_group", "none"))
+                    use_support_aware_individual_mc = (
+                        bool(
+                            extraction_config.get(
+                                "individual_support_aware_mc", False
+                            )
                         )
-                        mesh_acc.export(individual_mesh_file)
+                        and blend_group_name.lower() not in {"none", "", "false"}
+                    )
+                    individual_mc_method = (
+                        "extract_mesh_masked"
+                        if use_support_aware_individual_mc
+                        else "extract_mesh"
+                    )
+                    if use_support_aware_individual_mc:
                         print(
-                            f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
-                            f"saved individual mesh: {individual_mesh_file}"
+                            "[part_adapt support-aware MC]",
+                            f"item={item_index}",
+                            f"group={blend_group_name}",
                         )
 
-#                mesh_acc_base = acc_grid_base.extract_mesh()
-#                if len(mesh_acc_base.faces) > 0:
-#                    parts = mesh_acc_base.split(only_watertight=False)
-#                    if len(parts) > 0:
-#                        mesh_acc_base = max(parts, key=lambda m: len(m.faces))
-#                    mesh_acc_base.export(op.join(output_folder, f"{cc}_{mode}_base_{accessory_key.replace('|','_')}.ply"))
+                    individual_extraction_config = dict(extraction_config)
+                    if hasattr(self, "run_all_reconstructions"):
+                        accessory_label = accessory_key.replace("|", "_")
+                        individual_extraction_config["dcsdd_output_pattern"] = (
+                            f"{item_index}_{{method}}_{mode}_{accessory_label}.ply"
+                        )
 
-                # Accumulate this adaptation *after* its individual mesh has
-                # been extracted and saved. Retain only one grid per blend
-                # group, not one complete grid for every YAML entry.
+                    mesh_acc = self.extract_surface_mesh(
+                        acc_grid,
+                        individual_extraction_config,
+                        mc_method=individual_mc_method,
+                        context=f"adapt_{item_index}",
+                    )
+                    if len(mesh_acc.faces) > 0:
+                        parts = mesh_acc.split(only_watertight=False)
+                        if len(parts) > 0:
+                            mesh_acc = max(parts, key=lambda m: len(m.faces))
+
+                        if "dcsdd_output_pattern" not in individual_extraction_config:
+                            individual_mesh_file = op.join(
+                                output_folder,
+                                f"{item_index}_{mode}_{accessory_key.replace('|','_')}.ply",
+                            )
+                            mesh_acc.export(individual_mesh_file)
+                            print(
+                                f"[part_adapt {item_index + 1}/{len(adaptation_items)}] "
+                                f"saved individual mesh: {individual_mesh_file}"
+                            )
+                    individual_mesh_elapsed = time() - mesh_t0
+                    del acc_grid
+
+                # Accumulate directly from sparse active indices. This avoids
+                # allocating another dense per-item grid just to read it back.
+                accumulate_t0 = time()
                 if combine_adaptations:
                     blend_group = str(adapt_arg.get("blend_group", "none"))
-                    valid_i = ~acc_grid.empty_marks
 
                     if blend_group not in ("none", "", "false"):
                         group = blend_groups.get(blend_group)
@@ -2015,8 +2023,6 @@ class AgentSDF(AgentBase):
                                 "empty_marks": np.ones_like(
                                     mc_grid.empty_marks, dtype=bool
                                 ),
-                                # Match the original behavior: the first entry
-                                # defines the blend width for the entire group.
                                 "blend_delta": float(
                                     adapt_arg.get("mesh_blend_delta", 0.0)
                                 ),
@@ -2025,7 +2031,8 @@ class AgentSDF(AgentBase):
 
                         group_vals = group["val_grid"]
                         group_empty = group["empty_marks"]
-                        overlap = (~group_empty) & valid_i
+                        group_empty_local = group_empty[kidx]
+                        overlap_local = ~group_empty_local
 
                         post_pair = post_sdf_seam_plan.get(item_index)
                         if post_pair is not None:
@@ -2039,18 +2046,13 @@ class AgentSDF(AgentBase):
                                     f"Group {blend_group!r}: post-SDF seam blend "
                                     "requires avatar source coordinates"
                                 )
-                            # kidx and avatar_data['coords'] are aligned for the
-                            # current adaptation.  Avoid allocating another full
-                            # 512^3 source-coordinate field: select only current
-                            # samples that also exist in the accumulated group.
-                            overlap_local = overlap[kidx]
                             if np.any(overlap_local):
                                 overlap_idx = kidx[overlap_local]
                                 source_s = np.asarray(
                                     avatar_data["coords"], dtype=np.float64
                                 ).reshape(-1)[overlap_local]
                                 before = group_vals[overlap_idx].copy()
-                                incoming = acc_grid.val_grid[overlap_idx]
+                                incoming = np.asarray(vals_final)[overlap_local]
                                 group_vals[overlap_idx] = overlap_crossfade_sdf(
                                     before, incoming, source_s, post_pair
                                 )
@@ -2067,32 +2069,63 @@ class AgentSDF(AgentBase):
                                     f"{float(np.max(weights)):.3f}"
                                 )
                                 del before, incoming, source_s, weights, overlap_idx
-                            del overlap_local
-                        elif group["blend_delta"] > 0.0 and np.any(overlap):
-                            group_vals[overlap] = self.smooth_union_sdf(
-                                group_vals[overlap],
-                                acc_grid.val_grid[overlap],
+                        elif group["blend_delta"] > 0.0 and np.any(overlap_local):
+                            overlap_idx = kidx[overlap_local]
+                            group_vals[overlap_idx] = self.smooth_union_sdf(
+                                group_vals[overlap_idx],
+                                np.asarray(vals_final)[overlap_local],
                                 group["blend_delta"],
                             )
-                        # The overlap has already been blended/crossfaded; copy
-                        # only cells that exist in the new grid but not yet in
-                        # the group accumulator.
-                        new_only = group_empty & valid_i
-                        group_vals[new_only] = acc_grid.val_grid[new_only]
-                        group_empty[valid_i] = False
-                        del new_only
-                        del overlap, group_vals, group_empty, group
-                    else:
-                        np.minimum(
-                            mc_grid.val_grid, acc_grid.val_grid,
-                            out=mc_grid.val_grid, where=valid_i,
-                        )
-                        mc_grid.empty_marks[valid_i] = False
-                    del valid_i
+                            del overlap_idx
 
-                # The remaining steps only need the accumulated data, not the
-                # full individual grids or the saved mesh in this iteration.
-                del acc_grid, acc_grid_base, acc_grid_base_fit, curve_grid, mesh_acc
+                        new_local = group_empty_local
+                        if np.any(new_local):
+                            group_vals[kidx[new_local]] = np.asarray(vals_final)[new_local]
+                        group_empty[kidx] = False
+
+                        blend_group_remaining[blend_group] -= 1
+                        if blend_group_remaining[blend_group] == 0:
+                            valid_group = ~group_empty
+                            np.minimum(
+                                mc_grid.val_grid,
+                                group_vals,
+                                out=mc_grid.val_grid,
+                                where=valid_group,
+                            )
+                            mc_grid.empty_marks[valid_group] = False
+                            del valid_group
+                            del blend_groups[blend_group]
+                            print(
+                                "[part_adapt group release]",
+                                f"group={blend_group}",
+                                "merged_into_final=True",
+                            )
+
+                        del new_local, overlap_local, group_empty_local
+                        del group_vals, group_empty, group
+                    else:
+                        current = mc_grid.val_grid[kidx]
+                        mc_grid.val_grid[kidx] = np.minimum(
+                            current, np.asarray(vals_final)
+                        )
+                        mc_grid.empty_marks[kidx] = False
+                        del current
+
+                accumulate_elapsed = time() - accumulate_t0
+
+                # The remaining steps only need the accumulated values.
+                if perf_timing:
+                    print(
+                        "[part_adapt timing]",
+                        f"item={item_index}",
+                        f"active={int(len(kidx))}",
+                        f"filter_s={filter_elapsed:.3f}",
+                        f"individual_mesh_s={individual_mesh_elapsed:.3f}",
+                        f"accumulate_s={accumulate_elapsed:.3f}",
+                        f"total_s={time() - item_t0:.3f}",
+                    )
+                if mesh_acc is not None:
+                    del mesh_acc
 
                 # target_key is unique within this loaded avatar handle. Once
                 # matched, this concrete adaptation run is complete.
@@ -2114,20 +2147,13 @@ class AgentSDF(AgentBase):
             )
             return
 
-        # Ungrouped entries have already been hard-unioned into mc_grid.
-        # Merge each finished blend-group accumulator only once, preserving
-        # the previous ordering: ungrouped first, then blended groups.
-        for group in blend_groups.values():
-            valid_group = ~group["empty_marks"]
-            np.minimum(
-                mc_grid.val_grid, group["val_grid"],
-                out=mc_grid.val_grid, where=valid_group,
+        # Every blend group is merged and released as soon as its last member
+        # finishes. Reaching here with a live group indicates a counting bug.
+        if blend_groups:
+            raise RuntimeError(
+                "Unreleased blend-group accumulators at end of adaptation: "
+                f"{sorted(blend_groups)}"
             )
-            mc_grid.empty_marks[valid_group] = False
-            del valid_group, group
-        # Group buffers are no longer needed before the final 512^3 DCSDD run.
-        blend_groups.clear()
-
 
         valid_final = int(np.sum(~mc_grid.empty_marks))
         if valid_final == 0:
@@ -2142,11 +2168,18 @@ class AgentSDF(AgentBase):
                 f"combined_{{method}}_{out_name}.ply"
             )
 
+        final_extract_t0 = time()
         mesh = self.extract_surface_mesh(
             mc_grid,
             combined_extraction_config,
             context="combined",
         )
+        if perf_timing:
+            print(
+                "[part_adapt timing final]",
+                f"combined_extract_s={time() - final_extract_t0:.3f}",
+                f"total_s={time() - part_adapt_t0:.3f}",
+            )
         if "dcsdd_output_pattern" not in combined_extraction_config:
             mesh_file = op.join(output_folder, f'{out_name}.ply')
             os.makedirs(op.dirname(mesh_file), exist_ok=True)

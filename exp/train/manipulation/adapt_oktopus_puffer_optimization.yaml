@@ -3,6 +3,12 @@ combine_adaptations: true
 # validity mask during MC so +10 background sentinels cannot create fake
 # support-boundary closures (the t4_2 / item-8 blob).
 individual_support_aware_mc: true
+
+# High-resolution execution controls. Keep individual meshes for the UDF cut
+# pipeline; set export_individual_meshes: false for final-SDF-only 1024 runs.
+export_individual_meshes: true
+sdf_inference_batch_size: 262144  # current 64**3 behavior; tune separately
+sdf_perf_timing: true
 # Each group is fitted independently against its own avatar skeleton.
 blend_groups:
   t1:
