@@ -91,3 +91,42 @@ def test_fast_candidate_matches_fragmented_open_mesh_case():
     assert [d.as_dict() for d in full[4]] == [d.as_dict() for d in fast[2]]
     assert agent._topology_stats(full[0]) == fast[4]
     assert agent._topology_stats(full[1]) == fast[5]
+
+
+def test_auto_candidate_rejection_reasons_mirrors_gate_predicate():
+    reasons = AgentUDFCut._auto_candidate_rejection_reasons(
+        accepted_components=0,
+        removed_faces=0,
+        removed_fraction=0.0,
+        min_removed_fraction=0.002,
+        max_removed_fraction=0.15,
+        topology_preserved=False,
+        require_topology_preserved=True,
+        median_ring_contrast=None,
+        min_ring_contrast_world=0.0,
+        positive_ring_fraction=0.0,
+        min_positive_ring_fraction=0.80,
+    )
+
+    assert reasons == [
+        "no_accepted_components",
+        "removed_faces_zero",
+        "removed_fraction_below_min",
+        "topology_changed",
+        "no_ring_contrast",
+        "ring_positive_fraction_below_min",
+    ]
+
+    assert AgentUDFCut._auto_candidate_rejection_reasons(
+        accepted_components=2,
+        removed_faces=100,
+        removed_fraction=0.05,
+        min_removed_fraction=0.002,
+        max_removed_fraction=0.15,
+        topology_preserved=True,
+        require_topology_preserved=True,
+        median_ring_contrast=0.01,
+        min_ring_contrast_world=0.0,
+        positive_ring_fraction=1.0,
+        min_positive_ring_fraction=0.80,
+    ) == []

@@ -79,6 +79,45 @@ class AgentUDFCut(AgentUDF):
     """Direct adapted-UDF cap removal for an already reconstructed MC mesh."""
 
     @staticmethod
+    def _auto_candidate_rejection_reasons(
+        *,
+        accepted_components: int,
+        removed_faces: int,
+        removed_fraction: float,
+        min_removed_fraction: float,
+        max_removed_fraction: float,
+        topology_preserved: bool,
+        require_topology_preserved: bool,
+        median_ring_contrast: Optional[float],
+        min_ring_contrast_world: float,
+        positive_ring_fraction: float,
+        min_positive_ring_fraction: float,
+    ) -> List[str]:
+        """Explain why an auto-threshold candidate is ineligible.
+
+        Diagnostic only: this mirrors the existing ``eligible`` predicate and
+        must not participate in candidate selection.
+        """
+        reasons: List[str] = []
+        if int(accepted_components) <= 0:
+            reasons.append("no_accepted_components")
+        if int(removed_faces) <= 0:
+            reasons.append("removed_faces_zero")
+        if float(removed_fraction) < float(min_removed_fraction):
+            reasons.append("removed_fraction_below_min")
+        if float(removed_fraction) > float(max_removed_fraction):
+            reasons.append("removed_fraction_above_max")
+        if bool(require_topology_preserved) and not bool(topology_preserved):
+            reasons.append("topology_changed")
+        if median_ring_contrast is None:
+            reasons.append("no_ring_contrast")
+        elif float(median_ring_contrast) < float(min_ring_contrast_world):
+            reasons.append("ring_contrast_below_min")
+        if float(positive_ring_fraction) < float(min_positive_ring_fraction):
+            reasons.append("ring_positive_fraction_below_min")
+        return reasons
+
+    @staticmethod
     def _safe_label(text: str) -> str:
         return str(text).replace("|", "_").replace("/", "_")
 
@@ -2040,6 +2079,27 @@ class AgentUDFCut(AgentUDF):
                             and positive_ring_fraction
                             >= min_positive_ring_fraction
                         )
+                        rejection_reasons = self._auto_candidate_rejection_reasons(
+                            accepted_components=len(accepted),
+                            removed_faces=int(removed_stats["faces"]),
+                            removed_fraction=removed_fraction,
+                            min_removed_fraction=min_removed_fraction,
+                            max_removed_fraction=max_removed_fraction,
+                            topology_preserved=topology_preserved,
+                            require_topology_preserved=require_topology_preserved,
+                            median_ring_contrast=median_ring_contrast,
+                            min_ring_contrast_world=min_ring_contrast_world,
+                            positive_ring_fraction=positive_ring_fraction,
+                            min_positive_ring_fraction=min_positive_ring_fraction,
+                        )
+
+                        component_rejection_counts: Dict[str, int] = {}
+                        for decision in candidate_decisions:
+                            if decision.accepted:
+                                continue
+                            component_rejection_counts[decision.reason] = (
+                                component_rejection_counts.get(decision.reason, 0) + 1
+                            )
 
                         # Prefer strong local UDF evidence first.  Once a cut
                         # has good contrast against its surrounding ring, reward
@@ -2092,6 +2152,8 @@ class AgentUDFCut(AgentUDF):
                                 "boundary_delta": int(boundary_delta),
                                 "objective": float(objective),
                                 "eligible": bool(eligible),
+                                "rejection_reasons": rejection_reasons,
+                                "component_rejection_counts": component_rejection_counts,
                             }
                         )
 
@@ -2114,6 +2176,200 @@ class AgentUDFCut(AgentUDF):
                     )
                 )
                 selected = eligible_rows[0] if eligible_rows else None
+
+                # Diagnostic-only A/B/C comparison.  These two reference pairs
+                # are evaluated with the exact same graph/component logic as
+                # the current search, but they NEVER change ``selected``.
+                #
+                # A: empirical t5_2 reference from the earlier sweep.
+                # B: the earlier P95 calibration rule.
+                # C: the current auto-search result (already computed above).
+                diagnostic_pairs = []
+
+                def _diagnose_reference_pair(
+                    label: str,
+                    diagnostic_seed: float,
+                    diagnostic_grow: float,
+                ) -> Dict[str, object]:
+                    (
+                        diagnostic_seed_mask,
+                        diagnostic_grow_mask,
+                        diagnostic_decisions,
+                        _diagnostic_remove_mask,
+                        diagnostic_kept_stats,
+                        diagnostic_removed_stats,
+                    ) = self._evaluate_cut_candidate_fast(
+                        mesh,
+                        face_scores=scores,
+                        usable_faces=usable,
+                        seed_world=float(diagnostic_seed),
+                        grow_world=float(diagnostic_grow),
+                        min_faces=int(config.get("udf_cut_min_faces", 8)),
+                        min_seed_faces=int(
+                            config.get("udf_cut_min_seed_faces", 2)
+                        ),
+                        min_seed_fraction=float(
+                            config.get("udf_cut_min_seed_fraction", 0.05)
+                        ),
+                        min_area_world2=float(
+                            config.get("udf_cut_min_area_world2", 0.0)
+                        ),
+                        preserve_existing_boundaries=bool(
+                            config.get(
+                                "udf_cut_preserve_existing_boundaries", True
+                            )
+                        ),
+                        reference_tree=search_reference_tree,
+                        reference_max_distance_world=(
+                            float(config["udf_cut_reference_max_distance_world"])
+                            if config.get(
+                                "udf_cut_reference_max_distance_world", None
+                            ) is not None
+                            else None
+                        ),
+                        adjacency=search_adjacency,
+                        face_areas=search_face_areas,
+                        existing_boundary_faces=search_boundary_faces,
+                        centroids=search_centroids,
+                        topology=search_topology,
+                    )
+
+                    diagnostic_accepted = [
+                        decision
+                        for decision in diagnostic_decisions
+                        if decision.accepted
+                    ]
+                    diagnostic_ring = [
+                        decision
+                        for decision in diagnostic_accepted
+                        if decision.ring_score_median is not None
+                    ]
+                    diagnostic_contrasts = [
+                        float(
+                            decision.score_median
+                            - float(decision.ring_score_median)
+                        )
+                        for decision in diagnostic_ring
+                    ]
+                    diagnostic_ring_weight = float(
+                        sum(decision.face_count for decision in diagnostic_ring)
+                    )
+                    diagnostic_positive_weight = float(
+                        sum(
+                            decision.face_count
+                            for decision, contrast in zip(
+                                diagnostic_ring, diagnostic_contrasts
+                            )
+                            if contrast > 0.0
+                        )
+                    )
+                    diagnostic_positive_fraction = (
+                        diagnostic_positive_weight / diagnostic_ring_weight
+                        if diagnostic_ring_weight > 0.0
+                        else 0.0
+                    )
+                    diagnostic_median_contrast = (
+                        float(np.median(diagnostic_contrasts))
+                        if diagnostic_contrasts
+                        else None
+                    )
+                    diagnostic_removed_fraction = float(
+                        int(diagnostic_removed_stats["faces"])
+                        / max(len(mesh.faces), 1)
+                    )
+                    diagnostic_topology_preserved = (
+                        int(diagnostic_kept_stats["components"])
+                        == input_components
+                    )
+                    diagnostic_boundary_delta = max(
+                        0,
+                        int(diagnostic_kept_stats["boundary_edges"])
+                        - input_boundary_edges,
+                    )
+                    diagnostic_rejection_reasons = (
+                        self._auto_candidate_rejection_reasons(
+                            accepted_components=len(diagnostic_accepted),
+                            removed_faces=int(diagnostic_removed_stats["faces"]),
+                            removed_fraction=diagnostic_removed_fraction,
+                            min_removed_fraction=min_removed_fraction,
+                            max_removed_fraction=max_removed_fraction,
+                            topology_preserved=diagnostic_topology_preserved,
+                            require_topology_preserved=require_topology_preserved,
+                            median_ring_contrast=diagnostic_median_contrast,
+                            min_ring_contrast_world=min_ring_contrast_world,
+                            positive_ring_fraction=diagnostic_positive_fraction,
+                            min_positive_ring_fraction=min_positive_ring_fraction,
+                        )
+                    )
+                    diagnostic_component_rejects: Dict[str, int] = {}
+                    for decision in diagnostic_decisions:
+                        if decision.accepted:
+                            continue
+                        diagnostic_component_rejects[decision.reason] = (
+                            diagnostic_component_rejects.get(decision.reason, 0)
+                            + 1
+                        )
+
+                    row = {
+                        "label": label,
+                        "seed_world": float(diagnostic_seed),
+                        "grow_world": float(diagnostic_grow),
+                        "seed_faces": int(np.sum(diagnostic_seed_mask)),
+                        "grow_faces": int(np.sum(diagnostic_grow_mask)),
+                        "accepted_components": int(len(diagnostic_accepted)),
+                        "removed_faces": int(diagnostic_removed_stats["faces"]),
+                        "removed_fraction": diagnostic_removed_fraction,
+                        "after_components": int(
+                            diagnostic_kept_stats["components"]
+                        ),
+                        "boundary_delta": int(diagnostic_boundary_delta),
+                        "median_ring_contrast": diagnostic_median_contrast,
+                        "positive_ring_fraction": float(
+                            diagnostic_positive_fraction
+                        ),
+                        "auto_gate_rejection_reasons": diagnostic_rejection_reasons,
+                        "component_rejection_counts": diagnostic_component_rejects,
+                    }
+                    print(
+                        "[udf cut diagnostic pair]",
+                        f"item={item_index}",
+                        f"label={label}",
+                        f"seed={diagnostic_seed:.6g}",
+                        f"grow={diagnostic_grow:.6g}",
+                        f"seed_faces={row['seed_faces']}",
+                        f"grow_faces={row['grow_faces']}",
+                        f"accepted_components={row['accepted_components']}",
+                        f"removed_pct={100.0 * diagnostic_removed_fraction:.2f}",
+                        f"after_components={row['after_components']}",
+                        f"boundary_delta={diagnostic_boundary_delta}",
+                        "ring_contrast="
+                        + (
+                            "none"
+                            if diagnostic_median_contrast is None
+                            else f"{diagnostic_median_contrast:.6g}"
+                        ),
+                        f"ring_positive={diagnostic_positive_fraction:.3f}",
+                        "auto_gate_rejects="
+                        + (
+                            "none"
+                            if not diagnostic_rejection_reasons
+                            else ",".join(diagnostic_rejection_reasons)
+                        ),
+                        f"component_rejects={diagnostic_component_rejects}",
+                    )
+                    return row
+
+                diagnostic_pairs.append(
+                    _diagnose_reference_pair("fixed_0.05_0.03", 0.05, 0.03)
+                )
+                diagnostic_p95 = float(np.percentile(usable_scores, 95.0))
+                diagnostic_pairs.append(
+                    _diagnose_reference_pair(
+                        "p95_x_1.10_0.65",
+                        1.10 * diagnostic_p95,
+                        0.65 * diagnostic_p95,
+                    )
+                )
 
                 # The fast search makes it cheap to inspect a wider percentile
                 # grid. Report the leading candidates so we can distinguish
@@ -2155,6 +2411,53 @@ class AgentUDFCut(AgentUDF):
                     )
 
                 if selected is None:
+                    rejection_counts: Dict[str, int] = {}
+                    component_rejection_counts: Dict[str, int] = {}
+                    for row in candidate_rows:
+                        for reason in row["rejection_reasons"]:
+                            rejection_counts[reason] = (
+                                rejection_counts.get(reason, 0) + 1
+                            )
+                        for reason, count in row[
+                            "component_rejection_counts"
+                        ].items():
+                            component_rejection_counts[reason] = (
+                                component_rejection_counts.get(reason, 0)
+                                + int(count)
+                            )
+                    print(
+                        "[udf cut auto rejection]",
+                        f"item={item_index}",
+                        f"candidate_gate_counts={rejection_counts}",
+                        f"component_rejection_counts={component_rejection_counts}",
+                    )
+                    closest_rejected = sorted(
+                        candidate_rows,
+                        key=lambda row: (
+                            len(row["rejection_reasons"]),
+                            -row["objective"],
+                            -row["removed_fraction"],
+                        ),
+                    )[:3]
+                    for rank, row in enumerate(closest_rejected, start=1):
+                        print(
+                            "[udf cut auto rejected-candidate]",
+                            f"item={item_index}",
+                            f"rank={rank}",
+                            f"seed=P{row['seed_percentile']:g}={row['seed_world']:.6g}",
+                            f"grow=P{row['grow_percentile']:g}={row['grow_world']:.6g}",
+                            f"removed_pct={100.0 * row['removed_fraction']:.2f}",
+                            f"after_components={row['after_components']}",
+                            f"ring_positive={row['positive_ring_fraction']:.3f}",
+                            "contrast="
+                            + (
+                                "none"
+                                if row["median_ring_contrast"] is None
+                                else f"{row['median_ring_contrast']:.6g}"
+                            ),
+                            f"reasons={row['rejection_reasons']}",
+                            f"component_rejects={row['component_rejection_counts']}",
+                        )
                     # No candidate has enough local/topological evidence.  Make
                     # the normal cut below an explicit no-op instead of falling
                     # back to one global absolute threshold.
@@ -2267,6 +2570,7 @@ class AgentUDFCut(AgentUDF):
                     "boundary_penalty": boundary_penalty,
                     "selected": dict(selected) if selected is not None else None,
                     "candidates": candidate_rows,
+                    "diagnostic_threshold_comparison": diagnostic_pairs,
                     "seed_world": seed_world,
                     "grow_world": grow_world,
                 }
