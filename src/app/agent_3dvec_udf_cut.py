@@ -478,8 +478,9 @@ class AgentUDFCut(AgentUDF):
         *,
         min_faces: int,
         min_fraction_of_largest: float = 0.0,
+        keep_largest_only: bool = False,
     ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object]]:
-        """Remove only tiny vertex-connected leftovers after a UDF cut.
+        """Remove vertex-connected leftovers after a UDF cut.
 
         A legitimate opening can leave isolated triangle islands in the kept
         mesh. Those islands should not inflate post-cut topology statistics or
@@ -508,6 +509,7 @@ class AgentUDFCut(AgentUDF):
                 "min_fraction_of_largest": min_fraction_of_largest,
                 "largest_component_faces": 0,
                 "effective_min_faces": base_min_faces,
+                "keep_largest_only": bool(keep_largest_only),
                 "component_face_counts": [],
                 "kept_components": int(before["components"]),
                 "removed_components": 0,
@@ -558,10 +560,16 @@ class AgentUDFCut(AgentUDF):
         )
         effective_min_faces = max(base_min_faces, relative_min_faces)
 
-        keep_roots = roots[counts >= effective_min_faces]
-        # Conservative guard: never let cleanup erase an entire non-empty mesh.
-        if keep_roots.size == 0 and roots.size:
+        if keep_largest_only and roots.size:
+            # Final combined garment must remain one connected surface.  Keep
+            # exactly the largest vertex-connected component; unlike the
+            # per-piece cleanup, do not preserve substantial secondary islands.
             keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
+        else:
+            keep_roots = roots[counts >= effective_min_faces]
+            # Conservative guard: never let cleanup erase an entire non-empty mesh.
+            if keep_roots.size == 0 and roots.size:
+                keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
 
         keep_root_mask = np.isin(roots, keep_roots)
         keep_mask = np.isin(face_roots, keep_roots)
@@ -576,6 +584,7 @@ class AgentUDFCut(AgentUDF):
             "min_fraction_of_largest": min_fraction_of_largest,
             "largest_component_faces": largest_component_faces,
             "effective_min_faces": effective_min_faces,
+            "keep_largest_only": bool(keep_largest_only),
             "component_face_counts": component_face_counts,
             "kept_components": int(np.sum(keep_root_mask)),
             "removed_components": int(np.sum(~keep_root_mask)),
@@ -4047,6 +4056,7 @@ class AgentUDFCut(AgentUDF):
                 combined_raw,
                 min_faces=combined_fragment_min_faces,
                 min_fraction_of_largest=combined_fragment_min_fraction,
+                keep_largest_only=True,
             )
             print(
                 "[udf cut combined fragment cleanup]",
@@ -4055,6 +4065,8 @@ class AgentUDFCut(AgentUDF):
                 f"fraction={combined_fragment_min_fraction:.6g}",
                 "largest_faces="
                 f"{combined_fragment_cleanup_report['largest_component_faces']}",
+                "keep_largest_only="
+                f"{combined_fragment_cleanup_report['keep_largest_only']}",
                 "components="
                 f"{combined_fragment_cleanup_report['before']['components']}"
                 f"->{combined_fragment_cleanup_report['after']['components']}",
