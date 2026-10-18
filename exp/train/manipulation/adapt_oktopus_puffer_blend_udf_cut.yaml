@@ -1,41 +1,26 @@
 combine_adaptations: true
-#udf_cut_combined_transfer: true
-#udf_cut_write_debug_outputs: true
-# 0027: score the actual final combined SDF mesh directly with the learned UDFs.
-# The old removed-vs-kept nearest-reference transfer is retained in code as a
-# fallback mode, but is no longer the final authority for this experiment.
-udf_cut_combined_mode: direct_udf
-udf_cut_combined_transfer: false
+# 0030: return final composition to the original removed-vs-kept transfer.
+# Direct combined-UDF scoring remains available in code for experiments, but is
+# not used by this baseline.
+udf_cut_combined_mode: transfer
+udf_cut_combined_transfer: true
 udf_cut_write_debug_outputs: false
-# Search seed/grow independently for every piece from that piece's own UDF
-# score distribution. No global seed/grow multiplier is shared across pieces.
+# 0030: use the pre-search per-piece hysteresis calibration again. t5_2's
+# measured P95=0.04556 maps to ~0.050 / 0.030, the visually validated pair.
+# Near-far-value scores are excluded only from threshold calibration so a
+# sentinel plateau cannot push the seed above every real score. Those faces
+# remain in the actual cut score field. Fully saturated items are left uncut.
 udf_cut_auto_thresholds:
   enabled: true
-  # 0026: widen the fast search downward. The previous P95-P99 /
-  # P80-P94 grid only offered conservative high-tail cuts. Topology, ring
-  # evidence, and max_removed_fraction remain the safety gates.
-  seed_percentiles: [85, 90, 92, 94, 96, 98]
-  grow_percentiles: [60, 65, 70, 75, 80, 85, 90]
-  min_removed_fraction: 0.002
-  max_removed_fraction: 0.15
-  require_topology_preserved: true
-  min_positive_ring_fraction: 0.80
-  min_ring_contrast_world: 0.0
-  boundary_penalty: 2.0
-  save_best_n: 3
-  report_top_n: 5
+  mode: p95_hysteresis
+  percentile: 95.0
+  seed_multiplier: 1.10
+  grow_multiplier: 0.65
+  exclude_far_value_from_calibration: true
+  far_value_band_world: 0.002
+  min_calibration_fraction: 0.05
+  min_calibration_faces: 128
 udf_cut_combined_mc_mesh: inference/4M/adapt_oktopus_puffer_optim_512/oktopus_9_v1/oktopus_9_v1_adapt.ply
-# Direct combined-UDF ownership is geometric only: it decides which exact
-# adaptation mappings should be queried for a final face.  Removal evidence
-# comes from those UDF queries, not from distance to cut/kept intermediate PLYs.
-udf_cut_combined_direct_owner_radius_edges: 3.0
-udf_cut_combined_direct_owner_fallback_radius_edges: 8.0
-udf_cut_combined_direct_min_faces: 8
-udf_cut_combined_direct_min_seed_faces: 2
-udf_cut_combined_direct_min_seed_fraction: 0.05
-udf_cut_combined_direct_min_area_world2: 0.0
-udf_cut_combined_direct_preserve_existing_boundaries: true
-udf_cut_combined_direct_preserve_components: true
 udf_cut_combined_transfer_radius_edges: 2.0
 udf_cut_combined_transfer_seed_advantage_edges: 0.30
 udf_cut_combined_transfer_grow_advantage_edges: 0.0

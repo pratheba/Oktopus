@@ -1873,7 +1873,158 @@ class AgentUDFCut(AgentUDF):
                 auto_spec = {}
 
             usable_scores = scores[usable & np.isfinite(scores)]
-            if auto_enabled:
+            auto_mode = str(auto_spec.get("mode", "search")).strip().lower()
+            if auto_mode not in {"search", "p95_hysteresis"}:
+                raise ValueError(
+                    "udf_cut_auto_thresholds.mode must be one of: "
+                    "search, p95_hysteresis; "
+                    f"got {auto_mode!r}"
+                )
+
+            # 0030: return the actual cut to the pre-search behavior that was
+            # calibrated visually on t5_2.  The later percentile-grid search
+            # remains available as mode=search for diagnostics, but it is no
+            # longer the authority for this experiment.
+            #
+            # A second failure mode showed up in the diagnostics: the learned
+            # UDF has a configured far/sentinel value around 0.1.  If that
+            # plateau occupies the upper tail, a raw P95 can land on the
+            # plateau and 1.10*P95 becomes larger than every real score, which
+            # creates zero seed faces.  Exclude that plateau from threshold
+            # calibration, while still leaving those high-score faces eligible
+            # for the subsequent cut.  If essentially no non-far calibration
+            # population remains, classify the item as saturated and do no cut.
+            if auto_enabled and auto_mode == "p95_hysteresis":
+                if len(usable_scores) == 0:
+                    raise RuntimeError(
+                        "udf_cut_auto_thresholds needs at least one usable "
+                        f"finite face score for item {item_index}"
+                    )
+
+                percentile = float(auto_spec.get("percentile", 95.0))
+                if not (0.0 < percentile < 100.0):
+                    raise ValueError(
+                        "udf_cut_auto_thresholds.percentile must be in (0, 100)"
+                    )
+                seed_multiplier = float(auto_spec.get("seed_multiplier", 1.10))
+                grow_multiplier = float(auto_spec.get("grow_multiplier", 0.65))
+                if seed_multiplier <= 0.0 or grow_multiplier <= 0.0:
+                    raise ValueError(
+                        "udf_cut_auto_thresholds multipliers must be positive"
+                    )
+                if grow_multiplier >= seed_multiplier:
+                    raise ValueError(
+                        "p95_hysteresis requires grow_multiplier < seed_multiplier"
+                    )
+
+                exclude_far = bool(
+                    auto_spec.get("exclude_far_value_from_calibration", True)
+                )
+                far_band_world = float(
+                    auto_spec.get(
+                        "far_value_band_world",
+                        max(5.0e-4, abs(float(far_world)) * 0.02),
+                    )
+                )
+                min_calibration_fraction = float(
+                    auto_spec.get("min_calibration_fraction", 0.05)
+                )
+                min_calibration_faces = int(
+                    auto_spec.get("min_calibration_faces", 128)
+                )
+                if far_band_world < 0.0:
+                    raise ValueError(
+                        "udf_cut_auto_thresholds.far_value_band_world must be >= 0"
+                    )
+                if not (0.0 <= min_calibration_fraction <= 1.0):
+                    raise ValueError(
+                        "udf_cut_auto_thresholds.min_calibration_fraction must be "
+                        "in [0, 1]"
+                    )
+
+                far_cutoff = float(far_world) - far_band_world
+                far_like = usable_scores >= far_cutoff
+                far_like_fraction = float(np.mean(far_like))
+                calibration_scores = (
+                    usable_scores[~far_like] if exclude_far else usable_scores
+                )
+                required_calibration = max(
+                    min_calibration_faces,
+                    int(np.ceil(min_calibration_fraction * len(usable_scores))),
+                )
+                saturated = len(calibration_scores) < required_calibration
+
+                if saturated:
+                    score_max = float(np.max(usable_scores))
+                    margin = max(1.0e-6, abs(score_max) * 1.0e-6)
+                    seed_world = score_max + margin
+                    grow_world = seed_world
+                    p_ref = None
+                    print(
+                        "[udf cut auto saturation]",
+                        f"item={item_index}",
+                        f"far={far_world:.6g}",
+                        f"band={far_band_world:.6g}",
+                        f"far_like_fraction={far_like_fraction:.3f}",
+                        f"calibration_faces={len(calibration_scores)}/{len(usable_scores)}",
+                        f"required={required_calibration}",
+                        "action=no_cut",
+                    )
+                else:
+                    p_ref = float(np.percentile(calibration_scores, percentile))
+                    seed_world = p_ref * seed_multiplier
+                    grow_world = p_ref * grow_multiplier
+
+                    min_seed = auto_spec.get("min_seed_world", None)
+                    min_grow = auto_spec.get("min_grow_world", None)
+                    max_seed = auto_spec.get("max_seed_world", None)
+                    max_grow = auto_spec.get("max_grow_world", None)
+                    if min_seed is not None:
+                        seed_world = max(seed_world, float(min_seed))
+                    if min_grow is not None:
+                        grow_world = max(grow_world, float(min_grow))
+                    if max_seed is not None:
+                        seed_world = min(seed_world, float(max_seed))
+                    if max_grow is not None:
+                        grow_world = min(grow_world, float(max_grow))
+                    grow_world = min(grow_world, seed_world)
+                    if not grow_world < seed_world:
+                        raise ValueError(
+                            "p95_hysteresis produced no seed/grow gap; "
+                            f"seed={seed_world} grow={grow_world}"
+                        )
+
+                    print(
+                        "[udf cut auto threshold]",
+                        f"item={item_index}",
+                        "mode=p95_hysteresis",
+                        f"p{percentile:g}={p_ref:.6g}",
+                        f"seed={seed_world:.6g}",
+                        f"grow={grow_world:.6g}",
+                        f"far_like_fraction={far_like_fraction:.3f}",
+                        f"calibration_faces={len(calibration_scores)}/{len(usable_scores)}",
+                    )
+
+                auto_threshold_report = {
+                    "enabled": True,
+                    "mode": "p95_hysteresis",
+                    "percentile": percentile,
+                    "reference_value": p_ref,
+                    "seed_multiplier": seed_multiplier,
+                    "grow_multiplier": grow_multiplier,
+                    "exclude_far_value_from_calibration": exclude_far,
+                    "far_value": float(far_world),
+                    "far_value_band_world": far_band_world,
+                    "far_like_fraction": far_like_fraction,
+                    "calibration_faces": int(len(calibration_scores)),
+                    "usable_faces": int(len(usable_scores)),
+                    "required_calibration_faces": int(required_calibration),
+                    "saturated": bool(saturated),
+                    "seed_world": seed_world,
+                    "grow_world": grow_world,
+                }
+
+            if auto_enabled and auto_mode == "search":
                 if len(usable_scores) == 0:
                     raise RuntimeError(
                         "udf_cut_auto_thresholds needs at least one usable "
