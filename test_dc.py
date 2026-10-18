@@ -113,6 +113,8 @@ def start_test(opt):
 
     if args.dcsdd_verbose:
         arg['dcsdd_verbose'] = True
+    if args.dcsdd_fast_bbox_marking:
+        arg['dcsdd_fast_bbox_marking'] = True
     if getattr(args, 'extractor', None):
         arg['surface_extraction'] = args.extractor
     if getattr(args, 'udf_max_depth', None) is not None:
@@ -222,6 +224,10 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-sdf-band', dest='dcsdd_sdf_band', type=float, default=None)
     p.add_argument('--dcsdd-gt-mesh', dest='dcsdd_gt_mesh', default=None)
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')
+    p.add_argument(
+        '--dcsdd-fast-bbox-marking', action='store_true',
+        help='Use exact-equivalent voxel-box slice marking instead of meshgrid allocation',
+    )
     p.add_argument('-e', '--extractor', required=False, default=None,
                    help='legacy extractor override; normally leave unset in test_dc.py')
     p.add_argument('--udf-max-depth', dest='udf_max_depth', type=int, default=None,

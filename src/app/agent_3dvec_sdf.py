@@ -1169,6 +1169,7 @@ class AgentSDF(AgentBase):
                         'export_individual_meshes',
                         'sdf_inference_batch_size',
                         'sdf_perf_timing',
+                        'dcsdd_fast_bbox_marking',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1398,6 +1399,12 @@ class AgentSDF(AgentBase):
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
                 adapt_arg.update(item)
+                # Opt-in DCSDD broad-phase acceleration.  Only voxel marking
+                # changes; no radius, interval, localization or SDF parameters.
+                adapt_arg.setdefault(
+                    'dcsdd_fast_bbox_marking',
+                    bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),
+                )
 
                 if mode == 'direct':
                     accessory_curve_handle = self.curve_from_key(accessory_key)

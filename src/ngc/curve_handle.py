@@ -386,6 +386,7 @@ class CurveHandle():
                 interval_hi = 1.0
                 interval_slice = slice(None)
 
+        fast_bbox = bool(adapt_arg.get("dcsdd_fast_bbox_marking", False))
         broad_t0 = perf_counter()
 
         if use_control_filter:
@@ -423,7 +424,7 @@ class CurveHandle():
             }
 
             cyl_mesh = self.__gen_cyl_mesh(intpl)
-            samples, kidx = cyl_mesh.filter_grid(mc_grid)
+            samples, kidx = cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         else:
             needs_runtime_filter = (
@@ -457,10 +458,10 @@ class CurveHandle():
                 }
 
                 cyl_mesh = self.__gen_cyl_mesh(intpl)
-                samples, kidx = cyl_mesh.filter_grid(mc_grid)
+                samples, kidx = cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
             else:
-                samples, kidx = self.cyl_mesh.filter_grid(mc_grid)
+                samples, kidx = self.cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         broad_s = perf_counter() - broad_t0
         mode = adapt_arg.get("mode", "direct")
@@ -482,6 +483,7 @@ class CurveHandle():
                 "[filter_grid_adapt]",
                 "use_control_filter=", use_control_filter,
                 "src_interval_filter=", use_src_interval_filter,
+                "fast_bbox_marking=", fast_bbox,
                 "filter_s=", f"{interval_lo:.4f}->{interval_hi:.4f}",
                 "filter_radius_scale=", filter_radius_scale,
                 "filter_radius_add=", filter_radius_add,

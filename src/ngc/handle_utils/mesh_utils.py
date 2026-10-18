@@ -54,17 +54,60 @@ class CylindersMesh():
             cap_faces = cap_faces[:, [0, 2, 1]]
         self.faces.append(cap_faces)
 
-    def filter_grid(self, mc_grid, extend_bbox=False):
+    def filter_grid(self, mc_grid, extend_bbox=False, fast_bbox=False):
         n_curve = self.cylinder_samples.shape[0]
 
         marks = mc_grid.create_marks()
-        for i in range(n_curve-1):
-            part = self.cylinder_samples[i:i+2].reshape(-1, 3)
-            bmax, bmin = part.max(axis=0), part.min(axis=0)
+        if fast_bbox:
+            # Exact equivalent of MCGrid.mark_bbox's floor/+1/clip and union
+            # of grid boxes.  The legacy path materializes an integer meshgrid
+            # for every cylinder segment, which can mean hundreds of millions
+            # of temporary coordinates at 1024.  Assigning the same inclusive
+            # rectangular index ranges directly avoids those allocations.
+            #
+            # MCGrid linear order is i + N1 * (j + N1 * k), so order='F' is a
+            # view of the existing 1-D marks (not a transposed/reordered grid).
+            n = int(mc_grid.reso)
+            n1 = n + 1
+            origin = np.asarray(mc_grid.grid_config['origin'])
+            step = float(mc_grid.grid_config['step'])
+            marks_xyz = marks.reshape((n1, n1, n1), order='F')
+            for i in range(n_curve - 1):
+                part = self.cylinder_samples[i:i + 2].reshape(-1, 3)
+                bmax, bmin = part.max(axis=0), part.min(axis=0)
+                hi = np.floor((bmax - origin) / step) + 1
+                lo = np.floor((bmin - origin) / step)
+                if extend_bbox:
+                    hi += 1
+                    lo -= 1
+                # Match MCGrid.generate_samples' asymmetric clipping exactly.
+                hi = np.clip(hi, a_min=None, a_max=n).astype(int)
+                lo = np.clip(lo, a_min=0, a_max=None).astype(int)
+                if np.any(lo > hi):
+                    continue
+                marks_xyz[
+                    lo[0]:hi[0] + 1,
+                    lo[1]:hi[1] + 1,
+                    lo[2]:hi[2] + 1,
+                ] = True
+        else:
+            for i in range(n_curve - 1):
+                part = self.cylinder_samples[i:i + 2].reshape(-1, 3)
+                bmax, bmin = part.max(axis=0), part.min(axis=0)
+                mc_grid.mark_bbox(bmax, bmin, marks, extend_bbox)
 
-            mc_grid.mark_bbox(bmax, bmin, marks, extend_bbox)
-
-        samples, kidx = mc_grid.get_marked(marks)
+        if fast_bbox:
+            # Same ascending flat indices as get_marked(), but convert points
+            # in bounded batches.  Avoid the old full-size Nx3 integer array
+            # plus additional Nx3 temporary floating arrays at large N.
+            kidx = np.flatnonzero(marks)
+            samples = np.empty((len(kidx), 3), dtype=np.float64)
+            chunk_size = 262144
+            for start in range(0, len(kidx), chunk_size):
+                end = min(start + chunk_size, len(kidx))
+                samples[start:end] = mc_grid.idx2pts(kidx[start:end])
+        else:
+            samples, kidx = mc_grid.get_marked(marks)
         return samples, kidx
 
     def calc_bbox(self):
