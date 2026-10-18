@@ -233,6 +233,7 @@ class AgentUDFCut(AgentUDF):
         mesh: trimesh.Trimesh,
         *,
         min_faces: int,
+        min_fraction_of_largest: float = 0.0,
     ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object]]:
         """Remove only tiny vertex-connected leftovers after a UDF cut.
 
@@ -242,19 +243,28 @@ class AgentUDFCut(AgentUDF):
         vertex-based (not ``trimesh.split`` face adjacency) so non-manifold
         junctions still count as connected.
         """
-        min_faces = max(int(min_faces), 0)
+        base_min_faces = max(int(min_faces), 0)
+        min_fraction_of_largest = float(min_fraction_of_largest)
+        if min_fraction_of_largest < 0.0:
+            raise ValueError("min_fraction_of_largest must be >= 0")
+
         before = cls._topology_stats(mesh)
         faces = np.asarray(mesh.faces, dtype=np.int64)
-        if min_faces <= 0 or len(faces) == 0:
+        if len(faces) == 0:
             empty = trimesh.Trimesh(
                 vertices=np.zeros((0, 3), dtype=np.float64),
                 faces=np.zeros((0, 3), dtype=np.int64),
                 process=False,
             )
             return mesh.copy(), empty, {
-                "enabled": min_faces > 0,
-                "min_faces": min_faces,
-                "component_face_counts": [int(len(faces))] if len(faces) else [],
+                "enabled": (
+                    base_min_faces > 0 or min_fraction_of_largest > 0.0
+                ),
+                "base_min_faces": base_min_faces,
+                "min_fraction_of_largest": min_fraction_of_largest,
+                "largest_component_faces": 0,
+                "effective_min_faces": base_min_faces,
+                "component_face_counts": [],
                 "kept_components": int(before["components"]),
                 "removed_components": 0,
                 "removed_faces": 0,
@@ -296,8 +306,15 @@ class AgentUDFCut(AgentUDF):
         roots, counts = np.unique(face_roots, return_counts=True)
         order = np.argsort(counts)[::-1]
         component_face_counts = [int(v) for v in counts[order]]
+        largest_component_faces = (
+            int(component_face_counts[0]) if component_face_counts else 0
+        )
+        relative_min_faces = int(
+            np.ceil(min_fraction_of_largest * largest_component_faces)
+        )
+        effective_min_faces = max(base_min_faces, relative_min_faces)
 
-        keep_roots = roots[counts >= min_faces]
+        keep_roots = roots[counts >= effective_min_faces]
         # Conservative guard: never let cleanup erase an entire non-empty mesh.
         if keep_roots.size == 0 and roots.size:
             keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
@@ -308,8 +325,13 @@ class AgentUDFCut(AgentUDF):
         removed = cls._mesh_from_face_mask(mesh, ~keep_mask)
         after = cls._topology_stats(cleaned)
         report = {
-            "enabled": True,
-            "min_faces": min_faces,
+            "enabled": (
+                base_min_faces > 0 or min_fraction_of_largest > 0.0
+            ),
+            "base_min_faces": base_min_faces,
+            "min_fraction_of_largest": min_fraction_of_largest,
+            "largest_component_faces": largest_component_faces,
+            "effective_min_faces": effective_min_faces,
             "component_face_counts": component_face_counts,
             "kept_components": int(np.sum(keep_root_mask)),
             "removed_components": int(np.sum(~keep_root_mask)),
@@ -2117,247 +2139,6 @@ class AgentUDFCut(AgentUDF):
                 }
 
 
-                # 0031 diagnostic only: inspect the body UDF's upper-tail cut
-                # behavior without changing the selected threshold pair.  The
-                # body is the outlier in the 0030 run: p95_hysteresis removes a
-                # very large, highly fragmented region even after excluding the
-                # exact far-value plateau.  Reuse the already-computed face
-                # scores and graph data to sweep a small absolute threshold
-                # grid around the ~0.1 upper tail.  No neural UDF query is
-                # repeated and these rows NEVER modify seed_world/grow_world.
-                is_body_item = (
-                    int(item_index) == 0
-                    and target_key.endswith("|body")
-                    and accessory_key.endswith("|body")
-                )
-                if is_body_item:
-                    body_percentiles = {}
-                    for q in (
-                        0.0,
-                        1.0,
-                        5.0,
-                        10.0,
-                        25.0,
-                        50.0,
-                        75.0,
-                        80.0,
-                        85.0,
-                        90.0,
-                        92.0,
-                        94.0,
-                        95.0,
-                        96.0,
-                        97.0,
-                        98.0,
-                        99.0,
-                        99.5,
-                        99.9,
-                        100.0,
-                    ):
-                        body_percentiles[f"{q:g}"] = float(
-                            np.percentile(usable_scores, q)
-                        )
-
-                    print(
-                        "[udf cut body diagnostic distribution]",
-                        f"item={item_index}",
-                        f"faces={len(usable_scores)}",
-                        "percentiles=" + json.dumps(
-                            body_percentiles, sort_keys=True
-                        ),
-                    )
-
-                    body_adjacency = np.asarray(
-                        mesh.face_adjacency, dtype=np.int64
-                    )
-                    body_face_areas = np.asarray(
-                        mesh.area_faces, dtype=np.float64
-                    )
-                    body_boundary_faces = self._existing_boundary_faces(mesh)
-                    body_centroids = np.asarray(
-                        mesh.triangles_center, dtype=np.float64
-                    )
-                    body_topology = self._prepare_search_topology(mesh)
-                    body_reference_tree = None
-                    if reference_points is not None and len(reference_points):
-                        try:
-                            from scipy.spatial import cKDTree
-
-                            body_reference_tree = cKDTree(
-                                np.asarray(reference_points, dtype=np.float64)
-                            )
-                        except Exception as exc:
-                            print(
-                                "[udf cut body diagnostic]",
-                                "reference KD-tree unavailable:",
-                                exc,
-                            )
-
-                    body_seed_values = [0.095, 0.097, 0.099, 0.100, 0.101]
-                    body_grow_values = [0.080, 0.085, 0.090, 0.095, 0.098]
-                    body_rows = []
-                    for body_seed in body_seed_values:
-                        for body_grow in body_grow_values:
-                            if body_grow > body_seed:
-                                continue
-                            (
-                                body_seed_mask,
-                                body_grow_mask,
-                                body_decisions,
-                                _body_remove_mask,
-                                body_kept_stats,
-                                body_removed_stats,
-                            ) = self._evaluate_cut_candidate_fast(
-                                mesh,
-                                face_scores=scores,
-                                usable_faces=usable,
-                                seed_world=body_seed,
-                                grow_world=body_grow,
-                                min_faces=int(
-                                    config.get("udf_cut_min_faces", 8)
-                                ),
-                                min_seed_faces=int(
-                                    config.get("udf_cut_min_seed_faces", 2)
-                                ),
-                                min_seed_fraction=float(
-                                    config.get(
-                                        "udf_cut_min_seed_fraction", 0.05
-                                    )
-                                ),
-                                min_area_world2=float(
-                                    config.get("udf_cut_min_area_world2", 0.0)
-                                ),
-                                preserve_existing_boundaries=bool(
-                                    config.get(
-                                        "udf_cut_preserve_existing_boundaries",
-                                        True,
-                                    )
-                                ),
-                                reference_tree=body_reference_tree,
-                                reference_max_distance_world=(
-                                    float(
-                                        config[
-                                            "udf_cut_reference_max_distance_world"
-                                        ]
-                                    )
-                                    if config.get(
-                                        "udf_cut_reference_max_distance_world",
-                                        None,
-                                    )
-                                    is not None
-                                    else None
-                                ),
-                                adjacency=body_adjacency,
-                                face_areas=body_face_areas,
-                                existing_boundary_faces=body_boundary_faces,
-                                centroids=body_centroids,
-                                topology=body_topology,
-                            )
-                            body_accepted = [
-                                decision
-                                for decision in body_decisions
-                                if decision.accepted
-                            ]
-                            body_rejects: Dict[str, int] = {}
-                            for decision in body_decisions:
-                                if decision.accepted:
-                                    continue
-                                body_rejects[decision.reason] = (
-                                    body_rejects.get(decision.reason, 0) + 1
-                                )
-                            body_removed_faces = int(
-                                body_removed_stats["faces"]
-                            )
-                            body_removed_fraction = float(
-                                body_removed_faces / max(len(mesh.faces), 1)
-                            )
-                            row = {
-                                "seed_world": float(body_seed),
-                                "grow_world": float(body_grow),
-                                "seed_faces": int(np.sum(body_seed_mask)),
-                                "grow_faces": int(np.sum(body_grow_mask)),
-                                "accepted_components": int(len(body_accepted)),
-                                "removed_faces": body_removed_faces,
-                                "removed_fraction": body_removed_fraction,
-                                "after_components": int(
-                                    body_kept_stats["components"]
-                                ),
-                                "after_boundary_edges": int(
-                                    body_kept_stats["boundary_edges"]
-                                ),
-                                "removed_components": int(
-                                    body_removed_stats["components"]
-                                ),
-                                "component_rejection_counts": body_rejects,
-                            }
-                            body_rows.append(row)
-                            print(
-                                "[udf cut body diagnostic candidate]",
-                                f"item={item_index}",
-                                f"seed={body_seed:.6g}",
-                                f"grow={body_grow:.6g}",
-                                f"seed_faces={row['seed_faces']}",
-                                f"grow_faces={row['grow_faces']}",
-                                f"accepted_components={row['accepted_components']}",
-                                f"removed_pct={100.0 * body_removed_fraction:.2f}",
-                                f"after_components={row['after_components']}",
-                                f"boundary_edges={row['after_boundary_edges']}",
-                                f"removed_components={row['removed_components']}",
-                                f"component_rejects={body_rejects}",
-                            )
-
-                    body_rows_ranked = sorted(
-                        body_rows,
-                        key=lambda row: (
-                            int(row["after_components"]),
-                            int(row["after_boundary_edges"]),
-                            abs(float(row["removed_fraction"]) - 0.10),
-                        ),
-                    )
-                    for rank, row in enumerate(body_rows_ranked[:5], start=1):
-                        print(
-                            "[udf cut body diagnostic least-fragmented]",
-                            f"rank={rank}",
-                            f"seed={row['seed_world']:.6g}",
-                            f"grow={row['grow_world']:.6g}",
-                            f"removed_pct={100.0 * row['removed_fraction']:.2f}",
-                            f"after_components={row['after_components']}",
-                            f"boundary_edges={row['after_boundary_edges']}",
-                            f"removed_components={row['removed_components']}",
-                        )
-
-                    body_diag_path = op.join(
-                        output_folder,
-                        f"{item_index}_{mode}_{self._safe_label(accessory_key)}_"
-                        "udf_body_threshold_diagnostic.json",
-                    )
-                    with open(body_diag_path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {
-                                "item_index": int(item_index),
-                                "target_key": target_key,
-                                "accessory_key": accessory_key,
-                                "selected_thresholds_unchanged": {
-                                    "seed_world": float(seed_world),
-                                    "grow_world": float(grow_world),
-                                },
-                                "score_percentiles": body_percentiles,
-                                "far_world": float(far_world),
-                                "far_like_fraction": float(
-                                    far_like_fraction
-                                ),
-                                "candidates": body_rows,
-                                "least_fragmented": body_rows_ranked[:5],
-                            },
-                            f,
-                            indent=2,
-                        )
-                    print(
-                        "[udf cut body diagnostic saved]",
-                        body_diag_path,
-                        "selected_thresholds_unchanged=True",
-                    )
-
             if auto_enabled and auto_mode == "search":
                 if len(usable_scores) == 0:
                     raise RuntimeError(
@@ -3481,15 +3262,23 @@ class AgentUDFCut(AgentUDF):
             fragment_min_faces = int(
                 config.get("udf_cut_min_kept_component_faces", 20)
             )
+            fragment_min_fraction = float(
+                config.get("udf_cut_min_kept_component_fraction", 0.001)
+            )
             kept, fragment_removed, fragment_cleanup_report = (
                 self._cleanup_tiny_vertex_components(
-                    kept, min_faces=fragment_min_faces
+                    kept,
+                    min_faces=fragment_min_faces,
+                    min_fraction_of_largest=fragment_min_fraction,
                 )
             )
             print(
                 "[udf cut fragment cleanup]",
                 f"item={item_index}",
-                f"min_faces={fragment_min_faces}",
+                f"min_faces={fragment_cleanup_report['effective_min_faces']}",
+                f"base_min_faces={fragment_min_faces}",
+                f"fraction={fragment_min_fraction:.6g}",
+                f"largest_faces={fragment_cleanup_report['largest_component_faces']}",
                 f"components={fragment_cleanup_report['before']['components']}"
                 f"->{fragment_cleanup_report['after']['components']}",
                 f"removed_components={fragment_cleanup_report['removed_components']}",
@@ -3668,6 +3457,7 @@ class AgentUDFCut(AgentUDF):
                         )
                     ),
                     "min_kept_component_faces": fragment_min_faces,
+                    "min_kept_component_fraction": fragment_min_fraction,
                 },
                 "face_query": {
                     "faces": int(len(mesh.faces)),

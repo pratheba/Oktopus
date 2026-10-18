@@ -130,3 +130,27 @@ def test_auto_candidate_rejection_reasons_mirrors_gate_predicate():
         positive_ring_fraction=1.0,
         min_positive_ring_fraction=0.80,
     ) == []
+
+
+def test_tiny_vertex_component_cleanup_scales_with_largest_component():
+    main = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    small_a = trimesh.creation.icosphere(subdivisions=0, radius=0.1)
+    small_b = trimesh.creation.icosphere(subdivisions=0, radius=0.1)
+    small_a.apply_translation([3.0, 0.0, 0.0])
+    small_b.apply_translation([-3.0, 0.0, 0.0])
+    mesh = trimesh.util.concatenate([main, small_a, small_b])
+
+    cleaned, removed, report = AgentUDFCut._cleanup_tiny_vertex_components(
+        mesh,
+        min_faces=20,
+        min_fraction_of_largest=0.10,
+    )
+
+    assert report["largest_component_faces"] == len(main.faces)
+    assert report["effective_min_faces"] == 32
+    assert report["component_face_counts"] == [320, 20, 20]
+    assert report["removed_components"] == 2
+    assert report["removed_faces"] == 40
+    assert AgentUDFCut._topology_stats(cleaned)["components"] == 1
+    assert len(cleaned.faces) == 320
+    assert len(removed.faces) == 40
