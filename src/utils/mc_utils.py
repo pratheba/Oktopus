@@ -31,6 +31,22 @@ class MCGrid():
         # val_grid + marks allocation at resolution 1024. Defaults unchanged.
         self._grid_tempdir = None
         memmap_dir = arg.get('memmap_dir')
+        self.memmap_dir = memmap_dir
+        self.geometry_only = bool(arg.get('geometry_only', False))
+        if self.geometry_only:
+            if not memmap_dir:
+                raise ValueError('geometry_only requires memmap_dir')
+            # Independent meshes use the main MCGrid for geometry/indexing
+            # only. Do not reserve an unused 2049^3 SDF+marks backing file.
+            self.val_grid = None
+            self.empty_marks = None
+            self._deferred_initialization = True
+            print('[MCGrid] geometry-only grid (no accumulator storage)')
+            return
+        # Caller guarantees clear_grid() before reading any deferred array.
+        self._deferred_initialization = bool(arg.get('defer_initial_fill', False))
+        if self._deferred_initialization and not memmap_dir:
+            raise ValueError('defer_initial_fill requires memmap_dir')
         if memmap_dir:
             os.makedirs(memmap_dir, exist_ok=True)
             self._grid_tempdir = tempfile.TemporaryDirectory(
@@ -44,9 +60,11 @@ class MCGrid():
                 os.path.join(self._grid_tempdir.name, 'empty.bool'),
                 dtype=np.bool_, mode='w+', shape=(N1**3,)
             )
-            self.val_grid.fill(10.0)
-            self.empty_marks.fill(True)
-            print('[MCGrid] disk-backed SDF grid:', self._grid_tempdir.name)
+            if not self._deferred_initialization:
+                self.val_grid.fill(10.0)
+                self.empty_marks.fill(True)
+            print('[MCGrid] disk-backed SDF grid:', self._grid_tempdir.name,
+                  'initialization=', 'deferred' if self._deferred_initialization else 'complete')
         else:
             self.val_grid = 10 * np.ones(N1**3)
             self.empty_marks = np.ones(N1**3, dtype=bool)
@@ -93,8 +111,11 @@ class MCGrid():
         # return diff_vals, kidx_true
     
     def clear_grid(self, val=10.):
+        if self.geometry_only:
+            raise RuntimeError('Cannot clear a geometry-only MCGrid')
         self.val_grid[:] = val
         self.empty_marks[:] = True
+        self._deferred_initialization = False
         if hasattr(self, 'func_marks'):
             self.func_marks[:] = False
 

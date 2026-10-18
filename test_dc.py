@@ -60,11 +60,26 @@ def start_test(opt):
 
     # Marching Cubes config
     config_path = './exp/train/manipulation'
+    # Independent meshes never read the shared SDF accumulator. At high
+    # resolution allocate only its grid geometry, not huge unused files.
+    geometry_only = False
+    if selected_agent == 'sdf_dc' and args.sdf_grid_memmap_dir:
+        with open(op.join(config_path, args.test_file)) as _adapt_stream:
+            _adapt_spec = yaml.safe_load(_adapt_stream)
+        if isinstance(_adapt_spec, list):
+            geometry_only = True
+        elif isinstance(_adapt_spec, dict):
+            geometry_only = not bool(_adapt_spec.get('combine_adaptations', False))
+
     grid_config = {
         'reso': args.resolution,
         'level': 0.,
         'size': 1.2,
         'memmap_dir': args.sdf_grid_memmap_dir,
+        # action_part_adapt clears the grid itself (and boots does not use
+        # the combined accumulator). Avoid a duplicate ~77 GiB write at 2048.
+        'defer_initial_fill': bool(args.sdf_grid_memmap_dir and selected_agent == 'sdf_dc'),
+        'geometry_only': geometry_only,
     }
 
     t0 = time()

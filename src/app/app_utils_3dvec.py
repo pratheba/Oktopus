@@ -67,15 +67,21 @@ def load_yaml_file(yaml_file):
     else:
         return yaml_file
 
-def create_grid_like(mc_grid, res=None):
-    #if res is not None:
-    #    mc_grid.reso = res
-    new_grid = MCGrid({
+def create_grid_like(mc_grid, res=None, defer_initial_fill=False):
+    # The original ngc.MCGrid only allocates dense RAM. For disk-backed
+    # callers, preserve the runtime MCGrid class and its scratch directory.
+    # Other callers retain their original behavior.
+    memmap_dir = getattr(mc_grid, 'memmap_dir', None)
+    grid_cls = type(mc_grid) if memmap_dir else MCGrid
+    grid_arg = {
         'level': mc_grid.grid_config['level'],
         'reso': mc_grid.reso,
-        'size': mc_grid.size
-    })
-    return new_grid
+        'size': mc_grid.size,
+    }
+    if memmap_dir:
+        grid_arg['memmap_dir'] = memmap_dir
+        grid_arg['defer_initial_fill'] = bool(defer_initial_fill)
+    return grid_cls(grid_arg)
 
 def create_grid(config):
     return MCGrid(config)

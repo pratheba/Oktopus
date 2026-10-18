@@ -194,17 +194,10 @@ class _CoreMixin:
 
         self.wrap_counts = arg.get("wrap_counts", None)
 
+        # The valid-wrap interval is not consumed by the active Oktopus
+        # adaptation/localization pipeline. Keep compatibility attributes,
+        # but skip the unused calculation and diagnostic output.
         self.valid_s0, self.valid_s1 = 0.0, 1.0
-
-        if self.wrap_counts is not None and self.wrap_s_bins is not None:
-            self.valid_s0, self.valid_s1 = self.compute_valid_wrap_interval(
-                self.wrap_counts,
-                self.wrap_s_bins,
-                min_count=int(arg.get("valid_wrap_min_count", 10)),
-                margin=float(arg.get("valid_wrap_margin", 0.02)),
-            )
-
-        print("[valid wrap interval]", self.name, self.valid_s0, self.valid_s1)
 
         # Optional saved surface info, useful for debugging only
         # Optional saved surface info

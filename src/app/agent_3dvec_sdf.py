@@ -1317,8 +1317,16 @@ class AgentSDF(AgentBase):
             f"export_individual_meshes={export_individual_meshes}",
             f"resolution={getattr(mc_grid, 'reso', 'unknown')}",
         )
-        #mc_grid.clear_grid(val=10.0)
-        mc_grid.clear_grid()
+        # For independent per-item meshes, the full accumulator is unused.
+        # Broad filtering uses only MCGrid geometry and separate marks.
+        # An uninitialized, disk-backed accumulator need not be filled.
+        if combine_adaptations and getattr(mc_grid, 'geometry_only', False):
+            raise RuntimeError('Combined SDF needs a non-geometry-only MCGrid')
+        if combine_adaptations or not getattr(mc_grid, '_deferred_initialization', False):
+            mc_grid.clear_grid()
+        else:
+            print('[part_adapt] skipping unused full-grid initialization '
+                  '(combine_adaptations=false)')
 
         # Fit per blend_group before starting any expensive grid inference.
         # A group may reuse the same puffer source as another group without
@@ -1955,7 +1963,13 @@ class AgentSDF(AgentBase):
                 individual_mesh_elapsed = 0.0
                 if export_individual_meshes:
                     mesh_t0 = time()
-                    acc_grid = utils.create_grid_like(mc_grid)
+                    # Do not fall back to allocating a second full RAM grid.
+                    # The caller clears this grid immediately, so defer its
+                    # first full-volume initialization in the constructor.
+                    acc_grid = utils.create_grid_like(
+                        mc_grid,
+                        defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
+                    )
                     acc_grid.clear_grid()
                     acc_grid.update_grid(
                         vals_final, kidx, mark=True, mode="overwrite"
