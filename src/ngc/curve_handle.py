@@ -481,6 +481,12 @@ class CurveHandle():
                 samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         if bounded:
+            # Optional compact staging is deliberately limited to the independent
+            # rigid-radius SDF inference path. Its six fields are exactly those
+            # consumed by model_withgrid._pack_common / support clamp.
+            compact_staging = bool(adapt_arg.get("dcsdd_compact_staging", False))
+            if compact_staging and not adapt_arg.get("rigid_radius", False):
+                raise ValueError("compact staging requires direct rigid_radius")
             # First pass counts accepted broad-phase indices without storing
             # their coordinates. Second pass localizes in fixed-size chunks.
             import tempfile
@@ -504,8 +510,16 @@ class CurveHandle():
                 stage = None
             output_buffers = {}
             shared_keys = set()
+            # These fields are the actual input to model_withgrid._pack_common.
+            # Never change the type or values of any retained field.
+            inference_keys = frozenset((
+                "samples_local", "coords", "angles", "radius", "rho", "rho_n",
+            ))
             written = 0
             candidate_offset = 0
+            core_localize_s = 0.0
+            stage_write_s = 0.0
+            stage_bytes = 0
 
             def _alloc_and_write(kind, key, value, at, size):
                 arr = np.asarray(value)
@@ -526,28 +540,43 @@ class CurveHandle():
             if stage is not None:
                 idx_buffer = np.memmap(str(Path(stage.name)/"indices.i64"),
                                        dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
-                inside_buffer = np.memmap(str(Path(stage.name)/"inside.i64"),
-                                          dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
+                if not compact_staging:
+                    inside_buffer = np.memmap(str(Path(stage.name)/"inside.i64"),
+                                              dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
             else:
                 idx_buffer = np.empty(n_candidate, dtype=np.int64)
-                inside_buffer = np.empty(n_candidate, dtype=np.int64)
+                if not compact_staging:
+                    inside_buffer = np.empty(n_candidate, dtype=np.int64)
             # Avoid printing one 'input vs' block per chunk.
             quiet_arg = dict(adapt_arg)
             quiet_arg["adapt_debug_counts"] = False
             for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
                 sample_chunk = mc_grid.idx2pts(candidate_idx)
+                call_t0 = perf_counter()
                 acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
                     sample_chunk, quiet_arg)
+                core_localize_s += perf_counter() - call_t0
+                write_t0 = perf_counter()
                 n_take = len(accepted_local)
                 idx_buffer[written:written+n_take] = candidate_idx[accepted_local]
-                inside_buffer[written:written+n_take] = candidate_offset + accepted_local
-                if not output_buffers:
-                    shared_keys = {k for k in av_chunk if k in acc_chunk and av_chunk[k] is acc_chunk[k]}
-                for key, value in av_chunk.items():
-                    _alloc_and_write("avatar", key, value, written, n_take)
+                stage_bytes += n_take * np.dtype(np.int64).itemsize
+                if not compact_staging:
+                    inside_buffer[written:written+n_take] = candidate_offset + accepted_local
+                    stage_bytes += n_take * np.dtype(np.int64).itemsize
+                    if not output_buffers:
+                        shared_keys = {k for k in av_chunk if k in acc_chunk and av_chunk[k] is acc_chunk[k]}
+                    for key, value in av_chunk.items():
+                        _alloc_and_write("avatar", key, value, written, n_take)
+                        stage_bytes += np.asarray(value).nbytes
                 for key, value in acc_chunk.items():
-                    if key not in shared_keys:
-                        _alloc_and_write("accessory", key, value, written, n_take)
+                    if compact_staging:
+                        if key not in inference_keys:
+                            continue
+                    elif key in shared_keys:
+                        continue
+                    _alloc_and_write("accessory", key, value, written, n_take)
+                    stage_bytes += np.asarray(value).nbytes
+                stage_write_s += perf_counter() - write_t0
                 written += n_take
                 candidate_offset += len(candidate_idx)
             assert candidate_offset == n_candidate
@@ -555,9 +584,13 @@ class CurveHandle():
                 **{k: v[:written] for k, v in output_buffers.get("avatar", {}).items()},
                 **{k: v[:written] for k, v in output_buffers.get("accessory", {}).items()},
             }
-            avatar_data = {k: v[:written] for k, v in output_buffers.get("avatar", {}).items()}
+            avatar_data = (None if compact_staging else
+                           {k: v[:written] for k, v in output_buffers.get("avatar", {}).items()})
             kidx = idx_buffer[:written]
-            inside = inside_buffer[:written]
+            # The original candidate-relative `inside` indices are never read
+            # after filter_grid_adapt by independent boots. Do not allocate the
+            # ~3 GB array in this explicitly selected mode.
+            inside = None if compact_staging else inside_buffer[:written]
             localize_s = perf_counter() - localize_t0
             if adapt_arg.get("adapt_debug_counts", True):
                 print("input vs:", n_candidate)
@@ -567,7 +600,11 @@ class CurveHandle():
                       "src_interval_filter=", use_src_interval_filter,
                       "candidate_samples=", n_candidate, "after_localize=", written,
                       "batch_size=", batch_size,
-                      "broad_s=", f"{broad_s:.3f}", "localize_s=", f"{localize_s:.3f}")
+                      "compact_staging=", compact_staging,
+                      "broad_s=", f"{broad_s:.3f}", "localize_s=", f"{localize_s:.3f}",
+                      "localize_compute_s=", f"{core_localize_s:.3f}",
+                      "stage_write_s=", f"{stage_write_s:.3f}",
+                      "staged_GB=", f"{stage_bytes/1e9:.3f}")
             return accessory_data, avatar_data, kidx, inside
         broad_s = perf_counter() - broad_t0
         mode = adapt_arg.get("mode", "direct")

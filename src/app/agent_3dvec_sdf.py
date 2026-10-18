@@ -1172,6 +1172,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_fast_bbox_marking',
                         'dcsdd_bounded_filtering',
                         'dcsdd_filter_batch_size',
+                        'dcsdd_compact_staging',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1423,6 +1424,33 @@ class AgentSDF(AgentBase):
                     'dcsdd_fast_bbox_marking',
                     bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),
                 )
+                compact_requested = bool(extraction_config.get('dcsdd_compact_staging', False))
+                # Only independent pieces with standard model input can drop
+                # unused avatar fields. Others retain the 0034 staging path.
+                compact_reasons = []
+                if not adapt_arg.get('dcsdd_bounded_filtering', False):
+                    compact_reasons.append('requires bounded filtering')
+                if combine_adaptations:
+                    compact_reasons.append('combined adaptations')
+                if item_index in seam_plan:
+                    compact_reasons.append('seam query warp')
+                if mode != 'direct' or not adapt_arg.get('rigid_radius', False) or adapt_arg.get('wrap_radius', False):
+                    compact_reasons.append('non-rigid direct mode')
+                for flag in ('use_tiled_detail', 'auto_avatar_snug_field', 'cut_avatar',
+                             'detail_avatar_gate', 'final_carve', 'use_soft_snug',
+                             'use_hard_avatar_clamp', 'use_adapt_control_field',
+                             'use_adapt_train_radius'):
+                    if adapt_arg.get(flag, False):
+                        compact_reasons.append(flag)
+                if str(adapt_arg.get('accessory_offset_mode', 'none')).lower() != 'none':
+                    compact_reasons.append('offset mode')
+                if str(adapt_arg.get('snug_mode', 'multiplicative')).lower() == 'additive':
+                    compact_reasons.append('additive snug')
+                adapt_arg['dcsdd_compact_staging'] = compact_requested and not compact_reasons
+                if compact_requested:
+                    print('[part_adapt compact staging]',
+                          'enabled=', adapt_arg['dcsdd_compact_staging'],
+                          'reason=', ', '.join(compact_reasons) if compact_reasons else 'independent rigid boot')
 
                 if mode == 'direct':
                     accessory_curve_handle = self.curve_from_key(accessory_key)
@@ -1616,6 +1644,7 @@ class AgentSDF(AgentBase):
                         accessory_data,
                         accessory_key,
                         batch_size=batch_size,
+                        slice_batches=bool(adapt_arg.get('dcsdd_compact_staging', False)),
                     )
 
                 acc_vals = acc_out["dist"]

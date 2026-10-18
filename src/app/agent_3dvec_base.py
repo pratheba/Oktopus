@@ -537,7 +537,7 @@ class AgentBase():
             vals_base = vals_base.detach().cpu().numpy()
         return self._convert_sdf_pair_sign(vals, vals_base)
 
-    def _inference_full_vals(self, curve_data, key, batch_size=None, transform=None):
+    def _inference_full_vals(self, curve_data, key, batch_size=None, transform=None, *, slice_batches=False):
         num_samples = curve_data['samples_local'].shape[0]
 
         def _to_numpy_dict(out):
@@ -551,7 +551,19 @@ class AgentBase():
 
         if batch_size is not None and num_samples > batch_size:
             N = num_samples // batch_size + 1
-            batches = np.array_split(np.arange(num_samples), N)
+            if slice_batches:
+                # Same *exact* partition as np.array_split(np.arange(N), n),
+                # without allocating a huge int64 index array or copying
+                # memmap inputs by fancy indexing on each batch.
+                q, r = divmod(num_samples, N)
+                lengths = [q + 1] * r + [q] * (N - r)
+                batches = []
+                start = 0
+                for length in lengths:
+                    batches.append(slice(start, start + length))
+                    start += length
+            else:
+                batches = np.array_split(np.arange(num_samples), N)
 
             chunks = {}
             for batch in batches:
