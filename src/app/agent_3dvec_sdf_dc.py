@@ -81,7 +81,129 @@ class AgentSDFDC(AgentSDF):
         step = float(cfg["step"])
         return N, N1, origin, step
 
-    def _grid_to_S_U(self, sdf_grid):
+    @staticmethod
+    def _dcsdd_band(step, config):
+        cell_diag = float(np.sqrt(3.0) * step)
+        requested = config.get("dcsdd_sdf_band") if hasattr(config, "get") else None
+        band = 4.0 * cell_diag if requested is None else float(requested)
+        if not np.isfinite(band) or band <= cell_diag:
+            raise ValueError(
+                "dcsdd_sdf_band must be finite and greater than one cell "
+                f"diagonal ({cell_diag:.9g}); got {band}"
+            )
+        return band
+
+    @staticmethod
+    def _negative_bbox(S, empty, N1, level):
+        """Bounding grid vertices where the evaluated field is negative.
+
+        Flat indices follow MCGrid's documented x-fast ordering. Only negative
+        sample indices are retained, never a dense N-by-3 integer array.
+        """
+        negatives = np.flatnonzero((S < level) & ~empty & np.isfinite(S))
+        if not negatives.size:
+            raise RuntimeError("No negative evaluated samples (negative=inside).")
+        xy = N1 * N1
+        x = negatives % N1
+        y = (negatives // N1) % N1
+        z = negatives // xy
+        return (np.array([x.min(), y.min(), z.min()], dtype=np.int64),
+                np.array([x.max(), y.max(), z.max()], dtype=np.int64))
+
+    @staticmethod
+    def _crop_cube_bounds(lo, hi, N1, pad):
+        """Smallest axis-aligned *cube* with a safety halo around all negatives."""
+        lo = np.maximum(lo - pad, 0)
+        hi = np.minimum(hi + pad, N1 - 1)
+        side = int(np.max(hi - lo + 1))
+        starts = np.empty(3, dtype=np.int64)
+        for a in range(3):
+            # Bias toward centering the halo; clamp only against domain edges.
+            wanted = int(lo[a]) - (side - int(hi[a] - lo[a] + 1)) // 2
+            starts[a] = min(max(wanted, int(hi[a]) - side + 1, 0),
+                            int(lo[a]), N1 - side)
+        return starts, side
+
+    def _grid_to_S_U(self, sdf_grid, config=None, level=0.0):
+        """Transfer MCGrid without sorting or full-domain index coordinate arrays.
+
+        Optional dcsdd_crop_grid restricts the contourer to a padded cubic ROI
+        containing *all* evaluated negative samples. This is experimental:
+        the extracted zero set is enclosed, but Ours' global sphere sampling
+        can change when far-away positive samples are excluded.
+        """
+        config = {} if config is None else config
+        N, N1, origin, step = self._native_grid_config(sdf_grid)
+        kb = np.asarray(sdf_grid.grid_config.get("k_basis", []))
+        if type(sdf_grid).__name__ != "MCGrid" or not np.array_equal(
+            kb, np.array([1, N1, N1 * N1])
+        ):
+            print("[dcsdd:native-grid] unknown layout; using verified legacy reorder")
+            return self._grid_to_S_U_legacy(sdf_grid)
+
+        total = N1 ** 3
+        S_native = np.asarray(sdf_grid.val_grid, dtype=np.float64).reshape(-1)
+        if S_native.size != total:
+            raise ValueError(f"Expected {total} native grid samples, got {S_native.size}")
+        if hasattr(sdf_grid, "empty_marks"):
+            empty_native = np.asarray(sdf_grid.empty_marks, dtype=bool).reshape(-1)
+            if empty_native.size != total:
+                raise ValueError("empty_marks and val_grid have different sizes")
+        else:
+            empty_native = np.isclose(S_native, 10.0, rtol=0., atol=1e-12)
+
+        crop = bool(config.get("dcsdd_crop_grid", False))
+        if crop:
+            neg_lo, neg_hi = self._negative_bbox(S_native, empty_native, N1, level)
+            band = self._dcsdd_band(step, config)
+            pad = int(np.ceil(band / step)) + 2
+            starts, side = self._crop_cube_bounds(neg_lo, neg_hi, N1, pad)
+            if side < N1:
+                slices = tuple(slice(int(v), int(v) + side) for v in starts)
+                S = np.ascontiguousarray(
+                    S_native.reshape((N1, N1, N1), order="F")[slices]
+                    .ravel(order="F")
+                )
+                empty = np.ascontiguousarray(
+                    empty_native.reshape((N1, N1, N1), order="F")[slices]
+                    .ravel(order="F")
+                )
+                origin = origin + starts * step
+                print(
+                    f"[dcsdd:crop] full={N1}^3 crop={side}^3 "
+                    f"start={starts.tolist()} pad={pad} "
+                    f"samples={len(S)}/{total} "
+                    "(experimental: global sphere sampling changes)"
+                )
+                N1 = side
+            else:
+                print("[dcsdd:crop] negative sample bbox spans full grid; no crop")
+                S, empty = S_native, empty_native
+        else:
+            S, empty = S_native, empty_native
+
+        # MCGrid idx2pts uses the exact same x-fast formula. Materialize only
+        # the mandatory Nx3 coordinates, in small bounded index chunks.
+        count = S.size
+        U = np.empty((count, 3), dtype=np.float64)
+        stride = 1_048_576
+        for begin in range(0, count, stride):
+            finish = min(begin + stride, count)
+            rows = np.arange(begin, finish, dtype=np.int64)
+            k = rows // (N1 * N1)
+            j = (rows // N1) % N1
+            i = rows % N1
+            U[begin:finish, 0] = i * step + origin[0]
+            U[begin:finish, 1] = j * step + origin[1]
+            U[begin:finish, 2] = k * step + origin[2]
+
+        print(
+            f"[dcsdd:native-grid] samples={count} shape={N1}x{N1}x{N1} "
+            "native_order_mismatches=0 (MCGrid x-fast verified)"
+        )
+        return S, U, empty, N1
+
+    def _grid_to_S_U_legacy(self, sdf_grid):
         """Build DCSDD input directly from Oktopus's native grid.
 
         ``idx2pts`` and ``val_grid`` are first read in Oktopus's own flat order,
@@ -182,69 +304,72 @@ class AgentSDFDC(AgentSDF):
 
     @staticmethod
     def _prepare_dcsdd_field(S_raw, unevaluated, N1, step, level, config):
-        """Fill unevaluated background and bound magnitudes for DC/DC-SDD.
+        """Numerically equivalent band-clamped field, with a *local* EDT.
 
-        Oktopus uses +10 for unevaluated samples. DC-SDD interprets abs(S)
-        as a physical sphere radius, so the raw sentinel must not be passed
-        to traditional DC or to ``ours``.
+        All evaluated values are unchanged before the original clamp. Only
+        unevaluated vertices need distance-to-negative. Any unevaluated vertex
+        outside the negative-sample bbox expanded by band/step must be at
+        distance >= band, so a local EDT yields the identical clamped field.
         """
         from scipy.ndimage import distance_transform_edt
 
-        field = np.asarray(S_raw, dtype=np.float64).reshape(-1) - float(level)
+        values = np.asarray(S_raw, dtype=np.float64).reshape(-1)
         empty = np.asarray(unevaluated, dtype=bool).reshape(-1)
-        if field.size != N1 ** 3 or empty.size != field.size:
-            raise ValueError(
-                f"Unexpected DCSDD grid sizes: S={field.size}, "
-                f"empty={empty.size}, expected={N1 ** 3}"
-            )
+        if values.size != N1 ** 3 or empty.size != values.size:
+            raise ValueError(f"Unexpected DCSDD grid sizes: {values.size}, {empty.size}")
 
-        finite = np.isfinite(field)
-        evaluated = finite & ~empty
+        evaluated = np.isfinite(values) & ~empty
+        negative = evaluated & (values < level)
+        n_neg = int(np.count_nonzero(negative))
         if not np.any(evaluated):
-            raise RuntimeError(
-                "No evaluated SDF samples. Ensure update_grid(..., mark=True) "
-                "is used during Oktopus inference/adaptation."
-            )
-
-        neg = int(np.count_nonzero(field[evaluated] < 0.0))
-        pos = int(np.count_nonzero(field[evaluated] > 0.0))
-        if neg == 0:
-            raise RuntimeError(
-                "No negative evaluated samples. This integration expects "
-                "negative=inside."
-            )
-
-        G = field.reshape((N1, N1, N1), order="F")
-        E = (~evaluated).reshape((N1, N1, N1), order="F")
-        inside = (~E) & (G < 0.0)
-
-        dist_to_inside = distance_transform_edt(
-            ~inside, sampling=(float(step),) * 3
-        )
-
-        G_safe = G.copy()
-        G_safe[E] = dist_to_inside[E]
+            raise RuntimeError("No evaluated SDF samples")
+        if not n_neg:
+            raise RuntimeError("No negative evaluated samples (negative=inside)")
+        n_pos = int(np.count_nonzero(evaluated & (values > level)))
 
         cell_diag = float(np.sqrt(3.0) * step)
-        configured_band = (
-            config.get("dcsdd_sdf_band")
-            if hasattr(config, "get") else None
-        )
-        band = 4.0 * cell_diag if configured_band is None else float(configured_band)
-        if not np.isfinite(band) or band <= cell_diag:
-            raise ValueError(
-                "dcsdd_sdf_band must be finite and greater than one cell "
-                f"diagonal ({cell_diag:.9g}); got {band}"
-            )
+        band = AgentSDFDC._dcsdd_band(step, config)
+        safe = np.empty_like(values)
+        np.subtract(values, float(level), out=safe)
+        np.clip(safe, -band, band, out=safe)
+        # Missing/nonfinite samples were +10 in MCGrid and have positive sign.
+        # Their exact clipped EDT values differ from band only near negative SDF.
+        np.copyto(safe, band, where=~evaluated)
 
-        G_safe = np.clip(G_safe, -band, band)
-        safe = np.ascontiguousarray(G_safe.reshape(-1, order="F"))
+        neg_ids = np.flatnonzero(negative)
+        del negative
+        ij = N1 * N1
+        mini = np.array([np.min(neg_ids % N1),
+                         np.min((neg_ids // N1) % N1),
+                         np.min(neg_ids // ij)], dtype=np.int64)
+        maxi = np.array([np.max(neg_ids % N1),
+                         np.max((neg_ids // N1) % N1),
+                         np.max(neg_ids // ij)], dtype=np.int64)
+        del neg_ids
+
+        # The local ROI encloses *every* negative sample; hence the nearest
+        # inside point of any ROI sample is always present in its EDT.
+        pad = int(np.ceil(band / float(step))) + 1
+        mini = np.maximum(mini - pad, 0)
+        maxi = np.minimum(maxi + pad, N1 - 1)
+        sl = tuple(slice(int(a), int(b) + 1) for a, b in zip(mini, maxi))
+        shape = (N1, N1, N1)
+        eval_roi = evaluated.reshape(shape, order="F")[sl]
+        raw_roi = values.reshape(shape, order="F")[sl]
+        missing_roi = ~eval_roi
+        if np.any(missing_roi):
+            inside = eval_roi & (raw_roi < level)
+            dist = distance_transform_edt(~inside, sampling=(float(step),) * 3)
+            np.minimum(dist, band, out=dist)
+            roi = safe.reshape(shape, order="F")[sl]
+            np.copyto(roi, dist, where=missing_roi)
 
         print(
             f"[dcsdd:safe-field] evaluated={int(evaluated.sum())} "
-            f"negative={neg} positive={pos} "
-            f"filled_background={int(E.sum())} "
+            f"negative={n_neg} positive={n_pos} "
+            f"filled_background={int((~evaluated).sum())} "
             f"cell_diag={cell_diag:.9g} band={band:.9g} "
+            f"edt_roi={[int(x) for x in (maxi-mini+1)]} "
             f"range=[{safe.min():.9g},{safe.max():.9g}]"
         )
         return safe
@@ -375,8 +500,14 @@ class AgentSDFDC(AgentSDF):
             "mc", "mc_ref", "dc", "ours", "rfta", "mnm1", "mnm2"
         ]
 
-        S_raw, U, unevaluated, N1 = self._grid_to_S_U(sdf_grid)
-        self._print_grid_diagnostics(S_raw, U, unevaluated, N1, level)
+        S_raw, U, unevaluated, N1 = self._grid_to_S_U(
+            sdf_grid, config=config, level=level
+        )
+        if N1 <= 513 or bool(config.get("dcsdd_full_grid_diagnostics", False)):
+            self._print_grid_diagnostics(S_raw, U, unevaluated, N1, level)
+        else:
+            print("[dcsdd:grid] full diagnostics skipped at >512 to reduce peak memory; "
+                  "set dcsdd_full_grid_diagnostics=true to enable")
 
         # Reference MC keeps the original Oktopus field. DC and DC-SDD get a
         # separately filled and bounded field because they use abs(S) as a

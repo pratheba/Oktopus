@@ -1,3 +1,5 @@
+import os
+import tempfile
 import numpy as np
 import trimesh
 import skimage
@@ -24,9 +26,30 @@ class MCGrid():
             'do_flip': True,
         }
 
-        # 10: large positive number for background vals
-        self.val_grid = 10* np.ones(N1**3)
-        self.empty_marks = np.ones(N1**3, dtype=bool)
+        # 10: large positive number for background vals.
+        # Optional disk-backed arrays avoid retaining a ~10 GiB anonymous
+        # val_grid + marks allocation at resolution 1024. Defaults unchanged.
+        self._grid_tempdir = None
+        memmap_dir = arg.get('memmap_dir')
+        if memmap_dir:
+            os.makedirs(memmap_dir, exist_ok=True)
+            self._grid_tempdir = tempfile.TemporaryDirectory(
+                prefix='oktopus-sdf-grid-', dir=memmap_dir
+            )
+            self.val_grid = np.memmap(
+                os.path.join(self._grid_tempdir.name, 'values.f64'),
+                dtype=np.float64, mode='w+', shape=(N1**3,)
+            )
+            self.empty_marks = np.memmap(
+                os.path.join(self._grid_tempdir.name, 'empty.bool'),
+                dtype=np.bool_, mode='w+', shape=(N1**3,)
+            )
+            self.val_grid.fill(10.0)
+            self.empty_marks.fill(True)
+            print('[MCGrid] disk-backed SDF grid:', self._grid_tempdir.name)
+        else:
+            self.val_grid = 10 * np.ones(N1**3)
+            self.empty_marks = np.ones(N1**3, dtype=bool)
 
 
     def update_grid(self, val, kidx, mode='overwrite', mark=False):

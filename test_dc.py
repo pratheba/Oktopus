@@ -64,6 +64,7 @@ def start_test(opt):
         'reso': args.resolution,
         'level': 0.,
         'size': 1.2,
+        'memmap_dir': args.sdf_grid_memmap_dir,
     }
 
     t0 = time()
@@ -106,6 +107,8 @@ def start_test(opt):
         'dcsdd_dc_weight',
         'dcsdd_batch_size',
         'dcsdd_sdf_band',
+        'dcsdd_crop_grid',
+        'dcsdd_full_grid_diagnostics',
     ):
         _value = getattr(args, _key, None)
         if _value is not None:
@@ -223,11 +226,15 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-batch-size', dest='dcsdd_batch_size', type=int, default=None)
     p.add_argument('--dcsdd-sdf-band', dest='dcsdd_sdf_band', type=float, default=None)
     p.add_argument('--dcsdd-gt-mesh', dest='dcsdd_gt_mesh', default=None)
+    p.add_argument('--sdf-grid-memmap-dir', dest='sdf_grid_memmap_dir', default=None,
+                   help='Optional writable scratch directory for disk-backed float64 SDF grid arrays at 1024.')
+    p.add_argument('--dcsdd-crop-grid' , dest='dcsdd_crop_grid', action='store_true', default=None,
+                   help='EXPERIMENTAL: crop the Ours/DC input to the padded SDF negative bbox; may change sphere sampling.')
+    p.add_argument('--dcsdd-full-grid-diagnostics', dest='dcsdd_full_grid_diagnostics', action='store_true', default=None,
+                   help='Enable expensive full-grid percentile and edge scans even above resolution 512.')
+    p.add_argument('--dcsdd-fast-bbox-marking', action='store_true',
+                   help='Exact-equivalent voxel-box slice marking from patch 0031.')
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')
-    p.add_argument(
-        '--dcsdd-fast-bbox-marking', action='store_true',
-        help='Use exact-equivalent voxel-box slice marking instead of meshgrid allocation',
-    )
     p.add_argument('-e', '--extractor', required=False, default=None,
                    help='legacy extractor override; normally leave unset in test_dc.py')
     p.add_argument('--udf-max-depth', dest='udf_max_depth', type=int, default=None,
