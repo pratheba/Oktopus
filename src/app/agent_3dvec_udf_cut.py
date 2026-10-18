@@ -118,6 +118,91 @@ class AgentUDFCut(AgentUDF):
         return reasons
 
     @staticmethod
+    def _absolute_hysteresis_with_saturation_guard(
+        usable_scores: np.ndarray,
+        *,
+        seed_world: float,
+        grow_world: float,
+        far_world: float,
+        far_band_world: float,
+        min_informative_fraction: float,
+        min_informative_faces: int,
+    ) -> Tuple[float, float, Dict[str, object]]:
+        """Use metric UDF thresholds, abstaining only on a far-value plateau.
+
+        The UDF value is already a world-space distance-like signal.  Do not
+        recalibrate that distance from the SDF mesh's own score distribution;
+        otherwise a mesh with lots of unsupported geometry teaches the cutter
+        to tolerate that same geometry.  The only distributional decision here
+        is whether the queried UDF contains enough non-sentinel information to
+        trust the absolute thresholds at all.
+        """
+        scores = np.asarray(usable_scores, dtype=np.float64).reshape(-1)
+        scores = scores[np.isfinite(scores)]
+        if len(scores) == 0:
+            raise RuntimeError(
+                "absolute UDF hysteresis needs at least one usable finite score"
+            )
+
+        seed_world = float(seed_world)
+        grow_world = float(grow_world)
+        far_world = float(far_world)
+        far_band_world = float(far_band_world)
+        min_informative_fraction = float(min_informative_fraction)
+        min_informative_faces = max(0, int(min_informative_faces))
+
+        if seed_world <= 0.0 or grow_world < 0.0:
+            raise ValueError(
+                "absolute UDF hysteresis requires seed > 0 and grow >= 0"
+            )
+        if grow_world >= seed_world:
+            raise ValueError(
+                "absolute UDF hysteresis requires grow_world < seed_world"
+            )
+        if far_band_world < 0.0:
+            raise ValueError("far_value_band_world must be >= 0")
+        if not (0.0 <= min_informative_fraction <= 1.0):
+            raise ValueError(
+                "min_informative_fraction must be in [0, 1]"
+            )
+
+        far_cutoff = far_world - far_band_world
+        informative = scores < far_cutoff
+        informative_faces = int(np.sum(informative))
+        required_informative = max(
+            min_informative_faces,
+            int(np.ceil(min_informative_fraction * len(scores))),
+        )
+        saturated = informative_faces < required_informative
+        far_like_fraction = float(np.mean(~informative))
+
+        selected_seed = seed_world
+        selected_grow = grow_world
+        if saturated:
+            score_max = float(np.max(scores))
+            margin = max(1.0e-6, abs(score_max) * 1.0e-6)
+            selected_seed = score_max + margin
+            selected_grow = selected_seed
+
+        report = {
+            "enabled": True,
+            "mode": "absolute_hysteresis",
+            "configured_seed_world": seed_world,
+            "configured_grow_world": grow_world,
+            "far_value": far_world,
+            "far_value_band_world": far_band_world,
+            "far_cutoff_world": far_cutoff,
+            "far_like_fraction": far_like_fraction,
+            "informative_faces": informative_faces,
+            "usable_faces": int(len(scores)),
+            "required_informative_faces": int(required_informative),
+            "saturated": bool(saturated),
+            "seed_world": selected_seed,
+            "grow_world": selected_grow,
+        }
+        return selected_seed, selected_grow, report
+
+    @staticmethod
     def _safe_label(text: str) -> str:
         return str(text).replace("|", "_").replace("/", "_")
 
@@ -1988,12 +2073,81 @@ class AgentUDFCut(AgentUDF):
 
             usable_scores = scores[usable & np.isfinite(scores)]
             auto_mode = str(auto_spec.get("mode", "search")).strip().lower()
-            if auto_mode not in {"search", "p95_hysteresis"}:
+            if auto_mode not in {
+                "search",
+                "p95_hysteresis",
+                "absolute_hysteresis",
+            }:
                 raise ValueError(
                     "udf_cut_auto_thresholds.mode must be one of: "
-                    "search, p95_hysteresis; "
+                    "search, p95_hysteresis, absolute_hysteresis; "
                     f"got {auto_mode!r}"
                 )
+
+            # Generic baseline: the learned UDF value is treated as the
+            # geometric discrepancy itself.  Keep fixed world-space hysteresis
+            # thresholds for every adaptation and use the score distribution
+            # only to detect a fully/mostly saturated far-value query where the
+            # UDF has no trustworthy near-surface signal.
+            if auto_enabled and auto_mode == "absolute_hysteresis":
+                if len(usable_scores) == 0:
+                    raise RuntimeError(
+                        "udf_cut_auto_thresholds needs at least one usable "
+                        f"finite face score for item {item_index}"
+                    )
+
+                far_band_world = float(
+                    auto_spec.get(
+                        "far_value_band_world",
+                        max(5.0e-4, abs(float(far_world)) * 0.02),
+                    )
+                )
+                min_informative_fraction = float(
+                    auto_spec.get("min_informative_fraction", 0.05)
+                )
+                min_informative_faces = int(
+                    auto_spec.get("min_informative_faces", 128)
+                )
+                seed_world, grow_world, auto_threshold_report = (
+                    self._absolute_hysteresis_with_saturation_guard(
+                        usable_scores,
+                        seed_world=seed_world,
+                        grow_world=grow_world,
+                        far_world=far_world,
+                        far_band_world=far_band_world,
+                        min_informative_fraction=min_informative_fraction,
+                        min_informative_faces=min_informative_faces,
+                    )
+                )
+
+                if bool(auto_threshold_report["saturated"]):
+                    print(
+                        "[udf cut auto saturation]",
+                        f"item={item_index}",
+                        "mode=absolute_hysteresis",
+                        f"far={far_world:.6g}",
+                        f"band={far_band_world:.6g}",
+                        "far_like_fraction="
+                        f"{auto_threshold_report['far_like_fraction']:.3f}",
+                        "informative_faces="
+                        f"{auto_threshold_report['informative_faces']}/"
+                        f"{auto_threshold_report['usable_faces']}",
+                        "required="
+                        f"{auto_threshold_report['required_informative_faces']}",
+                        "action=no_cut",
+                    )
+                else:
+                    print(
+                        "[udf cut absolute threshold]",
+                        f"item={item_index}",
+                        f"seed={seed_world:.6g}",
+                        f"grow={grow_world:.6g}",
+                        "far_like_fraction="
+                        f"{auto_threshold_report['far_like_fraction']:.3f}",
+                        "informative_faces="
+                        f"{auto_threshold_report['informative_faces']}/"
+                        f"{auto_threshold_report['usable_faces']}",
+                    )
 
             # 0030: return the actual cut to the pre-search behavior that was
             # calibrated visually on t5_2.  The later percentile-grid search

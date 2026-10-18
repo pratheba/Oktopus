@@ -154,3 +154,45 @@ def test_tiny_vertex_component_cleanup_scales_with_largest_component():
     assert AgentUDFCut._topology_stats(cleaned)["components"] == 1
     assert len(cleaned.faces) == 320
     assert len(removed.faces) == 40
+
+
+def test_absolute_hysteresis_keeps_metric_thresholds_with_far_shoulder():
+    scores = np.concatenate(
+        [
+            np.linspace(0.0, 0.09, 800, dtype=np.float64),
+            np.full(200, 0.1, dtype=np.float64),
+        ]
+    )
+    seed, grow, report = AgentUDFCut._absolute_hysteresis_with_saturation_guard(
+        scores,
+        seed_world=0.02,
+        grow_world=0.01,
+        far_world=0.1,
+        far_band_world=0.002,
+        min_informative_fraction=0.05,
+        min_informative_faces=128,
+    )
+
+    assert seed == 0.02
+    assert grow == 0.01
+    assert report["saturated"] is False
+    assert report["far_like_fraction"] == 0.2
+    assert report["informative_faces"] == 800
+
+
+def test_absolute_hysteresis_abstains_on_far_value_saturation():
+    scores = np.full(1000, 0.1, dtype=np.float64)
+    seed, grow, report = AgentUDFCut._absolute_hysteresis_with_saturation_guard(
+        scores,
+        seed_world=0.02,
+        grow_world=0.01,
+        far_world=0.1,
+        far_band_world=0.002,
+        min_informative_fraction=0.05,
+        min_informative_faces=128,
+    )
+
+    assert report["saturated"] is True
+    assert report["informative_faces"] == 0
+    assert seed == grow
+    assert seed > np.max(scores)
