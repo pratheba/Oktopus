@@ -230,12 +230,11 @@ class AgentUDFCut(AgentUDF):
         a supported surface, ``g / ||grad_x g||`` is the first-order
         re-distance approximation.
 
-        This diagnostic samples a small number of already-computed low-UDF
+        This calibration samples a small number of already-computed low-UDF
         MC face centroids and estimates ``||grad_x g||`` with central
-        differences.  It does *not* change the cut.  The reported proposed
-        seed/grow values are the raw-model thresholds that would correspond to
-        the configured world-space tolerances under one robust per-adaptation
-        metric scale.
+        differences.  Its proposed seed/grow values are the raw-model
+        thresholds corresponding to the configured world-space tolerances
+        under one robust per-adaptation metric scale.
         """
         scores = np.asarray(face_scores, dtype=np.float64).reshape(-1)
         usable = np.asarray(usable_faces, dtype=bool).reshape(-1)
@@ -2318,17 +2317,17 @@ class AgentUDFCut(AgentUDF):
                         f"{auto_threshold_report['usable_faces']}",
                     )
 
-                # Diagnostic only: estimate how the inverse adaptation warp
-                # rescales the learned UDF metric in world coordinates.  This
-                # intentionally does not mutate seed_world/grow_world yet.
-                if (
-                    not bool(auto_threshold_report["saturated"])
-                    and bool(
-                        config.get(
-                            "udf_cut_metric_calibration_diagnostic", True
-                        )
-                    )
-                ):
+                # Re-distance the adapted learned UDF before thresholding.
+                # For g(x) = f(T^-1(x)), the zero set follows the adaptation
+                # but raw g is not generally a world-space Euclidean distance.
+                # Near a supported surface, d ~= g / ||grad_x g||, so convert
+                # the configured world-space seed/grow tolerances into the raw
+                # adapted-UDF scale with one robust per-adaptation metric scale.
+                #
+                # This is intentionally generic: no part names and no score
+                # percentile learned from the candidate SDF mesh.  Saturated
+                # far-value pieces still abstain before reaching this step.
+                if not bool(auto_threshold_report["saturated"]):
                     metric_calibration_report = (
                         self._estimate_udf_metric_calibration(
                             mesh,
@@ -2368,30 +2367,44 @@ class AgentUDFCut(AgentUDF):
                             far_band_world=far_band_world,
                         )
                     )
-                    if metric_calibration_report.get("metric_scale") is not None:
+                    metric_scale = metric_calibration_report.get("metric_scale")
+                    calibration_ok = (
+                        metric_calibration_report.get("status") == "ok"
+                        and metric_scale is not None
+                    )
+                    if calibration_ok:
+                        seed_world = float(
+                            metric_calibration_report["proposed_seed_raw"]
+                        )
+                        grow_world = float(
+                            metric_calibration_report["proposed_grow_raw"]
+                        )
+                        metric_calibration_report["applied"] = True
+                        auto_threshold_report["metric_calibrated"] = True
+                        auto_threshold_report["metric_scale"] = float(metric_scale)
+                        auto_threshold_report["seed_world"] = seed_world
+                        auto_threshold_report["grow_world"] = grow_world
                         print(
-                            "[udf cut metric calibration]",
+                            "[udf cut metric threshold]",
                             f"item={item_index}",
-                            f"status={metric_calibration_report['status']}",
-                            "samples="
-                            f"{metric_calibration_report['valid_gradient_count']}/"
+                            f"samples={metric_calibration_report['valid_gradient_count']}/"
                             f"{metric_calibration_report['sample_count']}",
-                            "grad_p50="
-                            f"{metric_calibration_report['metric_scale']:.6g}",
-                            "proposed_seed="
-                            f"{metric_calibration_report['proposed_seed_raw']:.6g}",
-                            "proposed_grow="
-                            f"{metric_calibration_report['proposed_grow_raw']:.6g}",
+                            f"grad_p50={metric_scale:.6g}",
+                            f"seed={seed_world:.6g}",
+                            f"grow={grow_world:.6g}",
                             "grad_p10_p90="
                             f"{metric_calibration_report['gradient_norm_percentiles']['10']:.6g}/"
                             f"{metric_calibration_report['gradient_norm_percentiles']['90']:.6g}",
                         )
                     else:
+                        metric_calibration_report["applied"] = False
+                        auto_threshold_report["metric_calibrated"] = False
                         print(
-                            "[udf cut metric calibration]",
+                            "[udf cut metric threshold]",
                             f"item={item_index}",
                             f"status={metric_calibration_report['status']}",
-                            "proposed_thresholds=unavailable",
+                            f"fallback_seed={seed_world:.6g}",
+                            f"fallback_grow={grow_world:.6g}",
                         )
 
             # 0030: return the actual cut to the pre-search behavior that was
