@@ -227,6 +227,98 @@ class AgentUDFCut(AgentUDF):
             "components": int(len(roots)),
         }
 
+    @classmethod
+    def _cleanup_tiny_vertex_components(
+        cls,
+        mesh: trimesh.Trimesh,
+        *,
+        min_faces: int,
+    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object]]:
+        """Remove only tiny vertex-connected leftovers after a UDF cut.
+
+        A legitimate opening can leave isolated triangle islands in the kept
+        mesh. Those islands should not inflate post-cut topology statistics or
+        be used as kept evidence during combined transfer. Connectivity is
+        vertex-based (not ``trimesh.split`` face adjacency) so non-manifold
+        junctions still count as connected.
+        """
+        min_faces = max(int(min_faces), 0)
+        before = cls._topology_stats(mesh)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if min_faces <= 0 or len(faces) == 0:
+            empty = trimesh.Trimesh(
+                vertices=np.zeros((0, 3), dtype=np.float64),
+                faces=np.zeros((0, 3), dtype=np.int64),
+                process=False,
+            )
+            return mesh.copy(), empty, {
+                "enabled": min_faces > 0,
+                "min_faces": min_faces,
+                "component_face_counts": [int(len(faces))] if len(faces) else [],
+                "kept_components": int(before["components"]),
+                "removed_components": 0,
+                "removed_faces": 0,
+                "before": before,
+                "after": before,
+            }
+
+        n_vertices = len(mesh.vertices)
+        parent = np.arange(n_vertices, dtype=np.int64)
+        rank = np.zeros(n_vertices, dtype=np.int8)
+
+        def find(x: int) -> int:
+            x = int(x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = int(parent[x])
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
+            else:
+                parent[rb] = ra
+                rank[ra] += 1
+
+        for tri in faces:
+            union(int(tri[0]), int(tri[1]))
+            union(int(tri[1]), int(tri[2]))
+            union(int(tri[2]), int(tri[0]))
+
+        face_roots = np.asarray(
+            [find(int(tri[0])) for tri in faces], dtype=np.int64
+        )
+        roots, counts = np.unique(face_roots, return_counts=True)
+        order = np.argsort(counts)[::-1]
+        component_face_counts = [int(v) for v in counts[order]]
+
+        keep_roots = roots[counts >= min_faces]
+        # Conservative guard: never let cleanup erase an entire non-empty mesh.
+        if keep_roots.size == 0 and roots.size:
+            keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
+
+        keep_root_mask = np.isin(roots, keep_roots)
+        keep_mask = np.isin(face_roots, keep_roots)
+        cleaned = cls._mesh_from_face_mask(mesh, keep_mask)
+        removed = cls._mesh_from_face_mask(mesh, ~keep_mask)
+        after = cls._topology_stats(cleaned)
+        report = {
+            "enabled": True,
+            "min_faces": min_faces,
+            "component_face_counts": component_face_counts,
+            "kept_components": int(np.sum(keep_root_mask)),
+            "removed_components": int(np.sum(~keep_root_mask)),
+            "removed_faces": int(np.sum(~keep_mask)),
+            "before": before,
+            "after": after,
+        }
+        return cleaned, removed, report
+
     @staticmethod
     def _existing_boundary_faces(mesh: trimesh.Trimesh) -> np.ndarray:
         faces = np.asarray(mesh.faces, dtype=np.int64)
@@ -3385,6 +3477,26 @@ class AgentUDFCut(AgentUDF):
                     f"scalar_max_delta={subtriangle_report['scalar_smooth_max_abs_delta']:.6g}",
                 )
 
+            kept_before_fragment_cleanup = kept.copy()
+            fragment_min_faces = int(
+                config.get("udf_cut_min_kept_component_faces", 20)
+            )
+            kept, fragment_removed, fragment_cleanup_report = (
+                self._cleanup_tiny_vertex_components(
+                    kept, min_faces=fragment_min_faces
+                )
+            )
+            print(
+                "[udf cut fragment cleanup]",
+                f"item={item_index}",
+                f"min_faces={fragment_min_faces}",
+                f"components={fragment_cleanup_report['before']['components']}"
+                f"->{fragment_cleanup_report['after']['components']}",
+                f"removed_components={fragment_cleanup_report['removed_components']}",
+                f"removed_faces={fragment_cleanup_report['removed_faces']}",
+                f"faces_top10={fragment_cleanup_report['component_face_counts'][:10]}",
+            )
+
             kept_raw = kept.copy()
             cleanup_enabled = bool(
                 config.get("udf_cut_cleanup_boundary", False)
@@ -3410,7 +3522,15 @@ class AgentUDFCut(AgentUDF):
                 )
 
             if combined_transfer_enabled:
-                combined_removed_references.append(removed.copy())
+                removed_reference = removed.copy()
+                if len(fragment_removed.faces):
+                    removed_reference = trimesh.util.concatenate(
+                        [removed_reference, fragment_removed.copy()]
+                    )
+                combined_removed_references.append(removed_reference)
+                # Tiny disconnected leftovers are deliberately excluded from
+                # kept evidence so they cannot protect debris in the final
+                # combined transfer.
                 combined_kept_references.append(kept_raw.copy())
 
             safe_key = self._safe_label(accessory_key)
@@ -3547,6 +3667,7 @@ class AgentUDFCut(AgentUDF):
                             "udf_cut_subtriangle_scalar_smooth_alpha", 0.35
                         )
                     ),
+                    "min_kept_component_faces": fragment_min_faces,
                 },
                 "face_query": {
                     "faces": int(len(mesh.faces)),
@@ -3558,9 +3679,14 @@ class AgentUDFCut(AgentUDF):
                 "before": self._topology_stats(mesh),
                 "removed": self._topology_stats(removed),
                 "whole_face_after": self._topology_stats(whole_face_kept),
+                "after_before_fragment_cleanup": self._topology_stats(
+                    kept_before_fragment_cleanup
+                ),
+                "fragment_removed": self._topology_stats(fragment_removed),
                 "after_raw": self._topology_stats(kept_raw),
                 "after": self._topology_stats(kept),
                 "subtriangle_cut": subtriangle_report,
+                "fragment_cleanup": fragment_cleanup_report,
                 "boundary_cleanup": cleanup_report,
                 "components": [decision.as_dict() for decision in decisions],
                 "outputs": {
