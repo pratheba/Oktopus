@@ -131,6 +131,9 @@ def start_test(opt):
 
     if args.dcsdd_verbose:
         arg['dcsdd_verbose'] = True
+    if args.dcsdd_bounded_filtering:
+        arg['dcsdd_bounded_filtering'] = True
+        arg['dcsdd_filter_batch_size'] = args.dcsdd_filter_batch_size
     if args.dcsdd_fast_bbox_marking:
         arg['dcsdd_fast_bbox_marking'] = True
     if getattr(args, 'extractor', None):
@@ -247,6 +250,10 @@ if __name__ == '__main__':
                    help='EXPERIMENTAL: crop the Ours/DC input to the padded SDF negative bbox; may change sphere sampling.')
     p.add_argument('--dcsdd-full-grid-diagnostics', dest='dcsdd_full_grid_diagnostics', action='store_true', default=None,
                    help='Enable expensive full-grid percentile and edge scans even above resolution 512.')
+    p.add_argument('--dcsdd-bounded-filtering', action='store_true',
+                   help='Use bounded voxel-slab filtering and batch-localized SDF adaptation')
+    p.add_argument('--dcsdd-filter-batch-size', type=int, default=262144,
+                   help='Candidate localization chunk size for --dcsdd-bounded-filtering')
     p.add_argument('--dcsdd-fast-bbox-marking', action='store_true',
                    help='Exact-equivalent voxel-box slice marking from patch 0031.')
     p.add_argument('--dcsdd-verbose', dest='dcsdd_verbose', action='store_true')

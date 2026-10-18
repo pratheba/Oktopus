@@ -386,7 +386,23 @@ class CurveHandle():
                 interval_hi = 1.0
                 interval_slice = slice(None)
 
-        fast_bbox = bool(adapt_arg.get("dcsdd_fast_bbox_marking", False))
+        bounded = bool(adapt_arg.get("dcsdd_bounded_filtering", False))
+        if bounded and (
+            adapt_arg.get("mode", "direct") != "direct"
+            or not adapt_arg.get("rigid_radius", False)
+            or adapt_arg.get("wrap_radius", False)
+        ):
+            raise ValueError("bounded DCSDD filtering currently supports direct rigid_radius boots only")
+        # Some adaptation branches use whole-batch quantiles/medians; their
+        # behavior must not silently change with chunk boundaries.
+        if bounded and (
+            adapt_arg.get("wrap_to_rigid", False)
+            or adapt_arg.get("wrap_blend_rigid", False)
+            or adapt_arg.get("unified_wrap", False)
+            or adapt_arg.get("use_free_profile_scale", False)
+        ):
+            raise ValueError("bounded filtering does not support global-statistic wrap blending")
+        fast_bbox = bool(adapt_arg.get("dcsdd_fast_bbox_marking", False)) or bounded
         broad_t0 = perf_counter()
 
         if use_control_filter:
@@ -424,7 +440,7 @@ class CurveHandle():
             }
 
             cyl_mesh = self.__gen_cyl_mesh(intpl)
-            samples, kidx = cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
+            samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         else:
             needs_runtime_filter = (
@@ -458,11 +474,101 @@ class CurveHandle():
                 }
 
                 cyl_mesh = self.__gen_cyl_mesh(intpl)
-                samples, kidx = cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
+                samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
             else:
-                samples, kidx = self.cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
+                cyl_mesh = self.cyl_mesh
+                samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
+        if bounded:
+            # First pass counts accepted broad-phase indices without storing
+            # their coordinates. Second pass localizes in fixed-size chunks.
+            import tempfile
+            from pathlib import Path
+            batch_size = int(adapt_arg.get("dcsdd_filter_batch_size", 262144))
+            if batch_size <= 0:
+                raise ValueError("dcsdd_filter_batch_size must be positive")
+            n_candidate = sum(len(idx) for idx in cyl_mesh.iter_filter_grid_indices(
+                mc_grid, batch_size=batch_size))
+            broad_s = perf_counter() - broad_t0
+            localize_t0 = perf_counter()
+            # Staging arrays are backed by disk for the 2048 memmap path,
+            # allowing final accepted samples to exceed available RAM.
+            scratch_dir = getattr(mc_grid, 'memmap_dir', None)
+            if scratch_dir:
+                stage = tempfile.TemporaryDirectory(prefix="oktopus-bounded-", dir=scratch_dir)
+                if not hasattr(mc_grid, '_bounded_scratch'):
+                    mc_grid._bounded_scratch = []
+                mc_grid._bounded_scratch.append(stage)
+            else:
+                stage = None
+            output_buffers = {}
+            shared_keys = set()
+            written = 0
+            candidate_offset = 0
+
+            def _alloc_and_write(kind, key, value, at, size):
+                arr = np.asarray(value)
+                if kind not in output_buffers:
+                    output_buffers[kind] = {}
+                if key not in output_buffers[kind]:
+                    shape = (n_candidate,) + arr.shape[1:]
+                    if stage is not None:
+                        # Use memmap for all numeric localization arrays.
+                        path = str(Path(stage.name) / f"{kind}_{key}.bin")
+                        result = np.memmap(path, dtype=arr.dtype, mode="w+", shape=shape)
+                    else:
+                        result = np.empty(shape, dtype=arr.dtype)
+                    output_buffers[kind][key] = result
+                if size:
+                    output_buffers[kind][key][at:at+size] = arr
+
+            if stage is not None:
+                idx_buffer = np.memmap(str(Path(stage.name)/"indices.i64"),
+                                       dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
+                inside_buffer = np.memmap(str(Path(stage.name)/"inside.i64"),
+                                          dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
+            else:
+                idx_buffer = np.empty(n_candidate, dtype=np.int64)
+                inside_buffer = np.empty(n_candidate, dtype=np.int64)
+            # Avoid printing one 'input vs' block per chunk.
+            quiet_arg = dict(adapt_arg)
+            quiet_arg["adapt_debug_counts"] = False
+            for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
+                sample_chunk = mc_grid.idx2pts(candidate_idx)
+                acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
+                    sample_chunk, quiet_arg)
+                n_take = len(accepted_local)
+                idx_buffer[written:written+n_take] = candidate_idx[accepted_local]
+                inside_buffer[written:written+n_take] = candidate_offset + accepted_local
+                if not output_buffers:
+                    shared_keys = {k for k in av_chunk if k in acc_chunk and av_chunk[k] is acc_chunk[k]}
+                for key, value in av_chunk.items():
+                    _alloc_and_write("avatar", key, value, written, n_take)
+                for key, value in acc_chunk.items():
+                    if key not in shared_keys:
+                        _alloc_and_write("accessory", key, value, written, n_take)
+                written += n_take
+                candidate_offset += len(candidate_idx)
+            assert candidate_offset == n_candidate
+            accessory_data = {
+                **{k: v[:written] for k, v in output_buffers.get("avatar", {}).items()},
+                **{k: v[:written] for k, v in output_buffers.get("accessory", {}).items()},
+            }
+            avatar_data = {k: v[:written] for k, v in output_buffers.get("avatar", {}).items()}
+            kidx = idx_buffer[:written]
+            inside = inside_buffer[:written]
+            localize_s = perf_counter() - localize_t0
+            if adapt_arg.get("adapt_debug_counts", True):
+                print("input vs:", n_candidate)
+                print("after src interval crop:", written)
+                print("[filter_grid_adapt]", "bounded=True", "fast_bbox_marking=", fast_bbox,
+                      "use_control_filter=", use_control_filter,
+                      "src_interval_filter=", use_src_interval_filter,
+                      "candidate_samples=", n_candidate, "after_localize=", written,
+                      "batch_size=", batch_size,
+                      "broad_s=", f"{broad_s:.3f}", "localize_s=", f"{localize_s:.3f}")
+            return accessory_data, avatar_data, kidx, inside
         broad_s = perf_counter() - broad_t0
         mode = adapt_arg.get("mode", "direct")
         localize_t0 = perf_counter()

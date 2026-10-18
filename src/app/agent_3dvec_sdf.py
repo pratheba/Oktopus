@@ -1170,6 +1170,8 @@ class AgentSDF(AgentBase):
                         'sdf_inference_batch_size',
                         'sdf_perf_timing',
                         'dcsdd_fast_bbox_marking',
+                        'dcsdd_bounded_filtering',
+                        'dcsdd_filter_batch_size',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1409,6 +1411,14 @@ class AgentSDF(AgentBase):
                 adapt_arg.update(item)
                 # Opt-in DCSDD broad-phase acceleration.  Only voxel marking
                 # changes; no radius, interval, localization or SDF parameters.
+                adapt_arg.setdefault(
+                    'dcsdd_bounded_filtering',
+                    bool(extraction_config.get('dcsdd_bounded_filtering', False)),
+                )
+                adapt_arg.setdefault(
+                    'dcsdd_filter_batch_size',
+                    int(extraction_config.get('dcsdd_filter_batch_size', 262144)),
+                )
                 adapt_arg.setdefault(
                     'dcsdd_fast_bbox_marking',
                     bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),

@@ -110,6 +110,14 @@ class CylindersMesh():
             samples, kidx = mc_grid.get_marked(marks)
         return samples, kidx
 
+    def iter_filter_grid_indices(self, mc_grid, *, batch_size=262144, extend_bbox=False):
+        # Geometry-only broad-phase iterator; does not allocate full marks.
+        from .bounded_filter import iter_bbox_kidx
+        return iter_bbox_kidx(
+            self.cylinder_samples, mc_grid, extend_bbox=extend_bbox,
+            batch_size=batch_size,
+        )
+
     def calc_bbox(self):
         verts = self.cylinder_samples.reshape(-1, 3)
         return verts.max(axis=0), verts.min(axis=0)
