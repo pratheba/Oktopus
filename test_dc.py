@@ -137,6 +137,8 @@ def start_test(opt):
         arg['dcsdd_stream_crop_first'] = True
     if args.dcsdd_stream_replay_metadata:
         arg['dcsdd_stream_replay_metadata'] = True
+    if args.dcsdd_stream_one_pass:
+        arg['dcsdd_stream_one_pass'] = True
     if args.dcsdd_stream_accepted_count is not None:
         arg['dcsdd_stream_accepted_count'] = args.dcsdd_stream_accepted_count
     if args.dcsdd_stream_replay_dir:
@@ -270,6 +272,8 @@ if __name__ == '__main__':
                    help='Optional node-local scratch directory for compact predictions and replay metadata (must have sufficient free space)')
     p.add_argument('--dcsdd-stream-replay-metadata', action='store_true',
                    help='0038: cache only index, curve coordinate and radial norm during model pass; replay instead of re-localizing crop bounds and composition')
+    p.add_argument('--dcsdd-stream-one-pass', action='store_true',
+                   help='0040: discover accepted count automatically in one localization pass; fixed-size accepted-sample inference batches (test mesh parity before production)')
     p.add_argument('--dcsdd-stream-accepted-count', type=int, default=None,
                    help='0039: verified accepted-voxel count from a previous identical run; skip the localization counting pass. Requires single rigid boot with crop-first replay. Exact count is checked during inference.')
     p.add_argument('--dcsdd-stream-crop-first', action='store_true',

@@ -1145,6 +1145,11 @@ class AgentSDF(AgentBase):
             compose_boot_chunk,
         )
         replay_requested = bool(extraction_config.get('dcsdd_stream_replay_metadata', False))
+        one_pass = bool(extraction_config.get('dcsdd_stream_one_pass', False))
+        if one_pass and not replay_requested:
+            raise ValueError('0040 one-pass requires --dcsdd-stream-replay-metadata')
+        if one_pass and extraction_config.get('dcsdd_stream_accepted_count') is not None:
+            raise ValueError('0040 one-pass does not accept an explicit sample count')
         if replay_requested and not extraction_config.get('dcsdd_stream_crop_first', False):
             raise ValueError('0038 replay metadata requires crop-first streaming')
         if replay_requested and not adapt_arg.get('use_accessory_support_clamp', False):
@@ -1163,7 +1168,12 @@ class AgentSDF(AgentBase):
         # verified exact count lets us preserve those partitions without
         # localizing every broad candidate once just to count them.
         expected_count = extraction_config.get('dcsdd_stream_accepted_count')
-        if expected_count is not None:
+        if one_pass:
+            count = None  # Determined after the only localization/inference traversal.
+            candidates = None
+            count_s = 0.0
+            print('[part_adapt stream] count_source=one_pass_auto', flush=True)
+        elif expected_count is not None:
             if not replay_requested or not extraction_config.get('dcsdd_stream_crop_first', False):
                 raise ValueError('0039 accepted-count hint requires crop-first replay metadata')
             if isinstance(expected_count, (bool, float)):
@@ -1187,9 +1197,10 @@ class AgentSDF(AgentBase):
             if not count:
                 raise RuntimeError('No SDF samples accepted for independent boot')
             count_s = time() - t0
-        print('[part_adapt stream] candidates=', candidates if candidates is not None else 'pending',
-              'accepted=', count, 'count_s=', f'{count_s:.3f}',
-              'inference_batch_size=', batch_size, flush=True)
+        if not one_pass:
+            print('[part_adapt stream] candidates=', candidates if candidates is not None else 'pending',
+                  'accepted=', count, 'count_s=', f'{count_s:.3f}',
+                  'inference_batch_size=', batch_size, flush=True)
 
         prediction_dir = (extraction_config.get('dcsdd_stream_replay_dir')
                           if replay_requested else None) or scratch_dir
@@ -1198,28 +1209,51 @@ class AgentSDF(AgentBase):
                 raise ValueError('Replay scratch directory does not exist: ' + str(prediction_dir))
             # Conservative float64 allowance for 3 prediction arrays, plus
             # the 24-byte replay record. Never silently overfill tmpfs.
-            required = int(count * (24 + 3 * 8) * 1.05)
-            free = shutil.disk_usage(prediction_dir).free
-            if free < required:
-                raise RuntimeError(f'Replay scratch needs at least {required/1e9:.2f} GB; '
-                                   f'only {free/1e9:.2f} GB free in {prediction_dir}')
-            print('[part_adapt stream replay] scratch=', prediction_dir,
-                  'estimated_required_GB=', f'{required/1e9:.3f}', flush=True)
+            if one_pass:
+                print('[part_adapt stream replay] scratch=', prediction_dir,
+                      'accepted count unknown: appending regular files (not memmap writes)',
+                      flush=True)
+            else:
+                required = int(count * (24 + 3 * 8) * 1.05)
+                free = shutil.disk_usage(prediction_dir).free
+                if free < required:
+                    raise RuntimeError(f'Replay scratch needs at least {required/1e9:.2f} GB; '
+                                       f'only {free/1e9:.2f} GB free in {prediction_dir}')
+                print('[part_adapt stream replay] scratch=', prediction_dir,
+                      'estimated_required_GB=', f'{required/1e9:.3f}', flush=True)
         with tempfile.TemporaryDirectory(prefix='oktopus-predictions-', dir=prediction_dir) as stage:
-            writer = PartitionedPredictionWriter(
-                n=count, batch_size=batch_size, outdir=stage,
-                inference=lambda data: self._inference_full_vals(
-                    data, accessory_key),
-            )
-            replay = BootReplayMetadata(n=count, outdir=stage) if replay_requested else None
+            if one_pass:
+                from app.dcsdd_stream_one_pass import OnePassBootStreamWriter
+                writer = OnePassBootStreamWriter(
+                    batch_size=batch_size, outdir=stage,
+                    inference=lambda data: self._inference_full_vals(data, accessory_key),
+                )
+                replay = writer.replay
+            else:
+                writer = PartitionedPredictionWriter(
+                    n=count, batch_size=batch_size, outdir=stage,
+                    inference=lambda data: self._inference_full_vals(data, accessory_key),
+                )
+                replay = BootReplayMetadata(n=count, outdir=stage) if replay_requested else None
             t1 = time()
             def write_predictions(acc, idx):
-                if replay is not None:
-                    replay.push(acc, idx)
-                writer.push({k: acc[k] for k in INFERENCE_KEYS})
+                if one_pass:
+                    writer.push(acc, idx)
+                else:
+                    if replay is not None:
+                        replay.push(acc, idx)
+                    writer.push({k: acc[k] for k in INFERENCE_KEYS})
             streaming_arg['_dcsdd_stream_callback'] = write_predictions
             candidates2, counted2, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
-            if counted2 != count:
+            if one_pass:
+                count = counted2
+                if count <= 0 or writer.accepted != count:
+                    raise RuntimeError('0040 one-pass accepted count mismatch or empty stream')
+                print('[part_adapt stream] candidates=', candidates2,
+                      'accepted=', count, 'count_s= 0.000',
+                      'inference_batch_size=', batch_size,
+                      'partition=fixed_accepted_batch', flush=True)
+            elif counted2 != count:
                 raise RuntimeError(
                     f'0039 accepted-count mismatch: expected {count}, actual {counted2}. '
                     'Do not reuse a count hint after changing geometry, filtering or resolution.')
@@ -1467,6 +1501,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_replay_metadata',
                         'dcsdd_stream_replay_dir',
                         'dcsdd_stream_accepted_count',
+                        'dcsdd_stream_one_pass',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1556,6 +1591,16 @@ class AgentSDF(AgentBase):
         adaptation_items = expanded_adaptation_items
         if len(adaptation_items) == 0:
             raise RuntimeError("No enabled adaptation entries were found.")
+        if extraction_config.get('dcsdd_stream_one_pass', False):
+            if len(adaptation_items) != 1:
+                raise ValueError('--dcsdd-stream-one-pass currently requires one independent rigid adaptation')
+            if not (extraction_config.get('dcsdd_stream_inference', False)
+                    and extraction_config.get('dcsdd_stream_crop_first', False)
+                    and extraction_config.get('dcsdd_stream_replay_metadata', False)
+                    and extraction_config.get('dcsdd_crop_grid', False)):
+                raise ValueError('--dcsdd-stream-one-pass requires streaming, crop-first, replay metadata and crop-grid')
+            if extraction_config.get('dcsdd_stream_accepted_count') is not None:
+                raise ValueError('Cannot combine one-pass with an explicit accepted-count hint')
         if extraction_config.get('dcsdd_stream_accepted_count') is not None:
             if len(adaptation_items) != 1:
                 raise ValueError('--dcsdd-stream-accepted-count requires exactly one enabled adaptation')
