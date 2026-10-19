@@ -1687,6 +1687,7 @@ class AgentSDF(AgentBase):
                         'sdf_stream_combined_wrap',
                         'sdf_stream_unified',
                         'sdf_puffer_sparse_groups',
+                        'sdf_puffer_minimal_staging',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
                         'sdf_candidate_interval_pad',
