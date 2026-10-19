@@ -135,6 +135,10 @@ def start_test(opt):
         arg['dcsdd_stream_inference'] = True
     if args.dcsdd_stream_crop_first:
         arg['dcsdd_stream_crop_first'] = True
+    if args.dcsdd_stream_replay_metadata:
+        arg['dcsdd_stream_replay_metadata'] = True
+    if args.dcsdd_stream_replay_dir:
+        arg['dcsdd_stream_replay_dir'] = args.dcsdd_stream_replay_dir
     if args.dcsdd_compact_staging:
         arg['dcsdd_compact_staging'] = True
     if args.dcsdd_bounded_filtering:
@@ -260,6 +264,10 @@ if __name__ == '__main__':
                    help='Use bounded voxel-slab filtering and batch-localized SDF adaptation')
     p.add_argument('--dcsdd-stream-inference', action='store_true',
                    help='0036: exact global support-calibration with compact prediction-only staging for independent rigid boots')
+    p.add_argument('--dcsdd-stream-replay-dir', default=None,
+                   help='Optional node-local scratch directory for compact predictions and replay metadata (must have sufficient free space)')
+    p.add_argument('--dcsdd-stream-replay-metadata', action='store_true',
+                   help='0038: cache only index, curve coordinate and radial norm during model pass; replay instead of re-localizing crop bounds and composition')
     p.add_argument('--dcsdd-stream-crop-first', action='store_true',
                    help='0037: compose exact negative-bbox crop without ever initializing full dense SDF grid; requires --dcsdd-stream-inference and --dcsdd-crop-grid')
     p.add_argument('--dcsdd-compact-staging', action='store_true',

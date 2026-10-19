@@ -1139,10 +1139,18 @@ class AgentSDF(AgentBase):
         preserved to avoid silently changing model evaluation semantics.
         """
         import tempfile
+        import shutil
         from app.dcsdd_stream_boot import (
             INFERENCE_KEYS, PartitionedPredictionWriter,
             compose_boot_chunk,
         )
+        replay_requested = bool(extraction_config.get('dcsdd_stream_replay_metadata', False))
+        if replay_requested and not extraction_config.get('dcsdd_stream_crop_first', False):
+            raise ValueError('0038 replay metadata requires crop-first streaming')
+        if replay_requested and not adapt_arg.get('use_accessory_support_clamp', False):
+            raise ValueError('0038 replay metadata requires global accessory support clamp')
+        if replay_requested:
+            from app.dcsdd_stream_replay import BootReplayMetadata, compose_replay_chunk
 
         scratch_dir = getattr(mc_grid, 'memmap_dir', None)
         if not scratch_dir:
@@ -1165,20 +1173,41 @@ class AgentSDF(AgentBase):
               'accepted=', count, 'count_s=', f'{count_s:.3f}',
               'inference_batch_size=', batch_size)
 
-        with tempfile.TemporaryDirectory(prefix='oktopus-predictions-', dir=scratch_dir) as stage:
+        prediction_dir = (extraction_config.get('dcsdd_stream_replay_dir')
+                          if replay_requested else None) or scratch_dir
+        if replay_requested:
+            if not op.isdir(prediction_dir):
+                raise ValueError('Replay scratch directory does not exist: ' + str(prediction_dir))
+            # Conservative float64 allowance for 3 prediction arrays, plus
+            # the 24-byte replay record. Never silently overfill tmpfs.
+            required = int(count * (24 + 3 * 8) * 1.05)
+            free = shutil.disk_usage(prediction_dir).free
+            if free < required:
+                raise RuntimeError(f'Replay scratch needs at least {required/1e9:.2f} GB; '
+                                   f'only {free/1e9:.2f} GB free in {prediction_dir}')
+            print('[part_adapt stream replay] scratch=', prediction_dir,
+                  'estimated_required_GB=', f'{required/1e9:.3f}', flush=True)
+        with tempfile.TemporaryDirectory(prefix='oktopus-predictions-', dir=prediction_dir) as stage:
             writer = PartitionedPredictionWriter(
                 n=count, batch_size=batch_size, outdir=stage,
                 inference=lambda data: self._inference_full_vals(
                     data, accessory_key),
             )
+            replay = BootReplayMetadata(n=count, outdir=stage) if replay_requested else None
             t1 = time()
             def write_predictions(acc, idx):
+                if replay is not None:
+                    replay.push(acc, idx)
                 writer.push({k: acc[k] for k in INFERENCE_KEYS})
             streaming_arg['_dcsdd_stream_callback'] = write_predictions
             _, counted2, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
             if counted2 != count:
                 raise RuntimeError('Accepted sample count changed between passes')
             profiles = writer.finish(fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
+            if replay is not None:
+                replay.finish()
+                print('[part_adapt stream replay] metadata_GB=', f'{replay.bytes/1e9:.3f}',
+                      'metadata_write_s=', f'{replay.write_s:.3f}', flush=True)
             infer_s = time() - t1
             print('[part_adapt stream] prediction_bytes=', writer.prediction_bytes,
                   'near_surface_calibration=', {k: v.count for k,v in writer.cal.items()},
@@ -1225,16 +1254,37 @@ class AgentSDF(AgentBase):
                 bounds = NegativeVoxelBounds(full_n1, level)
                 bounds_t0 = time()
                 calls = [0]
-                def measure_crop(acc, idx):
-                    vals = composed_chunk(acc, idx)
-                    bounds.add(idx, vals)
-                    calls[0] += 1
-                    if calls[0] % 32 == 0:
-                        print('[part_adapt stream crop] bbox pass chunks=', calls[0],
-                              'accepted=', state['offset'], '/', count,
-                              'elapsed_s=', f'{time()-bounds_t0:.1f}', flush=True)
-                streaming_arg['_dcsdd_stream_callback'] = measure_crop
-                _, bounds_count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+                if replay is not None:
+                    def replay_composed(start, end, records):
+                        raw = {k: v[start:end] for k, v in writer.raw.items()}
+                        vals, bad, (rmin, rmax) = compose_replay_chunk(
+                            raw, records['coord'], records['rho'], profiles,
+                            rho_limit=rho_limit, positive_value=positive_value,
+                            sigma=sigma_detail)
+                        state['offset'] = end
+                        state['bad'] += bad
+                        state['rho_min'] = min(state['rho_min'], rmin)
+                        state['rho_max'] = max(state['rho_max'], rmax)
+                        return vals
+                    for start, end, records in replay.iter_chunks(batch_size):
+                        bounds.add(records['index'], replay_composed(start, end, records))
+                        calls[0] += 1
+                        if calls[0] % 32 == 0:
+                            print('[part_adapt stream crop] bbox replay chunks=', calls[0],
+                                  'accepted=', end, '/', count,
+                                  'elapsed_s=', f'{time()-bounds_t0:.1f}', flush=True)
+                    bounds_count = count
+                else:
+                    def measure_crop(acc, idx):
+                        vals = composed_chunk(acc, idx)
+                        bounds.add(idx, vals)
+                        calls[0] += 1
+                        if calls[0] % 32 == 0:
+                            print('[part_adapt stream crop] bbox pass chunks=', calls[0],
+                                  'accepted=', state['offset'], '/', count,
+                                  'elapsed_s=', f'{time()-bounds_t0:.1f}', flush=True)
+                    streaming_arg['_dcsdd_stream_callback'] = measure_crop
+                    _, bounds_count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
                 if bounds_count != count or state['offset'] != count:
                     raise RuntimeError('SDF negative bbox pass changed accepted indices')
                 neg_lo, neg_hi = bounds.bounds()
@@ -1252,17 +1302,31 @@ class AgentSDF(AgentBase):
                 state.update(offset=0, bad=0, rho_min=np.inf, rho_max=-np.inf)
                 written = [0]
                 calls[0] = 0
-                def final_grid_write(acc, idx):
-                    vals = composed_chunk(acc, idx)
-                    written[0] += write_global_chunk_to_crop(
-                        acc_grid, idx, vals, n1=full_n1, starts=starts)
-                    calls[0] += 1
-                    if calls[0] % 32 == 0:
-                        print('[part_adapt stream crop] write pass chunks=', calls[0],
-                              'accepted=', state['offset'], '/', count,
-                              'written=', written[0],
-                              'elapsed_s=', f'{time()-t2:.1f}', flush=True)
-                streaming_arg['_dcsdd_stream_callback'] = final_grid_write
+                if replay is not None:
+                    for start, end, records in replay.iter_chunks(batch_size):
+                        vals = replay_composed(start, end, records)
+                        written[0] += write_global_chunk_to_crop(
+                            acc_grid, records['index'], vals, n1=full_n1,
+                            starts=starts)
+                        calls[0] += 1
+                        if calls[0] % 32 == 0:
+                            print('[part_adapt stream crop] write replay chunks=', calls[0],
+                                  'accepted=', end, '/', count,
+                                  'written=', written[0],
+                                  'elapsed_s=', f'{time()-t2:.1f}', flush=True)
+                    counted3 = count
+                else:
+                    def final_grid_write(acc, idx):
+                        vals = composed_chunk(acc, idx)
+                        written[0] += write_global_chunk_to_crop(
+                            acc_grid, idx, vals, n1=full_n1, starts=starts)
+                        calls[0] += 1
+                        if calls[0] % 32 == 0:
+                            print('[part_adapt stream crop] write pass chunks=', calls[0],
+                                  'accepted=', state['offset'], '/', count,
+                                  'written=', written[0],
+                                  'elapsed_s=', f'{time()-t2:.1f}', flush=True)
+                    streaming_arg['_dcsdd_stream_callback'] = final_grid_write
             else:
                 t2 = time()
                 acc_grid = utils.create_grid_like(
@@ -1275,7 +1339,8 @@ class AgentSDF(AgentBase):
                     acc_grid.update_grid(vals, idx, mark=True, mode='overwrite')
                 streaming_arg['_dcsdd_stream_callback'] = final_grid_write
 
-            _, counted3, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+            if replay is None:
+                _, counted3, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
             if counted3 != count or state['offset'] != count:
                 raise RuntimeError('Accepted sample indices changed between passes')
             if support:
@@ -1286,7 +1351,8 @@ class AgentSDF(AgentBase):
             print('[part_adapt stream] compose_grid_s=', f'{grid_s:.3f}',
                   'stored_prediction_GB=', f'{writer.prediction_bytes / 1e9:.3f}',
                   'crop_first=', crop_first,
-                  'crop_bbox_pass_s=', f'{bounds_s:.3f}' if crop_first else 'n/a', flush=True)
+                  'crop_bbox_pass_s=', f'{bounds_s:.3f}' if crop_first else 'n/a',
+                  'replay_metadata=', replay is not None, flush=True)
 
             t3 = time()
             cfg = dict(extraction_config)
@@ -1374,6 +1440,8 @@ class AgentSDF(AgentBase):
                         'dcsdd_compact_staging',
                         'dcsdd_stream_inference',
                         'dcsdd_stream_crop_first',
+                        'dcsdd_stream_replay_metadata',
+                        'dcsdd_stream_replay_dir',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1398,6 +1466,9 @@ class AgentSDF(AgentBase):
         if (extraction_config.get('dcsdd_stream_crop_first', False)
                 and not extraction_config.get('dcsdd_stream_inference', False)):
             raise ValueError('--dcsdd-stream-crop-first requires --dcsdd-stream-inference')
+        if (extraction_config.get('dcsdd_stream_replay_metadata', False)
+                and not extraction_config.get('dcsdd_stream_crop_first', False)):
+            raise ValueError('--dcsdd-stream-replay-metadata requires --dcsdd-stream-crop-first')
 
         if not isinstance(adaptation_items, list):
             raise TypeError(
@@ -1664,6 +1735,8 @@ class AgentSDF(AgentBase):
                         stream_reasons.append('nonzero accessory_offset')
                     if adapt_arg.get('avatar_snug_scale_field') is not None:
                         stream_reasons.append('avatar_snug_scale_field')
+                    if extraction_config.get('dcsdd_stream_replay_metadata', False) and not adapt_arg.get('use_accessory_support_clamp', False):
+                        stream_reasons.append('replay metadata requires support clamp')
                     if extraction_config.get('dcsdd_stream_crop_first', False):
                         if not extraction_config.get('dcsdd_crop_grid', False):
                             stream_reasons.append('crop-first requires --dcsdd-crop-grid')
