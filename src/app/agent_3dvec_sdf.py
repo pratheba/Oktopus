@@ -1158,20 +1158,38 @@ class AgentSDF(AgentBase):
         t0 = time()
         streaming_arg = dict(adapt_arg)
         streaming_arg['adapt_debug_counts'] = False
-        # Pass 0: count only accepted samples; do not materialize them.
-        accepted = [0]
-        def count_chunk(_acc, idx):
-            accepted[0] += len(idx)
-        streaming_arg['_dcsdd_stream_callback'] = count_chunk
-        candidates, count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
-        if count != accepted[0]:
-            raise AssertionError('Stream candidate/accepted count mismatch')
-        if not count:
-            raise RuntimeError('No SDF samples accepted for independent boot')
-        count_s = time() - t0
-        print('[part_adapt stream] candidates=', candidates,
+        # 0039: the original inference uses np.array_split with a number of
+        # partitions derived from the FINAL accepted count. An independently
+        # verified exact count lets us preserve those partitions without
+        # localizing every broad candidate once just to count them.
+        expected_count = extraction_config.get('dcsdd_stream_accepted_count')
+        if expected_count is not None:
+            if not replay_requested or not extraction_config.get('dcsdd_stream_crop_first', False):
+                raise ValueError('0039 accepted-count hint requires crop-first replay metadata')
+            if isinstance(expected_count, (bool, float)):
+                raise ValueError('0039 accepted-count hint must be a positive integer')
+            count = int(expected_count)
+            if count <= 0 or count > (int(mc_grid.reso) + 1)**3:
+                raise ValueError('0039 accepted-count hint is outside the valid voxel range')
+            candidates = None  # Discovered and reported by the inference pass.
+            count_s = 0.0
+            print('[part_adapt stream] accepted-count hint=', count,
+                  'count_source=explicit_verified_previous_run', flush=True)
+        else:
+            # Original safe behavior for unknown count / changed YAML.
+            accepted = [0]
+            def count_chunk(_acc, idx):
+                accepted[0] += len(idx)
+            streaming_arg['_dcsdd_stream_callback'] = count_chunk
+            candidates, count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+            if count != accepted[0]:
+                raise AssertionError('Stream candidate/accepted count mismatch')
+            if not count:
+                raise RuntimeError('No SDF samples accepted for independent boot')
+            count_s = time() - t0
+        print('[part_adapt stream] candidates=', candidates if candidates is not None else 'pending',
               'accepted=', count, 'count_s=', f'{count_s:.3f}',
-              'inference_batch_size=', batch_size)
+              'inference_batch_size=', batch_size, flush=True)
 
         prediction_dir = (extraction_config.get('dcsdd_stream_replay_dir')
                           if replay_requested else None) or scratch_dir
@@ -1200,9 +1218,15 @@ class AgentSDF(AgentBase):
                     replay.push(acc, idx)
                 writer.push({k: acc[k] for k in INFERENCE_KEYS})
             streaming_arg['_dcsdd_stream_callback'] = write_predictions
-            _, counted2, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+            candidates2, counted2, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
             if counted2 != count:
-                raise RuntimeError('Accepted sample count changed between passes')
+                raise RuntimeError(
+                    f'0039 accepted-count mismatch: expected {count}, actual {counted2}. '
+                    'Do not reuse a count hint after changing geometry, filtering or resolution.')
+            if expected_count is not None:
+                print('[part_adapt stream] accepted-count verified=', counted2,
+                      'candidate_samples=', candidates2,
+                      'saved_count_pass=True', flush=True)
             profiles = writer.finish(fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
             if replay is not None:
                 replay.finish()
@@ -1442,6 +1466,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_crop_first',
                         'dcsdd_stream_replay_metadata',
                         'dcsdd_stream_replay_dir',
+                        'dcsdd_stream_accepted_count',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1531,6 +1556,18 @@ class AgentSDF(AgentBase):
         adaptation_items = expanded_adaptation_items
         if len(adaptation_items) == 0:
             raise RuntimeError("No enabled adaptation entries were found.")
+        if extraction_config.get('dcsdd_stream_accepted_count') is not None:
+            if len(adaptation_items) != 1:
+                raise ValueError('--dcsdd-stream-accepted-count requires exactly one enabled adaptation')
+            if not (extraction_config.get('dcsdd_stream_inference', False)
+                    and extraction_config.get('dcsdd_stream_crop_first', False)
+                    and extraction_config.get('dcsdd_stream_replay_metadata', False)
+                    and extraction_config.get('dcsdd_crop_grid', False)):
+                raise ValueError('--dcsdd-stream-accepted-count requires streaming, '
+                                 'crop-first, replay metadata and crop-grid')
+            count_hint = extraction_config['dcsdd_stream_accepted_count']
+            if isinstance(count_hint, bool) or not isinstance(count_hint, (int, np.integer)) or count_hint <= 0:
+                raise ValueError('--dcsdd-stream-accepted-count must be a positive integer')
 
         extraction_spec = extraction_config.get(
             'surface_extraction',
