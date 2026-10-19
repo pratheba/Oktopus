@@ -275,7 +275,7 @@ if __name__ == '__main__':
     p.add_argument('--dcsdd-stream-replay-metadata', action='store_true',
                    help='0038: cache only index, curve coordinate and radial norm during model pass; replay instead of re-localizing crop bounds and composition')
     p.add_argument('--sdf-localize-after-gate', action='store_true',
-                   help='0041: defer train-radius/model feature construction until after exact cylinder acceptance; supported for 0040 independent rigid boot one-pass streaming')
+                   help='0042: defer model features until after the identical cylinder gate; supported for direct rigid/wrap, including combined SDF, with or without 0040 streaming')
     p.add_argument('--dcsdd-stream-one-pass', action='store_true',
                    help='0040: discover accepted count automatically in one localization pass; fixed-size accepted-sample inference batches (test mesh parity before production)')
     p.add_argument('--dcsdd-stream-accepted-count', type=int, default=None,

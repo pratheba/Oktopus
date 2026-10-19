@@ -1592,8 +1592,11 @@ class AgentSDF(AgentBase):
         adaptation_items = expanded_adaptation_items
         if len(adaptation_items) == 0:
             raise RuntimeError("No enabled adaptation entries were found.")
-        if extraction_config.get('sdf_localize_after_gate', False) and not extraction_config.get('dcsdd_stream_one_pass', False):
-            raise ValueError('--sdf-localize-after-gate currently requires --dcsdd-stream-one-pass')
+        # 0042: SDF localization-after-gate is valid for direct wrap and rigid
+        # adaptations, including combined meshes. It only changes when the
+        # *avatar localizer* builds train-radius/model features; the cylinder
+        # acceptance, wrap mapping, snug passes, blend groups and MC/DCSDD
+        # extraction remain on their original paths.
         if extraction_config.get('dcsdd_stream_one_pass', False):
             if len(adaptation_items) != 1:
                 raise ValueError('--dcsdd-stream-one-pass currently requires one independent rigid adaptation')
@@ -1773,6 +1776,13 @@ class AgentSDF(AgentBase):
                 adapt_arg.update(item)
                 adapt_arg['sdf_localize_after_gate'] = bool(
                     extraction_config.get('sdf_localize_after_gate', False))
+                if adapt_arg['sdf_localize_after_gate']:
+                    print('[sdf_localize_0042]',
+                          'name=', run_name, 'mode=', mode,
+                          'wrap_radius=', bool(adapt_arg.get('wrap_radius', False)),
+                          'rigid_radius=', bool(adapt_arg.get('rigid_radius', False)),
+                          'combine_adaptations=', combine_adaptations,
+                          flush=True)
                 # Opt-in DCSDD broad-phase acceleration.  Only voxel marking
                 # changes; no radius, interval, localization or SDF parameters.
                 adapt_arg.setdefault(
