@@ -1451,6 +1451,178 @@ class AgentSDF(AgentBase):
                   'total_s=', f'{time()-t0:.3f}')
             del mesh_acc, acc_grid
 
+    @torch.no_grad()
+    def _stream_combined_wrap_cone(self, arg, cfg, items, raw_config,
+                                   avatar_handle, output_folder, out_name,
+                                   batch_size):
+        """0046: only validated two-section wrap cone, never a generic union.
+
+        One localization traversal per section. Each section retains compact
+        prediction/replay arrays until the GLOBAL rho clamp is calibrated.
+        Crossfade sections by global voxel index and construct only the final
+        padded negative-SDF crop for DCSDD. No full (N+1)^3 SDF accumulator.
+        """
+        import tempfile
+        import shutil
+        from app.dcsdd_stream_one_pass import OnePassBootStreamWriter
+        from app.dcsdd_stream_crop import (
+            NegativeVoxelBounds, make_crop_grid, write_global_chunk_to_crop,
+        )
+        from app.sdf_stream_combined_wrap import (
+            validate_cone_stream, combine_two_sparse_parts,
+            compose_piece_from_replay,
+        )
+        shape_name = arg['shape']
+        mc_grid = arg['mc_grid']
+        post_seams = build_post_sdf_seam_plan(
+            items, raw_config.get('blend_groups', {}))
+        query_seams = build_seam_plan(
+            items, raw_config.get('blend_groups', {}), self.curve_from_key)
+        pair = validate_cone_stream(items, cfg, post_seams, query_seams,
+                                    root_leaf_plan=cfg.get('root_leaves'))
+        if not (hasattr(self, '_dcsdd_band') and hasattr(self, '_crop_cube_bounds')):
+            raise ValueError('0046 requires AgentSDFDC for cropped contouring')
+        if self._normalize_surface_extraction_method(
+                cfg.get('surface_extraction', 'ours')) != 'ours':
+            raise ValueError('0046 currently supports --surface-extraction ours only')
+        if float(cfg.get('level', 0.0)) != 0.0:
+            raise ValueError('0046 currently supports iso level 0 only')
+        scratch = cfg.get('dcsdd_stream_replay_dir') or getattr(mc_grid, 'memmap_dir', None)
+        if not scratch or not op.isdir(scratch):
+            raise ValueError('0046 needs writable --dcsdd-stream-replay-dir or --sdf-grid-memmap-dir')
+        t0 = time()
+        print('[sdf_stream_combined_wrap] enabled=True group=', pair.group,
+              'adaptations=2 sparse_group=True crop_first=True', flush=True)
+        # The stage needs to survive both pieces, until their sparse SDFs have
+        # been merged. TemporaryDirectory also cleans up failed runs.
+        with tempfile.TemporaryDirectory(prefix='oktopus-wrap-cone-', dir=scratch) as stage:
+            pieces = []
+            for j, item in enumerate(items):
+                target_key = item['target_key']
+                accessory_key = item['accessory_key']
+                curve = next((c for c in avatar_handle.curves
+                              if self.encode_key(shape_name, c.name) == target_key), None)
+                if curve is None:
+                    raise KeyError('Unknown cone target curve ' + target_key)
+                piece_dir = op.join(stage, f'piece_{j}')
+                os.makedirs(piece_dir, exist_ok=True)
+                wrap_arg = {
+                    'mode': 'direct', 'avatar_curve_handle': curve,
+                    'avatar_curve_idx': self.feat_dict[target_key],
+                    'accessory_curve_idx': self.feat_dict[accessory_key],
+                    'device': self.device, 'infer_scale': 2.0,
+                }
+                wrap_arg.update(item)
+                wrap_arg['accessory_curve_handle'] = self.curve_from_key(accessory_key)
+                wrap_arg['sdf_localize_after_gate'] = True
+                wrap_arg['sdf_optimize_zero_angular_wrap'] = True
+                wrap_arg['sdf_stream_combined_wrap'] = True
+                wrap_arg['dcsdd_bounded_filtering'] = True
+                wrap_arg['dcsdd_fast_bbox_marking'] = True
+                wrap_arg['dcsdd_filter_batch_size'] = int(
+                    cfg.get('dcsdd_filter_batch_size', 262144))
+                if int(wrap_arg['dcsdd_filter_batch_size']) <= 0:
+                    raise ValueError('filter batch size must be positive')
+                # 0045's mathematical no-op auto-snug is mandatory here.
+                wrap_arg['auto_avatar_snug_field'] = False
+                writer = OnePassBootStreamWriter(
+                    batch_size=batch_size, outdir=piece_dir,
+                    inference=lambda data, key=accessory_key:
+                        self._inference_full_vals(data, key),
+                )
+                # Avatar source_s is required for cone's POST-SDF crossfade.
+                # It must align exactly with replay records, including chunks.
+                source_path = op.join(piece_dir, 'avatar_source_s.bin')
+                source_f = open(source_path, 'wb', buffering=1024 * 1024)
+                last_idx = [-1]
+                def accept(acc, idx, av):
+                    idx = np.asarray(idx, dtype=np.int64).reshape(-1)
+                    if idx.size and (idx[0] <= last_idx[0]
+                                     or np.any(idx[1:] <= idx[:-1])):
+                        raise RuntimeError('0046 requires increasing unique global voxel indices')
+                    if idx.size:
+                        last_idx[0] = int(idx[-1])
+                    source_s = np.asarray(av['coords'], dtype=np.float64).reshape(-1)
+                    if source_s.size != idx.size:
+                        raise ValueError('Avatar seam-coordinate/replay index mismatch')
+                    source_f.write(np.ascontiguousarray(source_s).tobytes())
+                    writer.push(acc, idx)
+                wrap_arg['_dcsdd_stream_callback'] = accept
+                t_piece = time()
+                try:
+                    candidates, accepted, _ = curve.filter_grid_adapt(mc_grid, wrap_arg)
+                finally:
+                    source_f.close()
+                if accepted <= 0 or writer.accepted != accepted:
+                    raise RuntimeError('0046 accepted sample count mismatch')
+                profiles = writer.finish(
+                    fallback=float(item.get('support_rho_limit', 1.35)))
+                writer.replay.finish()
+                if os.stat(source_path).st_size != accepted * 8:
+                    raise RuntimeError('0046 seam source records incomplete')
+                values = compose_piece_from_replay(
+                    writer, profiles, outdir=piece_dir,
+                    sigma=float(self.model.detail_model.sigma),
+                    rho_limit=float(item.get('support_rho_limit', 1.35)),
+                    positive_value=float(item.get('support_positive_value', 1.0)),
+                    chunk_size=batch_size, label=item.get('name', str(j)),
+                )
+                sources = np.memmap(source_path, dtype=np.float64, mode='r',
+                                    shape=(accepted,))
+                indices = writer.replay.records['index']
+                pieces.append((indices, values, sources))
+                print('[sdf_stream_combined_wrap] piece=', j,
+                      'candidates=', candidates, 'accepted=', accepted,
+                      'prediction_calls=', writer.n_inference_calls,
+                      'model_s=', f'{writer.inference_compute_s:.3f}',
+                      'piece_s=', f'{time()-t_piece:.3f}', flush=True)
+            merge_t0 = time()
+            indices, sdf, seam_samples = combine_two_sparse_parts(
+                pieces[0][0], pieces[0][1], pieces[1][0], pieces[1][1],
+                pieces[1][2], pair)
+            print('[sdf_stream_combined_wrap] seam_blend=', pair.group,
+                  'overlap_samples=', seam_samples, 'evaluated_union=', len(indices),
+                  'merge_s=', f'{time()-merge_t0:.3f}', flush=True)
+            # Match legacy final min-union semantics for a SINGLE completed
+            # group: every valid group sample becomes a final valid sample.
+            crop_t0 = time()
+            full_n1 = int(mc_grid.reso) + 1
+            bounds = NegativeVoxelBounds(full_n1, 0.0)
+            for first in range(0, len(indices), batch_size):
+                end = first + batch_size
+                bounds.add(indices[first:end], sdf[first:end])
+            lo, hi = bounds.bounds()
+            grid_step = float(mc_grid.grid_config['step'])
+            band = self._dcsdd_band(grid_step, cfg)
+            pad = int(np.ceil(band / grid_step)) + 2
+            starts, side = self._crop_cube_bounds(lo, hi, full_n1, pad)
+            crop_grid = make_crop_grid(mc_grid, starts, side)
+            written = 0
+            for first in range(0, len(indices), batch_size):
+                end = first + batch_size
+                written += write_global_chunk_to_crop(
+                    crop_grid, indices[first:end], sdf[first:end],
+                    n1=full_n1, starts=starts)
+            print('[dcsdd:crop] full=', f'{full_n1}^3',
+                  'crop=', f'{side}^3', 'start=', starts.tolist(),
+                  'pad=', pad, 'samples=', f'{side**3}/{full_n1**3}',
+                  '(0046 combined wrap; precomposed)', flush=True)
+            print('[sdf_stream_combined_wrap] negative=', bounds.count,
+                  'crop_evaluated=', written,
+                  'crop_s=', f'{time()-crop_t0:.3f}', flush=True)
+            mesh_cfg = dict(cfg)
+            mesh_cfg['dcsdd_crop_grid'] = False
+            if hasattr(self, 'run_all_reconstructions'):
+                mesh_cfg['dcsdd_output_pattern'] = f'combined_{{method}}_{out_name}.ply'
+            extract_t0 = time()
+            mesh = self.extract_surface_mesh(crop_grid, mesh_cfg, context='combined')
+            if 'dcsdd_output_pattern' not in mesh_cfg:
+                outfile = op.join(output_folder, out_name + '.ply')
+                mesh.export(outfile)
+            print('[sdf_stream_combined_wrap timing] total_s=',
+                  f'{time()-t0:.3f}', 'extract_s=',
+                  f'{time()-extract_t0:.3f}', flush=True)
+
     def action_part_adapt(self, arg):
         output_folder = arg['output_folder']
         exp_name = arg['exp_name']
@@ -1507,6 +1679,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_one_pass',
                         'sdf_localize_after_gate',
                         'sdf_optimize_zero_angular_wrap',
+                        'sdf_stream_combined_wrap',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1702,6 +1875,14 @@ class AgentSDF(AgentBase):
             f"export_individual_meshes={export_individual_meshes}",
             f"resolution={getattr(mc_grid, 'reso', 'unknown')}",
         )
+        if extraction_config.get('sdf_stream_combined_wrap', False):
+            # 0046 must branch BEFORE the legacy full-grid clear/initialization.
+            # This path validates the actual cone YAML and refuses unsupported
+            # combined/wrap features rather than changing their semantics.
+            self._stream_combined_wrap_cone(
+                arg, extraction_config, adaptation_items, raw_config,
+                handle, output_folder, out_name, batch_size)
+            return
         # For independent per-item meshes, the full accumulator is unused.
         # Broad filtering uses only MCGrid geometry and separate marks.
         # An uninitialized, disk-backed accumulator need not be filled.

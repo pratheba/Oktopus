@@ -2043,11 +2043,13 @@ class _LocalizeMixin:
             curve_len, _ = accessory_curve_handle.core.calc_curve_length()
             anchor_s = float(anchor_s)
             end_s = float(end_s)
-            print("anchor_s ", anchor_s)
-            print("anchor_s ", end_s)
+            if adapt_arg.get("adapt_debug_counts", True):
+                print("anchor_s ", anchor_s)
+                print("anchor_s ", end_s)
 
             direction = np.sign(end_s - anchor_s)
-            print("direction = ", direction, flush=True)
+            if adapt_arg.get("adapt_debug_counts", True):
+                print("direction = ", direction, flush=True)
             if abs(direction) < 1e-12:
                 return local_coord
 
@@ -2060,12 +2062,15 @@ class _LocalizeMixin:
         # Tilt in local U direction
         tilt_u = adapt_arg.get("tilt_u", None)
         if tilt_u is not None:
-            print("tilt u")
+            if adapt_arg.get("adapt_debug_counts", True):
+                print("tilt u")
             tilt_u_anchor = adapt_arg.get("tilt_u_anchor", tgt_1)
             tilt_u_end = adapt_arg.get("tilt_u_end", tgt_0)
-            print(u_acc)
+            if adapt_arg.get("adapt_debug_counts", True):
+                print(u_acc)
             u_acc = _apply_one_sided_tilt(u_acc, tilt_u, tilt_u_anchor, tilt_u_end)
-            print(u_acc)
+            if adapt_arg.get("adapt_debug_counts", True):
+                print(u_acc)
 
 
         # Tilt in local V direction

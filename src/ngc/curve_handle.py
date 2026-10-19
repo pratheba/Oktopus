@@ -387,12 +387,18 @@ class CurveHandle():
                 interval_slice = slice(None)
 
         bounded = bool(adapt_arg.get("dcsdd_bounded_filtering", False))
+        # 0046: the callback-based bounded iterator also supports cone's direct
+        # wrap mapping, but ONLY via the explicitly guarded combined-wrap path.
+        # Other bounded users retain the previous rigid-only restriction.
+        cone_bounded = bool(adapt_arg.get('sdf_stream_combined_wrap', False))
         if bounded and (
             adapt_arg.get("mode", "direct") != "direct"
-            or not adapt_arg.get("rigid_radius", False)
-            or adapt_arg.get("wrap_radius", False)
+            or (cone_bounded and not adapt_arg.get('wrap_radius', False))
+            or (not cone_bounded and (
+                not adapt_arg.get("rigid_radius", False)
+                or adapt_arg.get("wrap_radius", False)))
         ):
-            raise ValueError("bounded DCSDD filtering currently supports direct rigid_radius boots only")
+            raise ValueError("bounded filtering supports rigid direct or opt-in validated combined wrap")
         # Some adaptation branches use whole-batch quantiles/medians; their
         # behavior must not silently change with chunk boundaries.
         if bounded and (
@@ -507,14 +513,17 @@ class CurveHandle():
                     if profile_sdf:
                         point_decode_s += perf_counter() - point_t0
                     clock = perf_counter()
-                    acc_chunk, _, accepted_local = self.core.localize_samples_adapt(
+                    acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
                         sample_chunk, quiet_arg)
                     localize_compute_s += perf_counter() - clock
                     selected = candidate_idx[accepted_local]
                     n_accepted += len(selected)
                     if len(selected):
                         callback_t0 = perf_counter() if profile_sdf else None
-                        stream_callback(acc_chunk, selected)
+                        if cone_bounded:
+                            stream_callback(acc_chunk, selected, av_chunk)
+                        else:
+                            stream_callback(acc_chunk, selected)
                         if profile_sdf:
                             callback_s += perf_counter() - callback_t0
                 if profile_sdf:
