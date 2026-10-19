@@ -1506,6 +1506,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_accepted_count',
                         'dcsdd_stream_one_pass',
                         'sdf_localize_after_gate',
+                        'sdf_optimize_zero_angular_wrap',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1805,6 +1806,22 @@ class AgentSDF(AgentBase):
                 adapt_arg.update(item)
                 adapt_arg['sdf_localize_after_gate'] = bool(
                     extraction_config.get('sdf_localize_after_gate', False))
+                # 0045: optional strict no-op elimination for wrap mapping with
+                # angular follow == 0.0. The auto snug field only multiplies
+                # the *angular* component, which is raised to exponent zero.
+                # It therefore cannot affect SDF queries in this configuration.
+                adapt_arg.setdefault(
+                    'sdf_optimize_zero_angular_wrap',
+                    bool(extraction_config.get('sdf_optimize_zero_angular_wrap', False)),
+                )
+                if adapt_arg.get('sdf_optimize_zero_angular_wrap', False):
+                    from app.sdf_zero_angle_optimization import can_skip_inert_snug
+                    if can_skip_inert_snug(adapt_arg):
+                        adapt_arg['auto_avatar_snug_field'] = False
+                        print('[sdf_zero_angular_wrap] name=', run_name,
+                              'skip_inert_auto_snug=True',
+                              'reason=multiplicative_snug_has_zero_angular_weight',
+                              flush=True)
                 if adapt_arg['sdf_localize_after_gate']:
                     print('[sdf_localize_0042]',
                           'name=', run_name, 'mode=', mode,

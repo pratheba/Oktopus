@@ -1392,23 +1392,40 @@ class _LocalizeMixin:
             else:
                 theta_bins_tgt = np.asarray(theta_bins_tgt, dtype=np.float64)
 
-            r_src = interpolate_wrap_radius1(
-                self,
-                avatar_coords,
-                theta_src,
-                wrap_src,
-                theta_bins_src,
-                s_bins_src,
+            # 0045: when angular_follow == 0, no per-voxel angular
+            # radius is needed for this unblended mapping. Preserve the
+            # longitudinal reference radii and the exact scale_iso formula.
+            # A supplied snug field, debug reporting, or attach/free blending
+            # forces the original path to avoid changing those behaviors.
+            zero_angular_fast = (
+                bool(adapt_arg.get('sdf_optimize_zero_angular_wrap', False))
+                and float(adapt_arg.get('wrap_angular_follow', 1.0)) == 0.0
+                and adapt_arg.get('avatar_snug_scale_field') is None
+                and not adapt_arg.get('use_attach_to_free_blend',
+                                      adapt_arg.get('use_wrap_to_rigid_blend', False))
+                and not adapt_arg.get('wrap_debug', False)
+                and not adapt_arg.get('snug_penetration_guard', False)
             )
+            if zero_angular_fast:
+                r_src = r_tgt = None
+            else:
+                r_src = interpolate_wrap_radius1(
+                    self,
+                    avatar_coords,
+                    theta_src,
+                    wrap_src,
+                    theta_bins_src,
+                    s_bins_src,
+                )
 
-            r_tgt = interpolate_wrap_radius1(
-                accessory_curve_handle.core,
-                acc_coords,
-                theta_tgt,
-                wrap_tgt,
-                theta_bins_tgt,
-                s_bins_tgt,
-            )
+                r_tgt = interpolate_wrap_radius1(
+                    accessory_curve_handle.core,
+                    acc_coords,
+                    theta_tgt,
+                    wrap_tgt,
+                    theta_bins_tgt,
+                    s_bins_tgt,
+                )
 
             skirt_env_scale = None
             src_ref_by_s = np.nanmedian(wrap_src, axis=1)
@@ -1494,18 +1511,21 @@ class _LocalizeMixin:
 
             scale_iso = global_scale * r_tgt_ref / (r_src_ref + 1e-12)
 
-            angular_ratio = (
-                (r_tgt / (r_tgt_ref + 1e-12))
-                /
-                (r_src / (r_src_ref + 1e-12))
-            )
-
             alpha = float(adapt_arg.get("wrap_angular_follow", 1.0))
-
-            scale_rho_wrap = scale_iso * np.power(
-                np.maximum(angular_ratio, 1e-8),
-                alpha,
-            )
+            if zero_angular_fast:
+                # np.power(any finite positive radius ratio, 0.0) == 1.0.
+                # No exponent, angular interpolation, or extra arrays needed.
+                scale_rho_wrap = scale_iso
+            else:
+                angular_ratio = (
+                    (r_tgt / (r_tgt_ref + 1e-12))
+                    /
+                    (r_src / (r_src_ref + 1e-12))
+                )
+                scale_rho_wrap = scale_iso * np.power(
+                    np.maximum(angular_ratio, 1e-8),
+                    alpha,
+                )
 
             if "wrap_scale_min" in adapt_arg or "wrap_scale_max" in adapt_arg:
                 scale_rho_wrap = np.clip(
