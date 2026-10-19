@@ -411,14 +411,29 @@ class CurveHandle():
         # wrap mapping, but ONLY via the explicitly guarded combined-wrap path.
         # Other bounded users retain the previous rigid-only restriction.
         cone_bounded = bool(adapt_arg.get('sdf_stream_combined_wrap', False))
-        if bounded and (
-            adapt_arg.get("mode", "direct") != "direct"
-            or (cone_bounded and not adapt_arg.get('wrap_radius', False))
-            or (not cone_bounded and (
-                not adapt_arg.get("rigid_radius", False)
-                or adapt_arg.get("wrap_radius", False)))
+        # 0050a: the root/leaf puffer pipeline needs the original *staged*
+        # bounded localizer for its wrap body.  Unlike the cone callback path,
+        # keep every avatar/accessory field: avatar cutting and local snug use
+        # them after localization.  Only action_part_adapt sets this opt-in for
+        # a plain direct wrap section in an explicitly sparse root/leaf run.
+        puffer_wrap_staging = bool(adapt_arg.get('_sdf_puffer_bounded_wrap_staging', False))
+        if puffer_wrap_staging and (
+            not bounded
+            or adapt_arg.get('mode', 'direct') != 'direct'
+            or not adapt_arg.get('wrap_radius', False)
+            or adapt_arg.get('rigid_radius', False)
+            or cone_bounded
+            or adapt_arg.get('_dcsdd_stream_callback') is not None
         ):
-            raise ValueError("bounded filtering supports rigid direct or opt-in validated combined wrap")
+            raise ValueError('0050a puffer bounded wrap requires staged direct wrap-only localization')
+        if bounded and (
+            adapt_arg.get('mode', 'direct') != 'direct'
+            or (cone_bounded and not adapt_arg.get('wrap_radius', False))
+            or (not cone_bounded and not puffer_wrap_staging and (
+                not adapt_arg.get('rigid_radius', False)
+                or adapt_arg.get('wrap_radius', False)))
+        ):
+            raise ValueError('bounded filtering supports rigid direct, cone callback wrap, or guarded puffer wrap staging')
         # Some adaptation branches use whole-batch quantiles/medians; their
         # behavior must not silently change with chunk boundaries.
         if bounded and (
@@ -426,6 +441,9 @@ class CurveHandle():
             or adapt_arg.get("wrap_blend_rigid", False)
             or adapt_arg.get("unified_wrap", False)
             or adapt_arg.get("use_free_profile_scale", False)
+            or adapt_arg.get("use_attach_to_free_blend", False)
+            or adapt_arg.get("use_wrap_to_rigid_blend", False)
+            or adapt_arg.get("free_anchor_to_release_scale", False)
         ):
             raise ValueError("bounded filtering does not support global-statistic wrap blending")
         fast_bbox = bool(adapt_arg.get("dcsdd_fast_bbox_marking", False)) or bounded

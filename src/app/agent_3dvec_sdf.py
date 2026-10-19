@@ -2059,6 +2059,22 @@ class AgentSDF(AgentBase):
                     'dcsdd_bounded_filtering',
                     bool(extraction_config.get('dcsdd_bounded_filtering', False)),
                 )
+                # 0050a: opt in *only* the correction-preserving staged wrap
+                # body of a puffer sparse root/leaf run.  Other wrap paths and
+                # the cone streaming callback retain their existing guards.
+                adapt_arg['_sdf_puffer_bounded_wrap_staging'] = bool(
+                    puffer_sparse and root_leaf_plan is not None
+                    and combine_adaptations
+                    and mode == 'direct'
+                    and adapt_arg.get('wrap_radius', False)
+                    and not adapt_arg.get('rigid_radius', False)
+                    and adapt_arg.get('dcsdd_bounded_filtering', False)
+                    and not extraction_config.get('dcsdd_stream_inference', False)
+                )
+                if adapt_arg['_sdf_puffer_bounded_wrap_staging']:
+                    print('[sdf_puffer_0050a] name=', run_name,
+                          'bounded_wrap_staging=True',
+                          'preserve_avatar_fields=True', flush=True)
                 adapt_arg.setdefault(
                     'dcsdd_filter_batch_size',
                     int(extraction_config.get('dcsdd_filter_batch_size', 262144)),
