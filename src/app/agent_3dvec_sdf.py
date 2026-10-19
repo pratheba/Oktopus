@@ -1225,12 +1225,13 @@ class AgentSDF(AgentBase):
                       'estimated_required_GB=', f'{required/1e9:.3f}', flush=True)
         with tempfile.TemporaryDirectory(prefix='oktopus-predictions-', dir=prediction_dir) as stage:
             if one_pass:
-                from app.dcsdd_stream_one_pass import OnePassBootStreamWriter
-                writer = OnePassBootStreamWriter(
+                from app.sdf_stream_evaluator import SDFStreamPiece
+                stream_piece = SDFStreamPiece(
                     batch_size=batch_size, outdir=stage,
                     inference=lambda data: self._inference_full_vals(data, accessory_key),
                 )
-                replay = writer.replay
+                writer = stream_piece.writer
+                replay = stream_piece.replay
             else:
                 writer = PartitionedPredictionWriter(
                     n=count, batch_size=batch_size, outdir=stage,
@@ -1240,7 +1241,7 @@ class AgentSDF(AgentBase):
             t1 = time()
             def write_predictions(acc, idx):
                 if one_pass:
-                    writer.push(acc, idx)
+                    stream_piece.push(acc, idx)
                 else:
                     if replay is not None:
                         replay.push(acc, idx)
@@ -1263,9 +1264,15 @@ class AgentSDF(AgentBase):
                 print('[part_adapt stream] accepted-count verified=', counted2,
                       'candidate_samples=', candidates2,
                       'saved_count_pass=True', flush=True)
-            profiles = writer.finish(fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
+            if one_pass:
+                profiles = stream_piece.finish(
+                    expected_accepted=count,
+                    fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
+            else:
+                profiles = writer.finish(fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
+                if replay is not None:
+                    replay.finish()
             if replay is not None:
-                replay.finish()
                 print('[part_adapt stream replay] metadata_GB=', f'{replay.bytes/1e9:.3f}',
                       'metadata_write_s=', f'{replay.write_s:.3f}', flush=True)
             infer_s = time() - t1
@@ -1317,10 +1324,15 @@ class AgentSDF(AgentBase):
                 if replay is not None:
                     def replay_composed(start, end, records):
                         raw = {k: v[start:end] for k, v in writer.raw.items()}
-                        vals, bad, (rmin, rmax) = compose_replay_chunk(
-                            raw, records['coord'], records['rho'], profiles,
-                            rho_limit=rho_limit, positive_value=positive_value,
-                            sigma=sigma_detail)
+                        if one_pass:
+                            vals, bad, (rmin, rmax) = stream_piece.compose_chunk(
+                                start, end, records, rho_limit=rho_limit,
+                                positive_value=positive_value, sigma=sigma_detail)
+                        else:
+                            vals, bad, (rmin, rmax) = compose_replay_chunk(
+                                raw, records['coord'], records['rho'], profiles,
+                                rho_limit=rho_limit, positive_value=positive_value,
+                                sigma=sigma_detail)
                         state['offset'] = end
                         state['bad'] += bad
                         state['rho_min'] = min(state['rho_min'], rmin)
@@ -1464,13 +1476,11 @@ class AgentSDF(AgentBase):
         """
         import tempfile
         import shutil
-        from app.dcsdd_stream_one_pass import OnePassBootStreamWriter
         from app.dcsdd_stream_crop import (
             NegativeVoxelBounds, make_crop_grid, write_global_chunk_to_crop,
         )
         from app.sdf_stream_combined_wrap import (
             validate_cone_stream, combine_two_sparse_parts,
-            compose_piece_from_replay,
         )
         shape_name = arg['shape']
         mc_grid = arg['mc_grid']
@@ -1525,52 +1535,39 @@ class AgentSDF(AgentBase):
                     raise ValueError('filter batch size must be positive')
                 # 0045's mathematical no-op auto-snug is mandatory here.
                 wrap_arg['auto_avatar_snug_field'] = False
-                writer = OnePassBootStreamWriter(
+                from app.sdf_stream_evaluator import SDFStreamPiece
+                piece_stream = SDFStreamPiece(
                     batch_size=batch_size, outdir=piece_dir,
                     inference=lambda data, key=accessory_key:
                         self._inference_full_vals(data, key),
+                    record_avatar_source=True,
                 )
-                # Avatar source_s is required for cone's POST-SDF crossfade.
-                # It must align exactly with replay records, including chunks.
-                source_path = op.join(piece_dir, 'avatar_source_s.bin')
-                source_f = open(source_path, 'wb', buffering=1024 * 1024)
-                last_idx = [-1]
-                def accept(acc, idx, av):
-                    idx = np.asarray(idx, dtype=np.int64).reshape(-1)
-                    if idx.size and (idx[0] <= last_idx[0]
-                                     or np.any(idx[1:] <= idx[:-1])):
-                        raise RuntimeError('0046 requires increasing unique global voxel indices')
-                    if idx.size:
-                        last_idx[0] = int(idx[-1])
-                    source_s = np.asarray(av['coords'], dtype=np.float64).reshape(-1)
-                    if source_s.size != idx.size:
-                        raise ValueError('Avatar seam-coordinate/replay index mismatch')
-                    source_f.write(np.ascontiguousarray(source_s).tobytes())
-                    writer.push(acc, idx)
-                wrap_arg['_dcsdd_stream_callback'] = accept
+                wrap_arg['_dcsdd_stream_callback'] = piece_stream.push
                 t_piece = time()
-                try:
-                    candidates, accepted, _ = curve.filter_grid_adapt(mc_grid, wrap_arg)
-                finally:
-                    source_f.close()
-                if accepted <= 0 or writer.accepted != accepted:
-                    raise RuntimeError('0046 accepted sample count mismatch')
-                profiles = writer.finish(
+                candidates, accepted, _ = curve.filter_grid_adapt(mc_grid, wrap_arg)
+                t_finish = time()
+                piece_stream.finish(
+                    expected_accepted=accepted,
                     fallback=float(item.get('support_rho_limit', 1.35)))
-                writer.replay.finish()
-                if os.stat(source_path).st_size != accepted * 8:
-                    raise RuntimeError('0046 seam source records incomplete')
-                values = compose_piece_from_replay(
-                    writer, profiles, outdir=piece_dir,
+                finalizing_s = time() - t_finish
+                t_compose = time()
+                values = piece_stream.compose_values(
                     sigma=float(self.model.detail_model.sigma),
                     rho_limit=float(item.get('support_rho_limit', 1.35)),
                     positive_value=float(item.get('support_positive_value', 1.0)),
                     chunk_size=batch_size, label=item.get('name', str(j)),
                 )
-                sources = np.memmap(source_path, dtype=np.float64, mode='r',
-                                    shape=(accepted,))
-                indices = writer.replay.records['index']
+                composing_s = time() - t_compose
+                writer = piece_stream.writer
+                indices = piece_stream.replay.records['index']
+                sources = piece_stream.source_s
                 pieces.append((indices, values, sources))
+                print('[sdf_stream_piece timing] name=', item.get('name', str(j)),
+                      'finish_s=', f'{finalizing_s:.3f}',
+                      'compose_s=', f'{composing_s:.3f}',
+                      'replay_write_s=', f'{piece_stream.replay.write_s:.3f}',
+                      'source_write_s=', f'{piece_stream.source_write_s:.3f}',
+                      flush=True)
                 print('[sdf_stream_combined_wrap] piece=', j,
                       'candidates=', candidates, 'accepted=', accepted,
                       'prediction_calls=', writer.n_inference_calls,
@@ -1681,6 +1678,7 @@ class AgentSDF(AgentBase):
                         'sdf_localize_after_gate',
                         'sdf_optimize_zero_angular_wrap',
                         'sdf_stream_combined_wrap',
+                        'sdf_stream_unified',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1770,6 +1768,16 @@ class AgentSDF(AgentBase):
         adaptation_items = expanded_adaptation_items
         if len(adaptation_items) == 0:
             raise RuntimeError("No enabled adaptation entries were found.")
+        # 0047: route validated independent rigid and combined wrap through
+        # one replay/calibration evaluator.  Unsupported composition graphs
+        # still use their existing code and are never silently changed.
+        from app.sdf_stream_modes import configure_unified_sdf_stream
+        _stream_method = extraction_config.get('surface_extraction', 'marching_cubes')
+        if isinstance(_stream_method, dict):
+            _stream_method = _stream_method.get('method', 'marching_cubes')
+        extraction_config = configure_unified_sdf_stream(
+            extraction_config, adaptation_items,
+            extractor=self._normalize_surface_extraction_method(_stream_method))
         # 0042: SDF localization-after-gate is valid for direct wrap and rigid
         # adaptations, including combined meshes. It only changes when the
         # *avatar localizer* builds train-radius/model features; the cylinder
