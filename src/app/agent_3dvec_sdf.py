@@ -1126,6 +1126,135 @@ class AgentSDF(AgentBase):
         return accessory_data
 
     @torch.no_grad()
+    def _stream_individual_rigid_boot(self, curve, mc_grid, adapt_arg,
+                                      accessory_key, extraction_config,
+                                      item_index, mode, batch_size,
+                                      output_folder):
+        """0036: direct inference into compact prediction buffer, then SDF grid.
+
+        Exact per-bin global rho quantiles require knowing *all* network
+        predictions before the support clamp. We retain only 3 scalar network
+        outputs (no localized coordinate arrays) and re-run *localization only*
+        to apply the global profile. The original model batch partition is
+        preserved to avoid silently changing model evaluation semantics.
+        """
+        import tempfile
+        from app.dcsdd_stream_boot import (
+            INFERENCE_KEYS, PartitionedPredictionWriter,
+            compose_boot_chunk,
+        )
+
+        scratch_dir = getattr(mc_grid, 'memmap_dir', None)
+        if not scratch_dir:
+            raise ValueError('--dcsdd-stream-inference requires --sdf-grid-memmap-dir')
+        t0 = time()
+        streaming_arg = dict(adapt_arg)
+        streaming_arg['adapt_debug_counts'] = False
+        # Pass 0: count only accepted samples; do not materialize them.
+        accepted = [0]
+        def count_chunk(_acc, idx):
+            accepted[0] += len(idx)
+        streaming_arg['_dcsdd_stream_callback'] = count_chunk
+        candidates, count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+        if count != accepted[0]:
+            raise AssertionError('Stream candidate/accepted count mismatch')
+        if not count:
+            raise RuntimeError('No SDF samples accepted for independent boot')
+        count_s = time() - t0
+        print('[part_adapt stream] candidates=', candidates,
+              'accepted=', count, 'count_s=', f'{count_s:.3f}',
+              'inference_batch_size=', batch_size)
+
+        with tempfile.TemporaryDirectory(prefix='oktopus-predictions-', dir=scratch_dir) as stage:
+            writer = PartitionedPredictionWriter(
+                n=count, batch_size=batch_size, outdir=stage,
+                inference=lambda data: self._inference_full_vals(
+                    data, accessory_key),
+            )
+            t1 = time()
+            def write_predictions(acc, idx):
+                writer.push({k: acc[k] for k in INFERENCE_KEYS})
+            streaming_arg['_dcsdd_stream_callback'] = write_predictions
+            _, counted2, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+            if counted2 != count:
+                raise RuntimeError('Accepted sample count changed between passes')
+            profiles = writer.finish(fallback=float(adapt_arg.get('support_rho_limit', 1.35)))
+            infer_s = time() - t1
+            print('[part_adapt stream] prediction_bytes=', writer.prediction_bytes,
+                  'near_surface_calibration=', {k: v.count for k,v in writer.cal.items()},
+                  'inference_calls=', writer.n_inference_calls,
+                  'model_s=', f'{writer.inference_compute_s:.3f}',
+                  'prediction_write_and_calibration_s=', f'{writer.prediction_write_s:.3f}',
+                  'prediction_pass_s=', f'{infer_s:.3f}')
+
+            # Exactly the same grid construction / extraction as 0035, but
+            # stream final samples directly into the grid, not an N-row array.
+            t2 = time()
+            acc_grid = utils.create_grid_like(
+                mc_grid,
+                defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
+            )
+            acc_grid.clear_grid()
+            sigma_detail = float(self.model.detail_model.sigma)
+            support = bool(adapt_arg.get('use_accessory_support_clamp', False))
+            rho_limit = float(adapt_arg.get('support_rho_limit', 1.35))
+            positive_value = float(adapt_arg.get('support_positive_value', 1.0))
+            state = {'offset': 0, 'bad': 0, 'rho_min': np.inf, 'rho_max': -np.inf}
+            def final_grid_write(acc, idx):
+                start = state['offset']
+                n = len(idx)
+                end = start + n
+                raw = {k: v[start:end] for k, v in writer.raw.items()}
+                vals_final, bad, (rmin,rmax) = compose_boot_chunk(
+                    raw, acc, profiles, rho_limit=rho_limit,
+                    positive_value=positive_value, sigma=sigma_detail,
+                    support=support,
+                )
+                acc_grid.update_grid(vals_final, idx, mark=True, mode='overwrite')
+                state['offset'] = end
+                state['bad'] += bad
+                state['rho_min'] = min(state['rho_min'],rmin)
+                state['rho_max'] = max(state['rho_max'],rmax)
+            streaming_arg['_dcsdd_stream_callback'] = final_grid_write
+            _, counted3, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+            if counted3 != count or state['offset'] != count:
+                raise RuntimeError('Accepted sample indices changed between passes')
+            if support:
+                print(f'[adaptive_rho_clamp {accessory_key}] '
+                      f'bad={state["bad"]}/{count} rho_limit={rho_limit:.3f} '
+                      f'rho=[{state["rho_min"]:.3f},{state["rho_max"]:.3f}]')
+            grid_s = time() - t2
+            print('[part_adapt stream] compose_grid_s=', f'{grid_s:.3f}',
+                  'stored_prediction_GB=', f'{writer.prediction_bytes / 1e9:.3f}')
+
+            t3 = time()
+            cfg = dict(extraction_config)
+            if hasattr(self, 'run_all_reconstructions'):
+                cfg['dcsdd_output_pattern'] = (
+                    f'{item_index}_{{method}}_{mode}_{accessory_key.replace("|", "_")}.ply'
+                )
+            mesh_acc = self.extract_surface_mesh(
+                acc_grid, cfg, mc_method='extract_mesh',
+                context=f'adapt_{item_index}',
+            )
+            if len(mesh_acc.faces):
+                parts = mesh_acc.split(only_watertight=False)
+                if parts:
+                    mesh_acc = max(parts, key=lambda m: len(m.faces))
+                if 'dcsdd_output_pattern' not in cfg:
+                    outfile = op.join(output_folder,
+                        f'{item_index}_{mode}_{accessory_key.replace("|", "_")}.ply')
+                    mesh_acc.export(outfile)
+                    print('[part_adapt stream] saved',outfile)
+            print('[part_adapt stream timing]',
+                  'accepted=', count,
+                  'count_s=', f'{count_s:.3f}',
+                  'prediction_pass_s=', f'{infer_s:.3f}',
+                  'compose_grid_s=', f'{grid_s:.3f}',
+                  'mesh_s=', f'{time()-t3:.3f}',
+                  'total_s=', f'{time()-t0:.3f}')
+            del mesh_acc, acc_grid
+
     def action_part_adapt(self, arg):
         output_folder = arg['output_folder']
         exp_name = arg['exp_name']
@@ -1173,6 +1302,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_bounded_filtering',
                         'dcsdd_filter_batch_size',
                         'dcsdd_compact_staging',
+                        'dcsdd_stream_inference',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1424,6 +1554,7 @@ class AgentSDF(AgentBase):
                     'dcsdd_fast_bbox_marking',
                     bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),
                 )
+                stream_requested = bool(extraction_config.get('dcsdd_stream_inference', False))
                 compact_requested = bool(extraction_config.get('dcsdd_compact_staging', False))
                 # Only independent pieces with standard model input can drop
                 # unused avatar fields. Others retain the 0034 staging path.
@@ -1446,6 +1577,21 @@ class AgentSDF(AgentBase):
                     compact_reasons.append('offset mode')
                 if str(adapt_arg.get('snug_mode', 'multiplicative')).lower() == 'additive':
                     compact_reasons.append('additive snug')
+                if stream_requested:
+                    stream_reasons = list(compact_reasons)
+                    if not export_individual_meshes:
+                        stream_reasons.append('requires export_individual_meshes')
+                    if not getattr(mc_grid, 'memmap_dir', None):
+                        stream_reasons.append('requires memmap directory')
+                    if adapt_arg.get('use_adaptive_shell_thinning', False):
+                        stream_reasons.append('adaptive shell thinning')
+                    if float(adapt_arg.get('accessory_offset', 0.0)) != 0.0:
+                        stream_reasons.append('nonzero accessory_offset')
+                    if adapt_arg.get('avatar_snug_scale_field') is not None:
+                        stream_reasons.append('avatar_snug_scale_field')
+                    if stream_reasons:
+                        raise ValueError('0036 streaming supports only independent rigid boots: '
+                                         + ', '.join(stream_reasons))
                 adapt_arg['dcsdd_compact_staging'] = compact_requested and not compact_reasons
                 if compact_requested:
                     print('[part_adapt compact staging]',
@@ -1463,6 +1609,13 @@ class AgentSDF(AgentBase):
                         tgt_1=float(adapt_arg["tgt_1"]),
                     )
                     adapt_arg['accessory_curve_handle'] = accessory_curve_handle
+
+                    if stream_requested:
+                        self._stream_individual_rigid_boot(
+                            curve, mc_grid, adapt_arg, accessory_key,
+                            extraction_config, item_index, mode, batch_size,
+                            output_folder)
+                        break
 
                     filter_t0 = time()
                     accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(

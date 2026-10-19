@@ -484,6 +484,36 @@ class CurveHandle():
             # Optional compact staging is deliberately limited to the independent
             # rigid-radius SDF inference path. Its six fields are exactly those
             # consumed by model_withgrid._pack_common / support clamp.
+            # 0036: no localized record staging. The callback consumes each
+            # accepted batch and must not retain its arrays unless intentional.
+            stream_callback = adapt_arg.get('_dcsdd_stream_callback')
+            if stream_callback is not None:
+                batch_size = int(adapt_arg.get('dcsdd_filter_batch_size', 262144))
+                if batch_size <= 0:
+                    raise ValueError('dcsdd_filter_batch_size must be positive')
+                n_candidate = 0
+                n_accepted = 0
+                localize_compute_s = 0.0
+                quiet_arg = dict(adapt_arg)
+                quiet_arg['adapt_debug_counts'] = False
+                for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
+                    n_candidate += len(candidate_idx)
+                    sample_chunk = mc_grid.idx2pts(candidate_idx)
+                    clock = perf_counter()
+                    acc_chunk, _, accepted_local = self.core.localize_samples_adapt(
+                        sample_chunk, quiet_arg)
+                    localize_compute_s += perf_counter() - clock
+                    selected = candidate_idx[accepted_local]
+                    n_accepted += len(selected)
+                    if len(selected):
+                        stream_callback(acc_chunk, selected)
+                if adapt_arg.get('adapt_debug_counts', True):
+                    print('[filter_grid_adapt] bounded_stream=True',
+                          'candidate_samples=', n_candidate,
+                          'after_localize=', n_accepted,
+                          'localize_compute_s=', f'{localize_compute_s:.3f}')
+                return n_candidate, n_accepted, localize_compute_s
+
             compact_staging = bool(adapt_arg.get("dcsdd_compact_staging", False))
             if compact_staging and not adapt_arg.get("rigid_radius", False):
                 raise ValueError("compact staging requires direct rigid_radius")

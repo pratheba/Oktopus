@@ -131,6 +131,8 @@ def start_test(opt):
 
     if args.dcsdd_verbose:
         arg['dcsdd_verbose'] = True
+    if args.dcsdd_stream_inference:
+        arg['dcsdd_stream_inference'] = True
     if args.dcsdd_compact_staging:
         arg['dcsdd_compact_staging'] = True
     if args.dcsdd_bounded_filtering:
@@ -254,6 +256,8 @@ if __name__ == '__main__':
                    help='Enable expensive full-grid percentile and edge scans even above resolution 512.')
     p.add_argument('--dcsdd-bounded-filtering', action='store_true',
                    help='Use bounded voxel-slab filtering and batch-localized SDF adaptation')
+    p.add_argument('--dcsdd-stream-inference', action='store_true',
+                   help='0036: exact global support-calibration with compact prediction-only staging for independent rigid boots')
     p.add_argument('--dcsdd-compact-staging', action='store_true',
                    help='Opt-in reduced localization staging and slice inference for independent rigid boots')
     p.add_argument('--dcsdd-filter-batch-size', type=int, default=262144,
