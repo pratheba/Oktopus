@@ -133,6 +133,8 @@ def start_test(opt):
         arg['dcsdd_verbose'] = True
     if args.dcsdd_stream_inference:
         arg['dcsdd_stream_inference'] = True
+    if args.dcsdd_stream_crop_first:
+        arg['dcsdd_stream_crop_first'] = True
     if args.dcsdd_compact_staging:
         arg['dcsdd_compact_staging'] = True
     if args.dcsdd_bounded_filtering:
@@ -258,6 +260,8 @@ if __name__ == '__main__':
                    help='Use bounded voxel-slab filtering and batch-localized SDF adaptation')
     p.add_argument('--dcsdd-stream-inference', action='store_true',
                    help='0036: exact global support-calibration with compact prediction-only staging for independent rigid boots')
+    p.add_argument('--dcsdd-stream-crop-first', action='store_true',
+                   help='0037: compose exact negative-bbox crop without ever initializing full dense SDF grid; requires --dcsdd-stream-inference and --dcsdd-crop-grid')
     p.add_argument('--dcsdd-compact-staging', action='store_true',
                    help='Opt-in reduced localization staging and slice inference for independent rigid boots')
     p.add_argument('--dcsdd-filter-batch-size', type=int, default=262144,

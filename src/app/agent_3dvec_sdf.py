@@ -1187,35 +1187,94 @@ class AgentSDF(AgentBase):
                   'prediction_write_and_calibration_s=', f'{writer.prediction_write_s:.3f}',
                   'prediction_pass_s=', f'{infer_s:.3f}')
 
-            # Exactly the same grid construction / extraction as 0035, but
-            # stream final samples directly into the grid, not an N-row array.
-            t2 = time()
-            acc_grid = utils.create_grid_like(
-                mc_grid,
-                defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
-            )
-            acc_grid.clear_grid()
+            # 0037: under --dcsdd-stream-crop-first, avoid constructing,
+            # clearing and scanning a 1025^3 / 2049^3 grid on Lustre.
+            # We need the GLOBAL support profile before knowing which *final*
+            # values are negative. Re-localize once to determine their bbox,
+            # then re-localize once more to write only its exact padded cube.
+            crop_first = bool(extraction_config.get('dcsdd_stream_crop_first', False))
             sigma_detail = float(self.model.detail_model.sigma)
             support = bool(adapt_arg.get('use_accessory_support_clamp', False))
             rho_limit = float(adapt_arg.get('support_rho_limit', 1.35))
             positive_value = float(adapt_arg.get('support_positive_value', 1.0))
             state = {'offset': 0, 'bad': 0, 'rho_min': np.inf, 'rho_max': -np.inf}
-            def final_grid_write(acc, idx):
+
+            def composed_chunk(acc, idx):
                 start = state['offset']
                 n = len(idx)
                 end = start + n
                 raw = {k: v[start:end] for k, v in writer.raw.items()}
-                vals_final, bad, (rmin,rmax) = compose_boot_chunk(
+                vals_final, bad, (rmin, rmax) = compose_boot_chunk(
                     raw, acc, profiles, rho_limit=rho_limit,
                     positive_value=positive_value, sigma=sigma_detail,
                     support=support,
                 )
-                acc_grid.update_grid(vals_final, idx, mark=True, mode='overwrite')
                 state['offset'] = end
                 state['bad'] += bad
                 state['rho_min'] = min(state['rho_min'],rmin)
                 state['rho_max'] = max(state['rho_max'],rmax)
-            streaming_arg['_dcsdd_stream_callback'] = final_grid_write
+                return vals_final
+
+            if crop_first:
+                from app.dcsdd_stream_crop import (
+                    NegativeVoxelBounds, make_crop_grid, write_global_chunk_to_crop)
+                if not hasattr(self, '_crop_cube_bounds') or not hasattr(self, '_dcsdd_band'):
+                    raise ValueError('0037 crop-first requires AgentSDFDC')
+                full_n1 = int(mc_grid.reso) + 1
+                level = float(extraction_config.get('level', 0.0))
+                bounds = NegativeVoxelBounds(full_n1, level)
+                bounds_t0 = time()
+                calls = [0]
+                def measure_crop(acc, idx):
+                    vals = composed_chunk(acc, idx)
+                    bounds.add(idx, vals)
+                    calls[0] += 1
+                    if calls[0] % 32 == 0:
+                        print('[part_adapt stream crop] bbox pass chunks=', calls[0],
+                              'accepted=', state['offset'], '/', count,
+                              'elapsed_s=', f'{time()-bounds_t0:.1f}', flush=True)
+                streaming_arg['_dcsdd_stream_callback'] = measure_crop
+                _, bounds_count, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
+                if bounds_count != count or state['offset'] != count:
+                    raise RuntimeError('SDF negative bbox pass changed accepted indices')
+                neg_lo, neg_hi = bounds.bounds()
+                step = float(mc_grid.grid_config['step'])
+                band = self._dcsdd_band(step, extraction_config)
+                pad = int(np.ceil(band / step)) + 2
+                starts, side = self._crop_cube_bounds(neg_lo, neg_hi, full_n1, pad)
+                bounds_s = time() - bounds_t0
+                print('[part_adapt stream crop] negative=', bounds.count,
+                      'negative_bbox=', (neg_lo.tolist(),neg_hi.tolist()),
+                      'crop=', f'{side}^3', 'start=', starts.tolist(),
+                      'pad=', pad, 'bbox_pass_s=', f'{bounds_s:.3f}', flush=True)
+                t2 = time()
+                acc_grid = make_crop_grid(mc_grid, starts, side)
+                state.update(offset=0, bad=0, rho_min=np.inf, rho_max=-np.inf)
+                written = [0]
+                calls[0] = 0
+                def final_grid_write(acc, idx):
+                    vals = composed_chunk(acc, idx)
+                    written[0] += write_global_chunk_to_crop(
+                        acc_grid, idx, vals, n1=full_n1, starts=starts)
+                    calls[0] += 1
+                    if calls[0] % 32 == 0:
+                        print('[part_adapt stream crop] write pass chunks=', calls[0],
+                              'accepted=', state['offset'], '/', count,
+                              'written=', written[0],
+                              'elapsed_s=', f'{time()-t2:.1f}', flush=True)
+                streaming_arg['_dcsdd_stream_callback'] = final_grid_write
+            else:
+                t2 = time()
+                acc_grid = utils.create_grid_like(
+                    mc_grid,
+                    defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
+                )
+                acc_grid.clear_grid()
+                def final_grid_write(acc, idx):
+                    vals = composed_chunk(acc, idx)
+                    acc_grid.update_grid(vals, idx, mark=True, mode='overwrite')
+                streaming_arg['_dcsdd_stream_callback'] = final_grid_write
+
             _, counted3, _ = curve.filter_grid_adapt(mc_grid, streaming_arg)
             if counted3 != count or state['offset'] != count:
                 raise RuntimeError('Accepted sample indices changed between passes')
@@ -1225,10 +1284,20 @@ class AgentSDF(AgentBase):
                       f'rho=[{state["rho_min"]:.3f},{state["rho_max"]:.3f}]')
             grid_s = time() - t2
             print('[part_adapt stream] compose_grid_s=', f'{grid_s:.3f}',
-                  'stored_prediction_GB=', f'{writer.prediction_bytes / 1e9:.3f}')
+                  'stored_prediction_GB=', f'{writer.prediction_bytes / 1e9:.3f}',
+                  'crop_first=', crop_first,
+                  'crop_bbox_pass_s=', f'{bounds_s:.3f}' if crop_first else 'n/a', flush=True)
 
             t3 = time()
             cfg = dict(extraction_config)
+            if crop_first:
+                # The input MCGrid *already is* the exact global negative-bbox
+                # crop. A second independent crop would change its origin.
+                cfg['dcsdd_crop_grid'] = False
+                print('[dcsdd:crop] full=', f'{full_n1}^3',
+                      'crop=', f'{side}^3', 'start=', starts.tolist(),
+                      'pad=', pad, 'samples=', f'{side**3}/{full_n1**3}',
+                      '(precomposed; no second crop)', flush=True)
             if hasattr(self, 'run_all_reconstructions'):
                 cfg['dcsdd_output_pattern'] = (
                     f'{item_index}_{{method}}_{mode}_{accessory_key.replace("|", "_")}.ply'
@@ -1250,6 +1319,7 @@ class AgentSDF(AgentBase):
                   'accepted=', count,
                   'count_s=', f'{count_s:.3f}',
                   'prediction_pass_s=', f'{infer_s:.3f}',
+                  'crop_bbox_pass_s=', f'{bounds_s:.3f}' if crop_first else 'n/a',
                   'compose_grid_s=', f'{grid_s:.3f}',
                   'mesh_s=', f'{time()-t3:.3f}',
                   'total_s=', f'{time()-t0:.3f}')
@@ -1303,6 +1373,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_filter_batch_size',
                         'dcsdd_compact_staging',
                         'dcsdd_stream_inference',
+                        'dcsdd_stream_crop_first',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1323,6 +1394,10 @@ class AgentSDF(AgentBase):
                 "Adaptation YAML must load as a list or mapping, got "
                 f"{type(raw_config).__name__}."
             )
+
+        if (extraction_config.get('dcsdd_stream_crop_first', False)
+                and not extraction_config.get('dcsdd_stream_inference', False)):
+            raise ValueError('--dcsdd-stream-crop-first requires --dcsdd-stream-inference')
 
         if not isinstance(adaptation_items, list):
             raise TypeError(
@@ -1589,8 +1664,13 @@ class AgentSDF(AgentBase):
                         stream_reasons.append('nonzero accessory_offset')
                     if adapt_arg.get('avatar_snug_scale_field') is not None:
                         stream_reasons.append('avatar_snug_scale_field')
+                    if extraction_config.get('dcsdd_stream_crop_first', False):
+                        if not extraction_config.get('dcsdd_crop_grid', False):
+                            stream_reasons.append('crop-first requires --dcsdd-crop-grid')
+                        if str(requested_extractor).lower() != 'ours':
+                            stream_reasons.append('crop-first supports only DCSDD ours')
                     if stream_reasons:
-                        raise ValueError('0036 streaming supports only independent rigid boots: '
+                        raise ValueError('0036/0037 streaming supports only independent rigid boots: '
                                          + ', '.join(stream_reasons))
                 adapt_arg['dcsdd_compact_staging'] = compact_requested and not compact_reasons
                 if compact_requested:
