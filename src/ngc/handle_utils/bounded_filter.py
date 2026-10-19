@@ -6,11 +6,19 @@ Only used by the opt-in DCSDD adaptation path.  Never creates a full
 import numpy as np
 
 
-def _box_ranges(cylinder_samples, mc_grid, extend_bbox=False):
+def _box_ranges(cylinder_samples, mc_grid, extend_bbox=False,
+                clip_world_aabb=None):
     n = int(mc_grid.reso)
     origin = np.asarray(mc_grid.grid_config["origin"])
     step = float(mc_grid.grid_config["step"])
     boxes = []
+    if clip_world_aabb is not None:
+        # Clip the ORIGINAL box union, not a newly synthesized tube. The
+        # extra two grid cells avoid rounding exclusions at AABB boundaries.
+        lower, upper = (np.asarray(p, dtype=np.float64)
+                        for p in clip_world_aabb)
+        clip_lo = np.floor((lower - origin) / step).astype(np.int64) - 2
+        clip_hi = np.floor((upper - origin) / step).astype(np.int64) + 2
     for i in range(len(cylinder_samples) - 1):
         part = cylinder_samples[i:i + 2].reshape(-1, 3)
         hi = np.floor((part.max(axis=0) - origin) / step) + 1
@@ -21,13 +29,17 @@ def _box_ranges(cylinder_samples, mc_grid, extend_bbox=False):
         # Exactly MCGrid.generate_samples's asymmetric clipping.
         lo = np.maximum(lo, 0).astype(np.int64)
         hi = np.minimum(hi, n).astype(np.int64)
+        if clip_world_aabb is not None:
+            lo = np.maximum(lo, clip_lo)
+            hi = np.minimum(hi, clip_hi)
         if np.all(lo <= hi):
             boxes.append((lo, hi))
     return boxes
 
 
 def iter_bbox_kidx(cylinder_samples, mc_grid, *, extend_bbox=False,
-                   batch_size=262144, max_slab_voxels=4_194_304):
+                   batch_size=262144, max_slab_voxels=4_194_304,
+                   clip_world_aabb=None):
     """Yield globally ascending flat indices of the union of cylinder AABBs.
 
     Bounded by max_slab_voxels for the mark array, plus batch_size for output.
@@ -35,7 +47,8 @@ def iter_bbox_kidx(cylinder_samples, mc_grid, *, extend_bbox=False,
     """
     if batch_size <= 0 or max_slab_voxels <= 0:
         raise ValueError("batch_size and max_slab_voxels must be positive")
-    boxes = _box_ranges(cylinder_samples, mc_grid, extend_bbox)
+    boxes = _box_ranges(cylinder_samples, mc_grid, extend_bbox,
+                        clip_world_aabb=clip_world_aabb)
     if not boxes:
         return
     los = np.stack([b[0] for b in boxes])

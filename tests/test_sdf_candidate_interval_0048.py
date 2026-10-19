@@ -7,6 +7,19 @@ from utils.mc_utils import MCGrid
 
 
 class StraightCore:
+    def interpolate(self, ss, **kwargs):
+        ss=np.asarray(ss, dtype=float)
+        if kwargs.get('points', True) is False:
+            if kwargs.get('radius', True):
+                return {'radius':np.full((len(ss),2),.18)}
+            return {'frame':np.tile(np.eye(3),(len(ss),1,1))}
+        return {'points':np.stack((1.6*ss-.8,np.zeros_like(ss),np.zeros_like(ss)),axis=1),
+                'frame':np.tile(np.eye(3),(len(ss),1,1)),
+                'radius':np.full((len(ss),2),.18)}
+
+    def calc_x_radius(self,ss):
+        return np.full(len(ss),.21)
+
     def build_adapt_control_field(self, ss, **kwargs):
         points = np.stack((1.6*np.asarray(ss)-.8, np.zeros_like(ss), np.zeros_like(ss)),axis=1)
         return {'points':points,
@@ -38,6 +51,41 @@ class IntervalAuditTests(unittest.TestCase):
                    'adapt_debug_counts':False,
                    'sdf_candidate_interval_prune':True,
                    'sdf_candidate_interval_pad':.05}
+
+    def test_gate_envelope_includes_tangent_endpoint_acceptance(self):
+        from ngc.handle_utils.interval_envelope import localizer_gate_envelope
+        lower,upper=localizer_gate_envelope(self.curve.core,.3,.4,self.args,self.grid)
+        # Source segment center starts at -.32, but x-radius accepts samples
+        # farther left than the shortened cylinder's truncated endcap.
+        self.assertLess(lower[0], -.5)
+        self.assertGreater(upper[0], -.01)
+
+    def test_real_x_radius_one_includes_far_endpoint_region(self):
+        from ngc.handle_utils.interval_envelope import localizer_gate_envelope
+        old=self.curve.core.calc_x_radius
+        try:
+            # PWLACurve.calc_x_radius currently returns 1.0 for every sample.
+            self.curve.core.calc_x_radius=lambda s: np.ones(len(s))
+            lower,upper=localizer_gate_envelope(self.curve.core,.3,.4,self.args,self.grid)
+            # The interval's left endpoint is x=-.32. Valid ellipsoid support
+            # reaches beyond x=-1, rather than stopping at the cylinder cap.
+            self.assertLess(lower[0], -1.0)
+            self.assertGreater(upper[0], .6)
+        finally:
+            self.curve.core.calc_x_radius=old
+
+    def test_world_aabb_clips_original_union_without_reordering(self):
+        from ngc.handle_utils.bounded_filter import iter_bbox_kidx
+        c=self.curve.core
+        samples=c.build_adapt_control_field(np.linspace(0,1,45))
+        cylinder=self.curve._CurveHandle__gen_cyl_mesh({
+            **samples,'thetas':2*np.pi*np.linspace(0,1,16,endpoint=False)})
+        full=np.concatenate(list(iter_bbox_kidx(cylinder.cylinder_samples,self.grid,batch_size=31)))
+        clip=np.concatenate(list(iter_bbox_kidx(
+            cylinder.cylinder_samples,self.grid,batch_size=31,
+            clip_world_aabb=(np.array([-.4,-.4,-.4]), np.array([.2,.4,.4])))))
+        self.assertLess(len(clip),len(full))
+        np.testing.assert_array_equal(clip,full[np.isin(full,clip)])
 
     def test_audit_passes_then_filtered_results_match_original(self):
         def gather(roi):

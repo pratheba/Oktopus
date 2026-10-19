@@ -467,7 +467,7 @@ class CurveHandle():
             }
 
             cyl_mesh = self.__gen_cyl_mesh(intpl)
-            if interval_audit:
+            if interval_prune:
                 full_cylinder_for_audit = self.__gen_cyl_mesh({
                     "points": np.asarray(ctrl["points"]),
                     "frame": np.asarray(ctrl["frame"]),
@@ -509,7 +509,7 @@ class CurveHandle():
                 }
 
                 cyl_mesh = self.__gen_cyl_mesh(intpl)
-                if interval_audit:
+                if interval_prune:
                     full_cylinder_for_audit = self.__gen_cyl_mesh({
                         "points": np.asarray(intpl_full["points"]),
                         "frame": np.asarray(intpl_full["frame"]),
@@ -523,12 +523,30 @@ class CurveHandle():
                 samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         if interval_prune:
+            # 0048a: selecting only the truncated cylinder does not account
+            # for the along-tangent x_radius in localize_samples(). Near the
+            # interval endpoints valid points may lie OUTSIDE that tube.
+            # Instead intersect the original full-cylinder bbox union with
+            # the exact gate's sampled, tangent-aware world-space envelope.
+            from ngc.handle_utils.interval_envelope import (
+                localizer_gate_envelope, GateEnvelopeCandidates,
+            )
+            if full_cylinder_for_audit is None:
+                raise RuntimeError('0048a requires the original full broad phase')
+            gate_lo, gate_hi = localizer_gate_envelope(
+                self.core, adapt_arg['src_0'], adapt_arg['src_1'],
+                adapt_arg, mc_grid)
+            cyl_mesh = GateEnvelopeCandidates(full_cylinder_for_audit,
+                                              gate_lo, gate_hi)
+            print('[sdf_candidate_interval_0048a] world_gate_envelope=',
+                  gate_lo.tolist(), gate_hi.tolist(), flush=True)
+        if interval_prune:
             print('[sdf_candidate_interval_0048] mode=',
                   'audit' if interval_audit else 'prune',
                   'src=', (float(adapt_arg['src_0']), float(adapt_arg['src_1'])),
-                  'envelope=', (interval_lo, interval_hi),
-                  'pad=', float(adapt_arg.get('sdf_candidate_interval_pad',
-                                             adapt_arg.get('adapt_filter_src_interval_pad', 0.10))),
+                  'source_envelope=', (interval_lo, interval_hi),
+                  'candidate_mode=localizer_xyz_ellipsoid',
+                  'interval_pad_used_for_roi=False',
                   flush=True)
         if interval_audit:
             if full_cylinder_for_audit is None:
@@ -552,7 +570,10 @@ class CurveHandle():
                   'pruned=', proof['narrow_candidates'],
                   'excluded=', proof['excluded_candidates'],
                   'missing_accepted=', proof['missing_accepted'],
-                  'audit_s=', f"{proof['elapsed_s']:.3f}", flush=True)
+                  'audit_s=', f"{proof['elapsed_s']:.3f}",
+                  'candidate_reduction_pct=',
+                  f"{100.0 * proof['excluded_candidates'] / max(1, proof['full_candidates']):.2f}",
+                  flush=True)
         if bounded:
             # Optional compact staging is deliberately limited to the independent
             # rigid-radius SDF inference path. Its six fields are exactly those

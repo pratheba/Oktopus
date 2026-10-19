@@ -65,7 +65,7 @@ def audit_candidate_subset(full_chunks, narrow_chunks, idx2pts, localize,
                 if stop_on_missing:
                     raise ValueError(
                         '0048 interval candidate pruning UNSAFE: excluded accepted voxels '
-                        f'(examples={first_missing[:8]}). Increase interval pad or disable pruning.')
+                        f'(examples={first_missing[:8]}). Disable pruning; do not bypass audit.')
     if remaining is not None or next(narrowed, None) is not None:
         raise ValueError('Narrow candidate was not found in full candidate union')
     return dict(full_candidates=full_count, narrow_candidates=narrow_count,
