@@ -4,6 +4,7 @@ import numpy as np
 import trimesh
 import torch
 from time import time
+from copy import copy
 from tqdm.autonotebook import tqdm
 
 #import app_utils as utils
@@ -16,6 +17,7 @@ from snug_field_io import (
 )
 from agent_3dvec_base import AgentBase
 from seam_optimization import build_seam_plan, warp_accessory_queries
+from root_leaf_combination import build_root_leaf_plan, export_root_leaf_scene
 from post_sdf_seam_blend import (
     build_post_sdf_seam_plan, overlap_crossfade_sdf, overlap_crossfade_weights,
 )
@@ -1488,6 +1490,7 @@ class AgentSDF(AgentBase):
                     key_text.startswith('rfta_')
                     or key_text in {
                         'combine_adaptations',
+                        'root_leaves',
                         'individual_support_aware_mc',
                         'export_individual_meshes',
                         'sdf_inference_batch_size',
@@ -1637,6 +1640,20 @@ class AgentSDF(AgentBase):
         combine_adaptations = bool(
             extraction_config.get("combine_adaptations", False)
         )
+        # This mode deliberately produces multiple distinct mesh objects.
+        # A single global min-union field cannot preserve leaf ownership at
+        # leaf/leaf intersections, even with a root-vs-leaves blend graph.
+        root_leaf_plan = build_root_leaf_plan(
+            adaptation_items,
+            extraction_config.get('root_leaves'),
+        )
+        if root_leaf_plan is not None:
+            if not combine_adaptations:
+                raise ValueError('root_leaves requires combine_adaptations: true')
+            if requested_extractor != 'marching_cubes':
+                raise ValueError('root_leaves currently requires Marching Cubes extraction')
+            print('[root_leaves] enabled parts=', list(root_leaf_plan.part_names),
+                  'legacy_union=', root_leaf_plan.export_legacy_combined)
         print(
             "[part_adapt] adaptations=",
             len(adaptation_items),
@@ -1687,13 +1704,21 @@ class AgentSDF(AgentBase):
         # For independent per-item meshes, the full accumulator is unused.
         # Broad filtering uses only MCGrid geometry and separate marks.
         # An uninitialized, disk-backed accumulator need not be filled.
-        if combine_adaptations and getattr(mc_grid, 'geometry_only', False):
-            raise RuntimeError('Combined SDF needs a non-geometry-only MCGrid')
-        if combine_adaptations or not getattr(mc_grid, '_deferred_initialization', False):
+        # Root/leaves assemblies do not require a global SDF accumulator unless
+        # the user also explicitly requests the old fused mesh.
+        needs_global_union = (
+            root_leaf_plan is None or root_leaf_plan.export_legacy_combined
+        ) if combine_adaptations else False
+        if needs_global_union and getattr(mc_grid, 'geometry_only', False):
+            raise RuntimeError('Combined legacy SDF needs a non-geometry-only MCGrid')
+        if needs_global_union or (
+            not getattr(mc_grid, '_deferred_initialization', False)
+            and not getattr(mc_grid, 'geometry_only', False)
+        ):
             mc_grid.clear_grid()
         else:
             print('[part_adapt] skipping unused full-grid initialization '
-                  '(combine_adaptations=false)')
+                  '(riggable root-leaves or independent outputs)')
 
         # Fit per blend_group before starting any expensive grid inference.
         # A group may reuse the same puffer source as another group without
@@ -1712,6 +1737,10 @@ class AgentSDF(AgentBase):
             raw_config.get("blend_groups", {}) if isinstance(raw_config, dict) else {},
         )
 
+        # Only the finished logical parts are kept as meshes, not a dense SDF
+        # per leaf. This preserves intra-tentacle seam optimization while
+        # avoiding a global leaf/leaf Boolean fusion in the rigging output.
+        rig_part_meshes = {} if root_leaf_plan is not None else None
         adapted_support_cache = {}
         # Combine incrementally. Do not retain a complete grid per adaptation:
         # one 512^3 value grid plus its occupancy mask can exceed 1 GiB.
@@ -2403,7 +2432,12 @@ class AgentSDF(AgentBase):
                 # per-item grid construction and its Marching Cubes pass.
                 mesh_acc = None
                 individual_mesh_elapsed = 0.0
-                if export_individual_meshes:
+                part_group = str(adapt_arg.get("blend_group", "none"))
+                rig_single_part = (
+                    root_leaf_plan is not None
+                    and part_group in ("none", "", "false")
+                )
+                if export_individual_meshes or rig_single_part:
                     mesh_t0 = time()
                     # Do not fall back to allocating a second full RAM grid.
                     # The caller clears this grid immediately, so defer its
@@ -2427,12 +2461,15 @@ class AgentSDF(AgentBase):
                                 "individual_support_aware_mc", False
                             )
                         )
-                        and blend_group_name.lower() not in {"none", "", "false"}
+                        and (blend_group_name.lower() not in {"none", "", "false"}
+                             or root_leaf_plan is not None)
                     )
                     individual_mc_method = (
-                        "extract_mesh_masked"
-                        if use_support_aware_individual_mc
-                        else "extract_mesh"
+                        "extract_mesh_masked_cropped"
+                        if rig_single_part
+                        else ("extract_mesh_masked"
+                              if use_support_aware_individual_mc
+                              else "extract_mesh")
                     )
                     if use_support_aware_individual_mc:
                         print(
@@ -2454,7 +2491,14 @@ class AgentSDF(AgentBase):
                         mc_method=individual_mc_method,
                         context=f"adapt_{item_index}",
                     )
-                    if len(mesh_acc.faces) > 0:
+                    if rig_single_part:
+                        part_name = root_leaf_plan.item_to_part[item_index]
+                        if part_name in rig_part_meshes:
+                            raise RuntimeError(f'Duplicate root-leaf part: {part_name}')
+                        # Keep the full support-aware mesh, not the largest
+                        # component of a partial adapted section.
+                        rig_part_meshes[part_name] = mesh_acc
+                    if export_individual_meshes and len(mesh_acc.faces) > 0:
                         parts = mesh_acc.split(only_watertight=False)
                         if len(parts) > 0:
                             mesh_acc = max(parts, key=lambda m: len(m.faces))
@@ -2481,11 +2525,26 @@ class AgentSDF(AgentBase):
                     if blend_group not in ("none", "", "false"):
                         group = blend_groups.get(blend_group)
                         if group is None:
+                            # Riggable high-res cases can keep the intra-leaf
+                            # seam field disk-backed, one finished group at a
+                            # time, without allocating a global union grid.
+                            group_grid = None
+                            if root_leaf_plan is not None and getattr(mc_grid, 'memmap_dir', None):
+                                group_grid = utils.create_grid_like(
+                                    mc_grid, defer_initial_fill=True
+                                )
+                                group_grid.clear_grid()
+                                values = group_grid.val_grid
+                                marks = group_grid.empty_marks
+                            else:
+                                # Preserve the existing allocation semantics
+                                # for all legacy combined-SDF configurations.
+                                values = np.full_like(mc_grid.val_grid, 10.0)
+                                marks = np.ones_like(mc_grid.empty_marks, dtype=bool)
                             group = {
-                                "val_grid": np.full_like(mc_grid.val_grid, 10.0),
-                                "empty_marks": np.ones_like(
-                                    mc_grid.empty_marks, dtype=bool
-                                ),
+                                "val_grid": values,
+                                "empty_marks": marks,
+                                "part_grid": group_grid,
                                 "blend_delta": float(
                                     adapt_arg.get("mesh_blend_delta", 0.0)
                                 ),
@@ -2548,31 +2607,54 @@ class AgentSDF(AgentBase):
 
                         blend_group_remaining[blend_group] -= 1
                         if blend_group_remaining[blend_group] == 0:
-                            valid_group = ~group_empty
-                            np.minimum(
-                                mc_grid.val_grid,
-                                group_vals,
-                                out=mc_grid.val_grid,
-                                where=valid_group,
-                            )
-                            mc_grid.empty_marks[valid_group] = False
-                            del valid_group
+                            if root_leaf_plan is not None:
+                                part_name = root_leaf_plan.group_to_part[blend_group]
+                                if part_name in rig_part_meshes:
+                                    raise RuntimeError(f'Duplicate root-leaf part: {part_name}')
+                                # Reuse the completed group's values and marks
+                                # without allocating/copying another dense grid.
+                                part_grid = group['part_grid']
+                                if part_grid is None:
+                                    part_grid = copy(mc_grid)
+                                    part_grid.val_grid = group_vals
+                                    part_grid.empty_marks = group_empty
+                                part_mesh = self.extract_surface_mesh(
+                                    part_grid, extraction_config,
+                                    mc_method='extract_mesh_masked_cropped',
+                                    context=f'root_leaf_{part_name}',
+                                )
+                                rig_part_meshes[part_name] = part_mesh
+                                del part_grid
+                                print('[root_leaves] completed part=', part_name,
+                                      'faces=', len(part_mesh.faces))
+                            if root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
+                                valid_group = ~group_empty
+                                np.minimum(
+                                    mc_grid.val_grid,
+                                    group_vals,
+                                    out=mc_grid.val_grid,
+                                    where=valid_group,
+                                )
+                                mc_grid.empty_marks[valid_group] = False
+                                del valid_group
                             del blend_groups[blend_group]
                             print(
                                 "[part_adapt group release]",
                                 f"group={blend_group}",
-                                "merged_into_final=True",
+                                "merged_into_final=",
+                                root_leaf_plan is None or root_leaf_plan.export_legacy_combined,
                             )
 
                         del new_local, overlap_local, group_empty_local
                         del group_vals, group_empty, group
                     else:
-                        current = mc_grid.val_grid[kidx]
-                        mc_grid.val_grid[kidx] = np.minimum(
-                            current, np.asarray(vals_final)
-                        )
-                        mc_grid.empty_marks[kidx] = False
-                        del current
+                        if root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
+                            current = mc_grid.val_grid[kidx]
+                            mc_grid.val_grid[kidx] = np.minimum(
+                                current, np.asarray(vals_final)
+                            )
+                            mc_grid.empty_marks[kidx] = False
+                            del current
 
                 accumulate_elapsed = time() - accumulate_t0
 
@@ -2617,6 +2699,15 @@ class AgentSDF(AgentBase):
                 "Unreleased blend-group accumulators at end of adaptation: "
                 f"{sorted(blend_groups)}"
             )
+
+        if root_leaf_plan is not None:
+            export_root_leaf_scene(
+                rig_part_meshes, output_folder, out_name, root_leaf_plan
+            )
+            if not root_leaf_plan.export_legacy_combined:
+                print('[part_adapt] riggable root-leaves exported; '
+                      'global Boolean union deliberately skipped')
+                return
 
         valid_final = int(np.sum(~mc_grid.empty_marks))
         if valid_final == 0:

@@ -683,6 +683,12 @@ class AgentSDFDC(AgentSDF):
         method = spec if isinstance(spec, str) else "run_ours"
         method = method.lower()
 
+        # In the root/leaves rigging exporter each leaf is a separate
+        # support-masked native MC field. Avoid constructing the full DCSDD
+        # input arrays merely to run this local MC extraction.
+        if method in {'mc', 'marching_cubes'} and mc_method == 'extract_mesh_masked_cropped':
+            return sdf_grid.extract_mesh_masked_cropped()
+
         name = str(context).split(":")[-1] if context else ""
         if not name:
             name = str(config.get("shape", "shape"))

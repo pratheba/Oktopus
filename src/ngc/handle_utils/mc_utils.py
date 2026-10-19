@@ -256,6 +256,50 @@ class MCGrid():
         )
         return mesh
 
+    def extract_mesh_masked_cropped(self, face_flip=True, pad=1):
+        """Masked MC on the bbox of evaluated samples; useful for separate
+        rigging parts on very large full-resolution grids.
+
+        Same support validity and world coordinates as extract_mesh_masked(),
+        but avoids invoking skimage on the mostly-empty global volume.
+        """
+        n = self.reso + 1
+        valid_idx = np.flatnonzero(~self.empty_marks)
+        if valid_idx.size == 0:
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64),
+                                   process=False)
+        axis0 = valid_idx // (n * n)
+        axis1 = (valid_idx // n) % n
+        axis2 = valid_idx % n
+        lo = np.maximum([axis0.min(), axis1.min(), axis2.min()], 0).astype(int)
+        hi = np.minimum([axis0.max(), axis1.max(), axis2.max()], n-1).astype(int)
+        lo = np.maximum(lo - pad, 0)
+        hi = np.minimum(hi + pad, n-1)
+        slc = tuple(slice(int(lo[i]), int(hi[i]) + 1) for i in range(3))
+        values = np.ascontiguousarray(self.val_grid.reshape((n, n, n))[slc])
+        valid = np.ascontiguousarray((~self.empty_marks).reshape((n, n, n))[slc])
+        level = float(self.grid_config['level'])
+        if not np.any(valid):
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64),
+                                   process=False)
+        active = values[valid]
+        if not (np.any(active < level) and np.any(active > level)):
+            return trimesh.Trimesh(vertices=np.zeros((0, 3)),
+                                   faces=np.zeros((0, 3), dtype=np.int64),
+                                   process=False)
+        step = self.grid_config['step']
+        verts, faces, _, _ = skimage.measure.marching_cubes(
+            values, level=level, spacing=[step]*3, mask=valid
+        )
+        verts = verts + (self.grid_config['origin'] + lo * step)
+        if self.grid_config['do_flip']:
+            verts = verts[:, [2, 1, 0]]
+        if face_flip:
+            faces = faces[:, [0, 2, 1]]
+        return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
     def extract_mesh_masked(self, face_flip=True):
         """Marching Cubes only where the SDF was actually evaluated.
 

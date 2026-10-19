@@ -70,6 +70,10 @@ def start_test(opt):
             geometry_only = True
         elif isinstance(_adapt_spec, dict):
             geometry_only = not bool(_adapt_spec.get('combine_adaptations', False))
+            _rig = _adapt_spec.get('root_leaves')
+            if isinstance(_rig, dict) and not bool(_rig.get('export_legacy_combined', False)):
+                # Multi-object rigging output has no global union SDF grid.
+                geometry_only = True
 
     grid_config = {
         'reso': args.resolution,
