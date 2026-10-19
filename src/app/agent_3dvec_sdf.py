@@ -1502,6 +1502,7 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_replay_dir',
                         'dcsdd_stream_accepted_count',
                         'dcsdd_stream_one_pass',
+                        'sdf_localize_after_gate',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -1591,6 +1592,8 @@ class AgentSDF(AgentBase):
         adaptation_items = expanded_adaptation_items
         if len(adaptation_items) == 0:
             raise RuntimeError("No enabled adaptation entries were found.")
+        if extraction_config.get('sdf_localize_after_gate', False) and not extraction_config.get('dcsdd_stream_one_pass', False):
+            raise ValueError('--sdf-localize-after-gate currently requires --dcsdd-stream-one-pass')
         if extraction_config.get('dcsdd_stream_one_pass', False):
             if len(adaptation_items) != 1:
                 raise ValueError('--dcsdd-stream-one-pass currently requires one independent rigid adaptation')
@@ -1768,6 +1771,8 @@ class AgentSDF(AgentBase):
                     'accessory_curve_idx': self.feat_dict[accessory_key],
                 }
                 adapt_arg.update(item)
+                adapt_arg['sdf_localize_after_gate'] = bool(
+                    extraction_config.get('sdf_localize_after_gate', False))
                 # Opt-in DCSDD broad-phase acceleration.  Only voxel marking
                 # changes; no radius, interval, localization or SDF parameters.
                 adapt_arg.setdefault(

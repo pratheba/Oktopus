@@ -113,7 +113,8 @@ class _LocalizeMixin:
             best_t[take] = t[take]
         return best_t
 
-    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None, k_project=1):
+    def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None, k_project=1,
+                         sdf_localize_after_gate=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
@@ -177,9 +178,11 @@ class _LocalizeMixin:
         #print(samples_local0)
         # And all are bounding to radius
         w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
-        # train radius for model coords
-        r_train = self.interpolate(sample_keypoint_map, points=False, frame=False, radius=True, radius_type="train")["radius"]
-        # cylinder radius for inside filtering
+        # The cylinder gate needs only cylinder radii and the local projection.
+        # For SDF streaming, postpone the train-radius interpolation, normalized
+        # model coordinates and angles until AFTER rejecting outside samples.
+        # This preserves the same gate and per-sample formulas while skipping
+        # model-coordinate work for rejected broad-phase candidates.
         r_cyl = self.interpolate(sample_keypoint_map, points=False, frame=False, radius=True, radius_type="cylinder")["radius"]
         r_cyl = (
             r_cyl * float(runtime_cylinder_radius_scale)
@@ -187,6 +190,36 @@ class _LocalizeMixin:
         )
         x_radius = self.calc_x_radius(sample_keypoint_map)
 
+        if sdf_localize_after_gate and not return_sdf and not update_curve:
+            radius_cyl_temp = np.concatenate([x_radius[:, None], r_cyl], axis=1)
+            samples_local_cyl = samples_local0 / (radius_cyl_temp + 1e-12)
+            inside_cyl = np.linalg.norm(samples_local_cyl, axis=1) <= norm
+            selected_t = sample_keypoint_map[inside_cyl]
+            selected_local0 = samples_local0[inside_cyl]
+            selected_r_train = self.interpolate(
+                selected_t, points=False, frame=False, radius=True,
+                radius_type="train",
+            )["radius"]
+            selected_x_radius = x_radius[inside_cyl]
+            radius_train_temp = np.concatenate(
+                [selected_x_radius[:, None], selected_r_train], axis=1)
+            samples_local_train = selected_local0 / (radius_train_temp + 1e-12)
+            u_n, v_n = samples_local_train[:, 1], samples_local_train[:, 2]
+            samples_local_train[:, 0] += 2 * selected_t - 1.0
+            return {
+                'samples': pointcloudsamples[inside_cyl],
+                'samples_local': samples_local_train,
+                'coords': selected_t,
+                'rho': np.sqrt(selected_local0[:, 1]**2 + selected_local0[:, 2]**2),
+                'rho_n': np.sqrt(u_n**2 + v_n**2),
+                'angles': np.arctan2(v_n, u_n),
+                'radius': selected_r_train,
+                'radius_cylinder': r_cyl[inside_cyl],
+                'frame_mat': frame_mat[inside_cyl],
+            }, sample_index[inside_cyl]
+
+        # Legacy behavior remains the default for all other SDF/UDF paths.
+        r_train = self.interpolate(sample_keypoint_map, points=False, frame=False, radius=True, radius_type="train")["radius"]
         radius_train_temp = np.concatenate([x_radius[:, None], r_train], axis=1)
         radius_cyl_temp = np.concatenate([x_radius[:, None], r_cyl], axis=1)
 
@@ -982,6 +1015,7 @@ class _LocalizeMixin:
             projection_s0=src_0 if use_interval_projection else None,
             projection_s1=src_1 if use_interval_projection else None,
             k_project=int(adapt_arg.get("loop_projection_candidates", 1)),
+            sdf_localize_after_gate=bool(adapt_arg.get("sdf_localize_after_gate", False)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

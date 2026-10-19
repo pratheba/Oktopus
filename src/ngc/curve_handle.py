@@ -494,11 +494,18 @@ class CurveHandle():
                 n_candidate = 0
                 n_accepted = 0
                 localize_compute_s = 0.0
+                profile_sdf = bool(adapt_arg.get('sdf_localize_after_gate', False))
+                stream_t0 = perf_counter()
+                point_decode_s = 0.0
+                callback_s = 0.0
                 quiet_arg = dict(adapt_arg)
                 quiet_arg['adapt_debug_counts'] = False
                 for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
                     n_candidate += len(candidate_idx)
+                    point_t0 = perf_counter() if profile_sdf else None
                     sample_chunk = mc_grid.idx2pts(candidate_idx)
+                    if profile_sdf:
+                        point_decode_s += perf_counter() - point_t0
                     clock = perf_counter()
                     acc_chunk, _, accepted_local = self.core.localize_samples_adapt(
                         sample_chunk, quiet_arg)
@@ -506,7 +513,18 @@ class CurveHandle():
                     selected = candidate_idx[accepted_local]
                     n_accepted += len(selected)
                     if len(selected):
+                        callback_t0 = perf_counter() if profile_sdf else None
                         stream_callback(acc_chunk, selected)
+                        if profile_sdf:
+                            callback_s += perf_counter() - callback_t0
+                if profile_sdf:
+                    print('[sdf_localize_0041] candidates=', n_candidate,
+                          'accepted=', n_accepted,
+                          'decode_s=', f'{point_decode_s:.3f}',
+                          'localize_s=', f'{localize_compute_s:.3f}',
+                          'inference_write_callback_s=', f'{callback_s:.3f}',
+                          'traversal_total_s=', f'{perf_counter() - stream_t0:.3f}',
+                          flush=True)
                 if adapt_arg.get('adapt_debug_counts', True):
                     print('[filter_grid_adapt] bounded_stream=True',
                           'candidate_samples=', n_candidate,

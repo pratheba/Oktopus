@@ -139,6 +139,8 @@ def start_test(opt):
         arg['dcsdd_stream_replay_metadata'] = True
     if args.dcsdd_stream_one_pass:
         arg['dcsdd_stream_one_pass'] = True
+    if args.sdf_localize_after_gate:
+        arg['sdf_localize_after_gate'] = True
     if args.dcsdd_stream_accepted_count is not None:
         arg['dcsdd_stream_accepted_count'] = args.dcsdd_stream_accepted_count
     if args.dcsdd_stream_replay_dir:
@@ -272,6 +274,8 @@ if __name__ == '__main__':
                    help='Optional node-local scratch directory for compact predictions and replay metadata (must have sufficient free space)')
     p.add_argument('--dcsdd-stream-replay-metadata', action='store_true',
                    help='0038: cache only index, curve coordinate and radial norm during model pass; replay instead of re-localizing crop bounds and composition')
+    p.add_argument('--sdf-localize-after-gate', action='store_true',
+                   help='0041: defer train-radius/model feature construction until after exact cylinder acceptance; supported for 0040 independent rigid boot one-pass streaming')
     p.add_argument('--dcsdd-stream-one-pass', action='store_true',
                    help='0040: discover accepted count automatically in one localization pass; fixed-size accepted-sample inference batches (test mesh parity before production)')
     p.add_argument('--dcsdd-stream-accepted-count', type=int, default=None,
