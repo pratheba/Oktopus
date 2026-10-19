@@ -1668,6 +1668,7 @@ class AgentSDF(AgentBase):
                         'sdf_inference_batch_size',
                         'sdf_perf_timing',
                         'dcsdd_fast_bbox_marking',
+                        'dcsdd_crop_grid',
                         'dcsdd_bounded_filtering',
                         'dcsdd_filter_batch_size',
                         'dcsdd_compact_staging',
