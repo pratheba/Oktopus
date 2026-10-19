@@ -1529,6 +1529,13 @@ class AgentSDF(AgentBase):
                 wrap_arg['sdf_stream_combined_wrap'] = True
                 wrap_arg['dcsdd_bounded_filtering'] = True
                 wrap_arg['dcsdd_fast_bbox_marking'] = True
+                # 0048: optional conservative interval-ROI broad phase for
+                # the shared stream, with pre-inference exact-localizer audit.
+                for roi_key in ('sdf_candidate_interval_prune',
+                                'sdf_candidate_interval_audit',
+                                'sdf_candidate_interval_pad'):
+                    if roi_key in cfg and roi_key not in wrap_arg:
+                        wrap_arg[roi_key] = cfg[roi_key]
                 wrap_arg['dcsdd_filter_batch_size'] = int(
                     cfg.get('dcsdd_filter_batch_size', 262144))
                 if int(wrap_arg['dcsdd_filter_batch_size']) <= 0:
@@ -1679,6 +1686,9 @@ class AgentSDF(AgentBase):
                         'sdf_optimize_zero_angular_wrap',
                         'sdf_stream_combined_wrap',
                         'sdf_stream_unified',
+                        'sdf_candidate_interval_prune',
+                        'sdf_candidate_interval_audit',
+                        'sdf_candidate_interval_pad',
                         'surface_extraction',
                         'mesh_extractor',
                     }
@@ -2033,6 +2043,11 @@ class AgentSDF(AgentBase):
                     'dcsdd_fast_bbox_marking',
                     bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),
                 )
+                for roi_key in ('sdf_candidate_interval_prune',
+                                'sdf_candidate_interval_audit',
+                                'sdf_candidate_interval_pad'):
+                    if roi_key in extraction_config and roi_key not in adapt_arg:
+                        adapt_arg[roi_key] = extraction_config[roi_key]
                 stream_requested = bool(extraction_config.get('dcsdd_stream_inference', False))
                 compact_requested = bool(extraction_config.get('dcsdd_compact_staging', False))
                 # Only independent pieces with standard model input can drop

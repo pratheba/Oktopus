@@ -151,6 +151,12 @@ def start_test(opt):
         arg['sdf_stream_combined_wrap'] = True
     if args.sdf_stream_unified:
         arg['sdf_stream_unified'] = True
+    if args.sdf_candidate_interval_prune:
+        arg['sdf_candidate_interval_prune'] = True
+    if args.sdf_candidate_interval_audit:
+        arg['sdf_candidate_interval_audit'] = True
+    if args.sdf_candidate_interval_pad is not None:
+        arg['sdf_candidate_interval_pad'] = args.sdf_candidate_interval_pad
     if args.dcsdd_stream_accepted_count is not None:
         arg['dcsdd_stream_accepted_count'] = args.dcsdd_stream_accepted_count
     if args.dcsdd_stream_replay_dir:
@@ -286,6 +292,12 @@ if __name__ == '__main__':
                    help='0038: cache only index, curve coordinate and radial norm during model pass; replay instead of re-localizing crop bounds and composition')
     p.add_argument('--sdf-stream-unified', action='store_true',
                    help='0047 shared evaluator for independent rigid or validated two-part combined wrap DCSDD, automatically selects existing safe composition mode')
+    p.add_argument('--sdf-candidate-interval-prune', action='store_true',
+                   help='0048: experimental smaller broad-phase cylinder limited to the padded adaptation source interval')
+    p.add_argument('--sdf-candidate-interval-audit', action='store_true',
+                   help='0048: validate every removed broad candidate using the UNCHANGED exact localizer before inference; start here at 512')
+    p.add_argument('--sdf-candidate-interval-pad', type=float, default=None,
+                   help='0048: source-curve parameter padding on each end (default 0.10); increase if audit fails')
     p.add_argument('--sdf-stream-combined-wrap', action='store_true',
                    help='0046 experimental two-piece combined wrap cone: one-pass inference, sparse seam blend, crop-first DCSDD')
     p.add_argument('--sdf-optimize-zero-angular-wrap', action='store_true',

@@ -343,8 +343,26 @@ class CurveHandle():
         use_interval_projection = bool(
             adapt_arg.get("use_interval_projection", True)
         )
-        use_src_interval_filter = bool(
-            adapt_arg.get("adapt_filter_use_src_interval", False)
+        # 0048: explicit experimental ROI optimization for shared streaming.
+        # The old full-curve candidate set is available for exact localizer
+        # audits before enabling pruning on a new adaptation/configuration.
+        interval_prune = bool(adapt_arg.get('sdf_candidate_interval_prune', False))
+        interval_audit = bool(adapt_arg.get('sdf_candidate_interval_audit', False))
+        if interval_prune and float(adapt_arg.get(
+                'sdf_candidate_interval_pad',
+                adapt_arg.get('adapt_filter_src_interval_pad', 0.10))) < 0.0:
+            raise ValueError('0048 interval pad must be nonnegative')
+        if interval_audit and not interval_prune:
+            raise ValueError('0048 interval audit requires interval pruning')
+        if interval_prune and (
+                not adapt_arg.get('dcsdd_bounded_filtering', False)
+                or adapt_arg.get('_dcsdd_stream_callback') is None
+                or not use_interval_projection
+                or adapt_arg.get('mode', 'direct') != 'direct'):
+            raise ValueError('0048 interval pruning requires bounded direct streaming with interval projection')
+        use_src_interval_filter = (
+            bool(adapt_arg.get("adapt_filter_use_src_interval", False))
+            or interval_prune
         ) and use_interval_projection
 
         s_full = np.linspace(0.0, 1.0, n_sample_curve)
@@ -359,7 +377,9 @@ class CurveHandle():
             src_hi = max(src_0, src_1)
             interval_pad = max(
                 0.0,
-                float(adapt_arg.get("adapt_filter_src_interval_pad", 0.10)),
+                float(adapt_arg.get(
+                    "sdf_candidate_interval_pad",
+                    adapt_arg.get("adapt_filter_src_interval_pad", 0.10))),
             )
             interval_lo = max(0.0, src_lo - interval_pad)
             interval_hi = min(1.0, src_hi + interval_pad)
@@ -411,6 +431,7 @@ class CurveHandle():
         fast_bbox = bool(adapt_arg.get("dcsdd_fast_bbox_marking", False)) or bounded
         broad_t0 = perf_counter()
 
+        full_cylinder_for_audit = None
         if use_control_filter:
             # IMPORTANT: build the control field on full [0, 1] exactly as before.
             # Slicing only after this point preserves the previous smoothing and
@@ -446,6 +467,13 @@ class CurveHandle():
             }
 
             cyl_mesh = self.__gen_cyl_mesh(intpl)
+            if interval_audit:
+                full_cylinder_for_audit = self.__gen_cyl_mesh({
+                    "points": np.asarray(ctrl["points"]),
+                    "frame": np.asarray(ctrl["frame"]),
+                    "radius": radius,
+                    "thetas": intpl["thetas"],
+                })
             samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
         else:
@@ -467,6 +495,7 @@ class CurveHandle():
                 radius = radius * filter_radius_scale + filter_radius_add
                 radius = radius * filter_norm
 
+                intpl_full = intpl
                 intpl = {
                     "points": np.asarray(intpl["points"])[interval_slice],
                     "frame": np.asarray(intpl["frame"])[interval_slice],
@@ -480,12 +509,50 @@ class CurveHandle():
                 }
 
                 cyl_mesh = self.__gen_cyl_mesh(intpl)
+                if interval_audit:
+                    full_cylinder_for_audit = self.__gen_cyl_mesh({
+                        "points": np.asarray(intpl_full["points"]),
+                        "frame": np.asarray(intpl_full["frame"]),
+                        "radius": radius,
+                        "thetas": intpl["thetas"],
+                    })
                 samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
             else:
                 cyl_mesh = self.cyl_mesh
                 samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
+        if interval_prune:
+            print('[sdf_candidate_interval_0048] mode=',
+                  'audit' if interval_audit else 'prune',
+                  'src=', (float(adapt_arg['src_0']), float(adapt_arg['src_1'])),
+                  'envelope=', (interval_lo, interval_hi),
+                  'pad=', float(adapt_arg.get('sdf_candidate_interval_pad',
+                                             adapt_arg.get('adapt_filter_src_interval_pad', 0.10))),
+                  flush=True)
+        if interval_audit:
+            if full_cylinder_for_audit is None:
+                raise RuntimeError('0048 audit requested without a full-curve cylinder')
+            from ngc.handle_utils.interval_audit import audit_candidate_subset
+            batch_audit = int(adapt_arg.get('dcsdd_filter_batch_size', 262144))
+            quiet_arg = dict(adapt_arg)
+            quiet_arg['adapt_debug_counts'] = False
+            quiet_arg.pop('_dcsdd_stream_callback', None)
+
+            def _localize_excluded(points):
+                _, _, inside = self.core.localize_samples_adapt(points, quiet_arg)
+                return inside
+
+            proof = audit_candidate_subset(
+                full_cylinder_for_audit.iter_filter_grid_indices(
+                    mc_grid, batch_size=batch_audit),
+                cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_audit),
+                mc_grid.idx2pts, _localize_excluded)
+            print('[sdf_candidate_interval_0048 audit] full=', proof['full_candidates'],
+                  'pruned=', proof['narrow_candidates'],
+                  'excluded=', proof['excluded_candidates'],
+                  'missing_accepted=', proof['missing_accepted'],
+                  'audit_s=', f"{proof['elapsed_s']:.3f}", flush=True)
         if bounded:
             # Optional compact staging is deliberately limited to the independent
             # rigid-radius SDF inference path. Its six fields are exactly those
