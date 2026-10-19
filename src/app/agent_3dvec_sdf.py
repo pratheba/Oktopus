@@ -1686,6 +1686,7 @@ class AgentSDF(AgentBase):
                         'sdf_optimize_zero_angular_wrap',
                         'sdf_stream_combined_wrap',
                         'sdf_stream_unified',
+                        'sdf_puffer_sparse_groups',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
                         'sdf_candidate_interval_pad',
@@ -1840,11 +1841,34 @@ class AgentSDF(AgentBase):
             adaptation_items,
             extraction_config.get('root_leaves'),
         )
+        # 0049: only replace dense grid staging; keep existing per-adaptation
+        # filters, mapping, model inference, avatar cut and seam rules intact.
+        puffer_sparse = bool(extraction_config.get('sdf_puffer_sparse_groups', False))
+        if puffer_sparse:
+            if (root_leaf_plan is None or not combine_adaptations
+                    or root_leaf_plan.export_legacy_combined
+                    or requested_extractor != 'ours'
+                    or not hasattr(self, '_dcsdd_band')):
+                raise ValueError('0049 sparse puffer groups require root_leaves, '
+                                 'combine_adaptations, DCSDD ours, and no legacy union')
+            from app.sdf_puffer_sparse_groups import SparseSDFGroup, crop_final_piece
+            print('[sdf_puffer_0049] crop-first individual and group fields; '
+                  'existing corrections preserved; no global leaf/leaf union', flush=True)
+
         if root_leaf_plan is not None:
             if not combine_adaptations:
                 raise ValueError('root_leaves requires combine_adaptations: true')
-            if requested_extractor != 'marching_cubes':
-                raise ValueError('root_leaves currently requires Marching Cubes extraction')
+            if requested_extractor not in ('marching_cubes', 'ours'):
+                raise ValueError('root_leaves currently supports MC and DCSDD ours only')
+            if requested_extractor == 'ours':
+                methods = extraction_config.get('dcsdd_methods', ['ours'])
+                if isinstance(methods, str):
+                    methods = [m.strip() for m in methods.split(',')]
+                if 'ours' not in methods:
+                    raise ValueError('root_leaves DCSDD extraction requires --dcsdd-methods ours')
+                extraction_config['dcsdd_crop_grid'] = True
+                print('[root_leaves] extractor=ours group_by_group; '
+                      'outputs are UNSTITCHED until attachment topology is implemented')
             print('[root_leaves] enabled parts=', list(root_leaf_plan.part_names),
                   'legacy_union=', root_leaf_plan.export_legacy_combined)
         print(
@@ -2664,14 +2688,23 @@ class AgentSDF(AgentBase):
                     # Do not fall back to allocating a second full RAM grid.
                     # The caller clears this grid immediately, so defer its
                     # first full-volume initialization in the constructor.
-                    acc_grid = utils.create_grid_like(
-                        mc_grid,
-                        defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
-                    )
-                    acc_grid.clear_grid()
-                    acc_grid.update_grid(
-                        vals_final, kidx, mark=True, mode="overwrite"
-                    )
+                    if puffer_sparse:
+                        _step = float(mc_grid.grid_config['step'])
+                        acc_grid, _crop_start, _crop_side = crop_final_piece(
+                            mc_grid, kidx, vals_final,
+                            band=self._dcsdd_band(_step, extraction_config),
+                            bounds_fn=self._crop_cube_bounds, batch_size=batch_size)
+                        print('[sdf_puffer_0049] individual crop=', _crop_side,
+                              'start=', _crop_start.tolist(), flush=True)
+                    else:
+                        acc_grid = utils.create_grid_like(
+                            mc_grid,
+                            defer_initial_fill=bool(getattr(mc_grid, 'memmap_dir', None)),
+                        )
+                        acc_grid.clear_grid()
+                        acc_grid.update_grid(
+                            vals_final, kidx, mark=True, mode="overwrite"
+                        )
 
                     # Blend-group members are partial SDF fields. Unknown voxels
                     # carry the +10 background sentinel; masked MC prevents an
@@ -2701,6 +2734,8 @@ class AgentSDF(AgentBase):
                         )
 
                     individual_extraction_config = dict(extraction_config)
+                    if puffer_sparse:
+                        individual_extraction_config['dcsdd_crop_grid'] = False
                     if hasattr(self, "run_all_reconstructions"):
                         accessory_label = accessory_key.replace("|", "_")
                         individual_extraction_config["dcsdd_output_pattern"] = (
@@ -2744,7 +2779,49 @@ class AgentSDF(AgentBase):
                 if combine_adaptations:
                     blend_group = str(adapt_arg.get("blend_group", "none"))
 
-                    if blend_group not in ("none", "", "false"):
+                    if puffer_sparse and blend_group not in ("none", "", "false"):
+                        group = blend_groups.get(blend_group)
+                        if group is None:
+                            group = SparseSDFGroup(
+                                blend_delta=float(adapt_arg.get('mesh_blend_delta', 0.0)))
+                            blend_groups[blend_group] = group
+                        post_pair = post_sdf_seam_plan.get(item_index)
+                        if post_pair is not None and post_pair.group != blend_group:
+                            raise RuntimeError('Post-SDF seam/group mismatch')
+                        if post_pair is not None and avatar_data is None:
+                            raise RuntimeError('Post-SDF seam requires avatar source coords')
+                        info = group.add(
+                            kidx, vals_final, post_pair=post_pair,
+                            source_s=(avatar_data['coords'] if post_pair is not None else None),
+                            overlap_crossfade=overlap_crossfade_sdf,
+                            smooth_union=self.smooth_union_sdf)
+                        print('[sdf_puffer_0049] group=', blend_group,
+                              'piece=', item_index, 'overlap=', info['overlap'],
+                              'evaluated_union=', info['total'], flush=True)
+                        blend_group_remaining[blend_group] -= 1
+                        if blend_group_remaining[blend_group] == 0:
+                            part_name = root_leaf_plan.group_to_part[blend_group]
+                            if part_name in rig_part_meshes:
+                                raise RuntimeError('Duplicate root/leaf part: ' + part_name)
+                            _step = float(mc_grid.grid_config['step'])
+                            part_grid, starts, side = crop_final_piece(
+                                mc_grid, group.indices, group.values,
+                                band=self._dcsdd_band(_step, extraction_config),
+                                bounds_fn=self._crop_cube_bounds, batch_size=batch_size)
+                            part_cfg = dict(extraction_config)
+                            part_cfg['dcsdd_crop_grid'] = False
+                            part_mesh = self.extract_surface_mesh(
+                                part_grid, part_cfg, mc_method='extract_mesh',
+                                context=f'root_leaf_{part_name}')
+                            rig_part_meshes[part_name] = part_mesh
+                            print('[sdf_puffer_0049] finished group=', blend_group,
+                                  'part=', part_name, 'crop=', side,
+                                  'start=', starts.tolist(),
+                                  'faces=', len(part_mesh.faces), flush=True)
+                            del group, part_grid, blend_groups[blend_group]
+                            print('[part_adapt group release] group=', blend_group,
+                                  'merged_into_final= False', flush=True)
+                    elif blend_group not in ("none", "", "false"):
                         group = blend_groups.get(blend_group)
                         if group is None:
                             # Riggable high-res cases can keep the intra-leaf

@@ -1,4 +1,4 @@
-"""Transfer per-adaptation UDF-cut decisions to independent riggable MC parts.
+"""Transfer per-adaptation UDF-cut decisions to owned SDF part meshes.
 
 No leaf-to-leaf operation is performed here. In particular this code never
 concatenates part meshes and never computes a global Boolean/SDF union.
@@ -13,6 +13,7 @@ from typing import Mapping, Sequence
 import trimesh
 
 from udf_cut_combined_transfer import transfer_udf_cut_to_combined_mesh
+from app.root_leaf_combination import export_unstitched_parts_ply
 
 
 def transfer_udf_cut_root_leaves(
@@ -27,7 +28,7 @@ def transfer_udf_cut_root_leaves(
     cleanup_fn=None,
     cleanup_kwargs=None,
 ):
-    """Cut each named MC part using *only* its own adaptation's UDF evidence.
+    """Cut each named part using *only* its own adaptation's UDF evidence.
 
     An entirely uncut part is retained unchanged, rather than passing empty
     removed-reference sets to transfer_udf_cut_to_combined_mesh (which rejects
@@ -49,6 +50,20 @@ def transfer_udf_cut_root_leaves(
             + ' in ' + str(src_dir)
             + '; run the matching 0043 SDF root_leaves YAML first'
         )
+
+    manifest_path = src_dir.parent / 'root_leaves_ownership.json'
+    if manifest_path.exists():
+        stored = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if stored.get('adaptation_fingerprint') != plan.adaptation_fingerprint:
+            raise ValueError('UDF/SDF root-leaves adaptation fingerprint mismatch; '
+                             'align all transforms and rerun SDF before UDF transfer')
+        if stored.get('part_names') != list(plan.part_names):
+            raise ValueError('UDF/SDF root-leaves part names/order mismatch')
+        expected_owners = {str(k): v for k, v in sorted(plan.item_to_part.items())}
+        if stored.get('item_to_part') != expected_owners:
+            raise ValueError('UDF/SDF root-leaves adaptation ownership mismatch')
+    elif config.get('udf_cut_require_owner_manifest', False):
+        raise FileNotFoundError(f'Missing SDF root-leaves ownership manifest: {manifest_path}')
 
     out_dir = Path(output_folder) / 'riggable_parts_after_udf_cut'
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +128,11 @@ def transfer_udf_cut_root_leaves(
               'faces=', len(mesh.faces), '->', len(result_mesh.faces),
               'mode=', method, flush=True)
 
+    single_path = export_unstitched_parts_ply(
+        result, Path(output_folder) / 'riggable_after_udf_cut_UNSTITCHED_parts.ply', plan)
+    report['single_file_unstitched'] = str(single_path)
+    report['connected_mesh'] = False
+    report['attachment_stitching_done'] = False
     glb_path = Path(output_folder) / 'riggable_after_udf_cut.glb'
     scene.export(glb_path, file_type='glb')
     report['glb'] = str(glb_path)

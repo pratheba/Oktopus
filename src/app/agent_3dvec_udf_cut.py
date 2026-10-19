@@ -1503,7 +1503,9 @@ class AgentUDFCut(AgentUDF):
         # the legacy globally Boolean-unioned MC mesh. The existing per-item
         # UDF query/cut pipeline still runs unchanged; its references are
         # transferred only within their root/leaf object at the end.
-        rig_parts_spec = extraction_config.get("udf_cut_root_leaves_mc_dir")
+        rig_parts_spec = extraction_config.get(
+            'udf_cut_root_leaves_mesh_dir',
+            extraction_config.get('udf_cut_root_leaves_mc_dir'))
         rig_parts_plan = None
         if rig_parts_spec is not None:
             if combined_mode != "transfer":
