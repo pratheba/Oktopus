@@ -2,6 +2,9 @@
 # Stage 1 only: exports independent body/tentacle part meshes (NOT stitched).
 # For the UDF cut, keep section meshes enabled and apply 0050 ownership patch.
 sdf_puffer_sparse_groups: true
+# 0051: keep only fields consumed by inference, seam and avatar corrections.
+# Does NOT enable unaudited interval pruning or change geometry.
+sdf_puffer_minimal_staging: true
 sdf_localize_after_gate: true
 dcsdd_bounded_filtering: true
 dcsdd_filter_batch_size: 262144

@@ -648,6 +648,34 @@ class CurveHandle():
                 return n_candidate, n_accepted, localize_compute_s
 
             compact_staging = bool(adapt_arg.get("dcsdd_compact_staging", False))
+            # 0051: puffer's correction-rich path still needs the full SIX
+            # model inputs for both curves when an avatar SDF is queried. It
+            # does not consume frame/points/x_radius/world samples after
+            # localization, nor the candidate-relative `inside` array.
+            # Keep original dtypes and ordering; do not quantize or recompute.
+            puffer_minimal = bool(adapt_arg.get('_sdf_puffer_minimal_staging', False))
+            if puffer_minimal and (
+                not bounded or compact_staging
+                or adapt_arg.get('_dcsdd_stream_callback') is not None
+                or adapt_arg.get('mode', 'direct') != 'direct'
+                or not (adapt_arg.get('rigid_radius', False)
+                        != adapt_arg.get('wrap_radius', False))
+            ):
+                raise ValueError('0051 puffer minimal staging requires bounded, non-callback direct rigid or wrap')
+            # Use the actual consumer requirements. Post-SDF blend and query
+            # seam fitting need avatar coords even without avatar inference.
+            puffer_avatar_inference = (
+                bool(adapt_arg.get('auto_avatar_snug_field', False))
+                or bool(adapt_arg.get('cut_avatar', False))
+                or bool(adapt_arg.get('detail_avatar_gate', False))
+                or bool(adapt_arg.get('final_carve', False))
+                or str(adapt_arg.get('snug_mode', 'multiplicative')).lower() == 'additive'
+                or str(adapt_arg.get('accessory_offset_mode', 'none')).lower() in ('local', 'both')
+            )
+            puffer_model_keys = frozenset((
+                'samples_local', 'coords', 'angles', 'radius', 'rho', 'rho_n'))
+            puffer_avatar_keys = (
+                puffer_model_keys if puffer_avatar_inference else frozenset(('coords',)))
             if compact_staging and not adapt_arg.get("rigid_radius", False):
                 raise ValueError("compact staging requires direct rigid_radius")
             # First pass counts accepted broad-phase indices without storing
@@ -683,6 +711,7 @@ class CurveHandle():
             core_localize_s = 0.0
             stage_write_s = 0.0
             stage_bytes = 0
+            original_stage_bytes = 0
 
             def _alloc_and_write(kind, key, value, at, size):
                 arr = np.asarray(value)
@@ -703,12 +732,12 @@ class CurveHandle():
             if stage is not None:
                 idx_buffer = np.memmap(str(Path(stage.name)/"indices.i64"),
                                        dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
-                if not compact_staging:
+                if not compact_staging and not puffer_minimal:
                     inside_buffer = np.memmap(str(Path(stage.name)/"inside.i64"),
                                               dtype=np.int64, mode="w+", shape=(max(n_candidate,1),))
             else:
                 idx_buffer = np.empty(n_candidate, dtype=np.int64)
-                if not compact_staging:
+                if not compact_staging and not puffer_minimal:
                     inside_buffer = np.empty(n_candidate, dtype=np.int64)
             # Avoid printing one 'input vs' block per chunk.
             quiet_arg = dict(adapt_arg)
@@ -723,22 +752,39 @@ class CurveHandle():
                 n_take = len(accepted_local)
                 idx_buffer[written:written+n_take] = candidate_idx[accepted_local]
                 stage_bytes += n_take * np.dtype(np.int64).itemsize
-                if not compact_staging:
-                    inside_buffer[written:written+n_take] = candidate_offset + accepted_local
-                    stage_bytes += n_take * np.dtype(np.int64).itemsize
-                    if not output_buffers:
-                        shared_keys = {k for k in av_chunk if k in acc_chunk and av_chunk[k] is acc_chunk[k]}
-                    for key, value in av_chunk.items():
-                        _alloc_and_write("avatar", key, value, written, n_take)
-                        stage_bytes += np.asarray(value).nbytes
-                for key, value in acc_chunk.items():
-                    if compact_staging:
-                        if key not in inference_keys:
+                if puffer_minimal:
+                    # Count the equivalent legacy output payload for diagnostics;
+                    # it was recorded on disk even where fields were unused.
+                    original_stage_bytes += n_take * np.dtype(np.int64).itemsize * 2
+                    original_stage_bytes += sum(np.asarray(v).nbytes for v in av_chunk.values())
+                    original_stage_bytes += sum(np.asarray(v).nbytes for v in acc_chunk.values())
+                    for kind, data, keep in (
+                        ('avatar', av_chunk, puffer_avatar_keys),
+                        ('accessory', acc_chunk, puffer_model_keys)):
+                        missing = keep.difference(data)
+                        if missing:
+                            raise ValueError(f'0051 {kind} localizer missing keys: {sorted(missing)}')
+                        for key in keep:
+                            value = data[key]
+                            _alloc_and_write(kind, key, value, written, n_take)
+                            stage_bytes += np.asarray(value).nbytes
+                else:
+                    if not compact_staging:
+                        inside_buffer[written:written+n_take] = candidate_offset + accepted_local
+                        stage_bytes += n_take * np.dtype(np.int64).itemsize
+                        if not output_buffers:
+                            shared_keys = {k for k in av_chunk if k in acc_chunk and av_chunk[k] is acc_chunk[k]}
+                        for key, value in av_chunk.items():
+                            _alloc_and_write("avatar", key, value, written, n_take)
+                            stage_bytes += np.asarray(value).nbytes
+                    for key, value in acc_chunk.items():
+                        if compact_staging:
+                            if key not in inference_keys:
+                                continue
+                        elif key in shared_keys:
                             continue
-                    elif key in shared_keys:
-                        continue
-                    _alloc_and_write("accessory", key, value, written, n_take)
-                    stage_bytes += np.asarray(value).nbytes
+                        _alloc_and_write("accessory", key, value, written, n_take)
+                        stage_bytes += np.asarray(value).nbytes
                 stage_write_s += perf_counter() - write_t0
                 written += n_take
                 candidate_offset += len(candidate_idx)
@@ -753,7 +799,7 @@ class CurveHandle():
             # The original candidate-relative `inside` indices are never read
             # after filter_grid_adapt by independent boots. Do not allocate the
             # ~3 GB array in this explicitly selected mode.
-            inside = None if compact_staging else inside_buffer[:written]
+            inside = None if (compact_staging or puffer_minimal) else inside_buffer[:written]
             localize_s = perf_counter() - localize_t0
             if adapt_arg.get("adapt_debug_counts", True):
                 print("input vs:", n_candidate)
@@ -768,6 +814,16 @@ class CurveHandle():
                       "localize_compute_s=", f"{core_localize_s:.3f}",
                       "stage_write_s=", f"{stage_write_s:.3f}",
                       "staged_GB=", f"{stage_bytes/1e9:.3f}")
+                if puffer_minimal:
+                    print('[sdf_puffer_0051] minimal_staging=True',
+                          'avatar_model_inputs=', puffer_avatar_inference,
+                          'avatar_keys=', ','.join(sorted(puffer_avatar_keys)),
+                          'accessory_keys=', ','.join(sorted(puffer_model_keys)),
+                          'inside_staged=False',
+                          'legacy_estimated_GB=', f'{original_stage_bytes/1e9:.3f}',
+                          'payload_reduction_pct=',
+                          f'{100*(original_stage_bytes-stage_bytes)/max(1,original_stage_bytes):.2f}',
+                          flush=True)
             return accessory_data, avatar_data, kidx, inside
         broad_s = perf_counter() - broad_t0
         mode = adapt_arg.get("mode", "direct")
