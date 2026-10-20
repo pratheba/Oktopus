@@ -1688,6 +1688,7 @@ class AgentSDF(AgentBase):
                         'sdf_stream_unified',
                         'sdf_puffer_sparse_groups',
                         'sdf_puffer_minimal_staging',
+                        'sdf_puffer_direct_predictions_0053',
                         'sdf_puffer_stop_after',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
@@ -2107,6 +2108,20 @@ class AgentSDF(AgentBase):
                     print('[sdf_puffer_0051] name=', run_name,
                           'minimal_correction_staging=True',
                           'sdf_formulas_unchanged=True', flush=True)
+                # 0053: infer in each accepted bounded localization chunk.
+                # Preserve original whole-section global support-quantile clamps.
+                direct_0053 = bool(
+                    extraction_config.get('sdf_puffer_direct_predictions_0053', False)
+                    and puffer_sparse and root_leaf_plan is not None
+                    and combine_adaptations and mode == 'direct'
+                    and adapt_arg.get('dcsdd_bounded_filtering', False)
+                    and (bool(adapt_arg.get('rigid_radius', False))
+                         != bool(adapt_arg.get('wrap_radius', False)))
+                    and not extraction_config.get('dcsdd_stream_inference', False)
+                )
+                if extraction_config.get('sdf_puffer_direct_predictions_0053', False) and not direct_0053:
+                    raise ValueError('0053 requires bounded mixed-puffer root-leaf direct adaptations')
+                adapt_arg['_sdf_puffer_direct_predictions_0053'] = direct_0053
                 adapt_arg.setdefault(
                     'dcsdd_filter_batch_size',
                     int(extraction_config.get('dcsdd_filter_batch_size', 262144)),
@@ -2191,9 +2206,37 @@ class AgentSDF(AgentBase):
                         break
 
                     filter_t0 = time()
-                    accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
-                        mc_grid, adapt_arg
-                    )
+                    direct_record_0053 = None
+                    prediction_stream_0053 = None
+                    if direct_0053:
+                        from app.sdf_puffer_prediction_stream_0053 import PredictionStream0053
+                        prediction_stream_0053 = PredictionStream0053(
+                            self, accessory_key, key, adapt_arg,
+                            seam_plan.get(item_index),
+                            getattr(mc_grid, 'memmap_dir', None), batch_size)
+                        adapt_arg['_dcsdd_stream_callback'] = prediction_stream_0053.push
+                        try:
+                            n_candidates, n_accepted, _ = curve.filter_grid_adapt(
+                                mc_grid, adapt_arg)
+                            direct_record_0053 = prediction_stream_0053.finish()
+                            if len(direct_record_0053['index']) != n_accepted:
+                                raise RuntimeError('0053 stream accepted-count mismatch')
+                        except BaseException:
+                            prediction_stream_0053.cleanup()
+                            raise
+                        finally:
+                            adapt_arg.pop('_dcsdd_stream_callback', None)
+                        kidx = direct_record_0053['index']
+                        accessory_data = {
+                            'coords': direct_record_0053['acc_coords'],
+                            'samples_local': direct_record_0053['acc_local']}
+                        avatar_data = {
+                            'coords': direct_record_0053['av_coords'],
+                            'angles': direct_record_0053['av_angles']}
+                        inside = None
+                    else:
+                        accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
+                            mc_grid, adapt_arg)
                     filter_elapsed = time() - filter_t0
 
                     cache_key = item.get("cache_as", accessory_key)
@@ -2349,14 +2392,17 @@ class AgentSDF(AgentBase):
 
                 # Warp the accessory's normalized radial inference queries,
                 # not the output SDF or grid. Do this after any snug-field rerun.
-                if item_index in seam_plan:
+                if item_index in seam_plan and not direct_0053:
                     accessory_data = warp_accessory_queries(
                         accessory_data, avatar_data, seam_plan[item_index], adapt_arg
                     )
 
                 use_tiled_detail = bool(adapt_arg.get("use_tiled_detail", False))
 
-                if use_tiled_detail:
+                if direct_record_0053 is not None:
+                    acc_out = {name: direct_record_0053['acc_' + name]
+                               for name in ('dist', 'dist_base', 'dist_detail')}
+                elif use_tiled_detail:
                     accessory_data = self.add_tiled_detail_coords_for_adapt(
                         accessory_data,
                         adapt_arg,
@@ -2460,12 +2506,17 @@ class AgentSDF(AgentBase):
                     or wants_final_carve
                     or wants_additive_snug
                 ) and (avatar_data is not None):
-                    avatar_out = self._inference_full_vals(
-                        avatar_data,
-                        key,
-                        batch_size=batch_size,
-                        slice_batches=bool(adapt_arg.get('_sdf_puffer_minimal_staging', False)),
-                    )
+                    if direct_record_0053 is not None:
+                        if 'av_dist' not in direct_record_0053:
+                            raise RuntimeError('0053 missing avatar prediction for cutting')
+                        avatar_out = {'dist': direct_record_0053['av_dist']}
+                    else:
+                        avatar_out = self._inference_full_vals(
+                            avatar_data,
+                            key,
+                            batch_size=batch_size,
+                            slice_batches=bool(adapt_arg.get('_sdf_puffer_minimal_staging', False)),
+                        )
 
                     # Use avatar FINAL as obstacle.
                     avatar_sdf_for_offset = avatar_out["dist"]
@@ -3008,13 +3059,23 @@ class AgentSDF(AgentBase):
                             del current
 
                 accumulate_elapsed = time() - accumulate_t0
+                active_count_0053 = len(kidx)
+                if prediction_stream_0053 is not None:
+                    # All downstream consumers of model inputs, predictions and
+                    # source coordinates have finished before this point.
+                    del acc_out, acc_vals, acc_vals_base, acc_vals_detail
+                    del accessory_data, avatar_data, kidx, vals_final, vals_base_fit
+                    if avatar_out is not None:
+                        del avatar_out
+                    del direct_record_0053
+                    prediction_stream_0053.cleanup()
 
                 # The remaining steps only need the accumulated values.
                 if perf_timing:
                     print(
                         "[part_adapt timing]",
                         f"item={item_index}",
-                        f"active={int(len(kidx))}",
+                        f"active={int(active_count_0053)}",
                         f"filter_s={filter_elapsed:.3f}",
                         f"individual_mesh_s={individual_mesh_elapsed:.3f}",
                         f"accumulate_s={accumulate_elapsed:.3f}",

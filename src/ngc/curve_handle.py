@@ -359,8 +359,10 @@ class CurveHandle():
         # stage may opt in: accepted rows are still staged in original order,
         # and global support-quantile corrections are preserved downstream.
         # Other non-callback consumers retain the 0048 streaming-only guard.
-        puffer_staged_roi = bool(adapt_arg.get('_sdf_puffer_minimal_staging', False))
-        puffer_staged_roi &= adapt_arg.get('_dcsdd_stream_callback') is None
+        puffer_staged_roi = bool(adapt_arg.get('_sdf_puffer_minimal_staging', False)
+                                 or adapt_arg.get('_sdf_puffer_direct_predictions_0053', False))
+        puffer_staged_roi &= (adapt_arg.get('_dcsdd_stream_callback') is None
+                              or bool(adapt_arg.get('_sdf_puffer_direct_predictions_0053', False)))
         puffer_staged_roi &= bool(adapt_arg.get('dcsdd_bounded_filtering', False))
         puffer_staged_roi &= (bool(adapt_arg.get('rigid_radius', False))
                               != bool(adapt_arg.get('wrap_radius', False)))
@@ -429,15 +431,23 @@ class CurveHandle():
         # them after localization.  Only action_part_adapt sets this opt-in for
         # a plain direct wrap section in an explicitly sparse root/leaf run.
         puffer_wrap_staging = bool(adapt_arg.get('_sdf_puffer_bounded_wrap_staging', False))
+        puffer_direct_0053 = bool(adapt_arg.get('_sdf_puffer_direct_predictions_0053', False))
+        if puffer_direct_0053 and (
+            not bounded or not puffer_staged_roi
+            or adapt_arg.get('_dcsdd_stream_callback') is None
+            or adapt_arg.get('mode', 'direct') != 'direct'
+        ):
+            raise ValueError('0053 prediction callback requires bounded direct puffer')
         if puffer_wrap_staging and (
             not bounded
             or adapt_arg.get('mode', 'direct') != 'direct'
             or not adapt_arg.get('wrap_radius', False)
             or adapt_arg.get('rigid_radius', False)
             or cone_bounded
-            or adapt_arg.get('_dcsdd_stream_callback') is not None
+            or (adapt_arg.get('_dcsdd_stream_callback') is not None
+                and not puffer_direct_0053)
         ):
-            raise ValueError('0050a puffer bounded wrap requires staged direct wrap-only localization')
+            raise ValueError('0050a puffer bounded wrap requires staged direct wrap (unless validated 0053 callback)')
         if bounded and (
             adapt_arg.get('mode', 'direct') != 'direct'
             or (cone_bounded and not adapt_arg.get('wrap_radius', False))
@@ -642,7 +652,7 @@ class CurveHandle():
                     n_accepted += len(selected)
                     if len(selected):
                         callback_t0 = perf_counter() if profile_sdf else None
-                        if cone_bounded:
+                        if cone_bounded or puffer_direct_0053:
                             stream_callback(acc_chunk, selected, av_chunk)
                         else:
                             stream_callback(acc_chunk, selected)
