@@ -132,6 +132,67 @@ def bend_positions(rest_curve, s_vertex, offsets, *, angle_deg, bend_axis,
     return center + rotate_v.apply(offsets), posed
 
 
+def load_other_curves(path, target, count=128):
+    """Sample all other avatar curves to identify the target's own surface.
+
+    Uses full original avatar geometry rather than cutting the tentacle from
+    the body. The transition only drives target-owned vertices, preserving the
+    original mesh topology and the body/tentacle attachment indices.
+    """
+    centers = []
+    with np.load(path, allow_pickle=True) as data:
+        if 'segments' not in data:
+            raise ValueError('Expected std_handle.npz with segments')
+        for segment in data['segments']:
+            if str(segment.get('name')) == target:
+                continue
+            points = np.asarray(segment['keypoints'], dtype=np.float64)
+            if points.ndim != 2 or points.shape[1] != 3 or len(points) < 2:
+                continue
+            if not np.isfinite(points).all():
+                continue
+            lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+            if np.any(lengths < 1e-10):
+                continue
+            _, sampled = sample_curve(points, count)
+            centers.append(sampled)
+    if not centers:
+        raise ValueError('Need another skeleton curve (e.g. body) to protect the rest of the avatar')
+    return np.concatenate(centers, axis=0)
+
+
+def bind_connected_avatar(vertices, centers, params, other_centers, *,
+                          distance_full=0.15, distance_zero=0.30,
+                          owner_band=0.035, root_hold=0.12, root_blend_end=0.30,
+                          batch=150000):
+    """Automatically compute t7-only vertex influence, including root anchor.
+
+    No disconnected mesh extraction and no skin-weight painting: we move
+    vertices within the *original* avatar mesh and do not alter its faces.
+    Blend influence is based on distances to target vs other skeleton curves.
+    The first root_hold fraction stays exactly unchanged.
+    """
+    if not (0 < distance_full < distance_zero) or owner_band <= 0:
+        raise ValueError('Require 0 < distance_full < distance_zero and owner_band > 0')
+    if not (0 <= root_hold < root_blend_end <= 1):
+        raise ValueError('Root hold/blend fractions must satisfy 0 <= hold < end <= 1')
+    s, offsets = project_mesh_vertices(vertices, centers, params)
+    selected_d = np.linalg.norm(offsets, axis=1)
+    tree = cKDTree(other_centers)
+    competing_d = np.empty(len(selected_d), dtype=np.float64)
+    for start in range(0, len(selected_d), batch):
+        stop = min(start + batch, len(selected_d))
+        competing_d[start:stop] = tree.query(vertices[start:stop], k=1)[0]
+    smooth = lambda t: t*t*(3-2*t)
+    nearest = smooth(np.clip((competing_d - selected_d + owner_band)
+                              / (2*owner_band), 0, 1))
+    radius = smooth(np.clip((distance_zero-selected_d)
+                             / (distance_zero-distance_full), 0, 1))
+    root = smooth(np.clip((s-root_hold)/(root_blend_end-root_hold), 0, 1))
+    weights = nearest * radius * root
+    return s, offsets, weights
+
+
 def select_bend_axis(curve_samples, name):
     tan = curve_samples[min(4, len(curve_samples)-1)]-curve_samples[0]
     tan /= np.linalg.norm(tan)
@@ -172,7 +233,7 @@ def load_mesh(path):
 
 
 def mesh_quality(rest, pose):
-    # Degenerate and severe edge stretch diagnostics; no collision certification.
+    # Demo diagnostics only; original avatar topology remains untouched.
     triangles = pose.vertices[pose.faces]
     area = np.linalg.norm(np.cross(triangles[:, 1]-triangles[:, 0],
                                    triangles[:, 2]-triangles[:, 0]), axis=1)/2
@@ -197,20 +258,41 @@ def export_sequence(args):
     axis = select_bend_axis(centers, args.axis)
     moving_paths = parse_mesh_args(args.moving)
     static_paths = parse_mesh_args(args.static)
-    if not moving_paths:
-        raise ValueError('Pass at least one --moving NAME=PATH')
-    if set(moving_paths) & set(static_paths):
-        raise ValueError('Moving/static mesh names overlap')
+    avatar_paths = parse_mesh_args(getattr(args, 'deform_avatar', []))
+    if not moving_paths and not avatar_paths:
+        raise ValueError('Pass at least one --moving or --deform-avatar NAME=PATH')
+    if len(set(moving_paths) | set(static_paths) | set(avatar_paths)) != (
+            len(moving_paths) + len(static_paths) + len(avatar_paths)):
+        raise ValueError('Moving/avatar/static mesh names overlap')
     meshes = {name: load_mesh(p) for name,p in moving_paths.items()}
+    avatar_meshes = {name: load_mesh(p) for name,p in avatar_paths.items()}
+    meshes.update(avatar_meshes)
     static = {name: load_mesh(p) for name,p in static_paths.items()}
     bindings = {name: project_mesh_vertices(mesh.vertices, centers, params)
-                for name,mesh in meshes.items()}
+                for name,mesh in meshes.items() if name not in avatar_meshes}
+    if avatar_meshes:
+        others = load_other_curves(args.handle_npz, args.curve)
+        for name, mesh in avatar_meshes.items():
+            bindings[name] = bind_connected_avatar(
+                mesh.vertices, centers, params, others,
+                distance_full=getattr(args, 'avatar_distance_full', 0.15),
+                distance_zero=getattr(args, 'avatar_distance_zero', 0.30),
+                owner_band=getattr(args, 'avatar_owner_band', 0.035),
+                root_hold=args.root_hold,
+                root_blend_end=getattr(args, 'avatar_root_blend_end', 0.30))
+            active = int(np.count_nonzero(bindings[name][2] > .01))
+            print(f'[avatar_motion] {name}: {active}/{len(mesh.vertices)} vertices '
+                  'follow selected curve; original mesh faces retained', flush=True)
+            if active == 0:
+                raise ValueError('No avatar vertices follow selected curve; check '
+                                 'NPZ/mesh coordinate alignment and distance gates')
     out = Path(args.output);out.mkdir(parents=True, exist_ok=True)
     if args.frames < 3:
         raise ValueError('frames must be >= 3')
     report={'curve':args.curve,'handle_npz':str(args.handle_npz),
             'root_end':root,'axis':axis.tolist(),'angle_deg':args.angle_deg,
             'frames':args.frames,'moving':list(meshes),'static':list(static),
+            'deformed_full_avatar':list(avatar_meshes),
             'backend':'rest_vertex_curve_binding; no SDF re-evaluation',
             'connected_surface_validated':False,
             'collision_free_validated':False,'poses':[]}
@@ -222,16 +304,31 @@ def export_sequence(args):
         quality={}
         posed_skel = None
         for name, original in meshes.items():
-            s, offsets = bindings[name]
-            moved_points, posed_skel = bend_positions(centers, s, offsets,
-                angle_deg=angle, bend_axis=axis, root_hold=args.root_hold,
-                full_bend=args.full_bend)
+            if name in avatar_meshes:
+                s, offsets, weights = bindings[name]
+                moved_points = np.array(original.vertices, dtype=np.float64, copy=True)
+                active = weights > 1e-9
+                if np.any(active):
+                    raw, posed_skel = bend_positions(
+                        centers, s[active], offsets[active], angle_deg=angle,
+                        bend_axis=axis, root_hold=args.root_hold,
+                        full_bend=args.full_bend)
+                    moved_points[active] += (raw-moved_points[active]) * weights[active,None]
+            else:
+                s, offsets = bindings[name]
+                moved_points, posed_skel = bend_positions(centers, s, offsets,
+                    angle_deg=angle, bend_axis=axis, root_hold=args.root_hold,
+                    full_bend=args.full_bend)
             moved=original.copy()
             moved.vertices=moved_points
             # preserve connectivity; no process/weld/automatic fixes
             moved.export(out/f'{name}_{i:03d}.ply')
             scene.add_geometry(moved,geom_name=name,node_name=name)
             quality[name]=mesh_quality(original,moved)
+        if posed_skel is None:
+            _, posed_skel = bend_positions(centers, np.array([0.0]),
+                    np.zeros((1,3)), angle_deg=angle, bend_axis=axis,
+                    root_hold=args.root_hold, full_bend=args.full_bend)
         scene.export(out/f'pose_{i:03d}.glb')
         np.save(out/f'skeleton_{args.curve}_{i:03d}.npy',posed_skel)
         report['poses'].append({'frame':i,'angle_deg':angle,'quality':quality})
@@ -249,6 +346,17 @@ def main(argv=None):
                    help='Mesh that follows selected curve; may be repeated')
     p.add_argument('--static',action='append',default=[],metavar='NAME=PLY',
                    help='Unchanged context mesh; may be repeated')
+    p.add_argument('--deform-avatar',action='append',default=[],metavar='NAME=PLY',
+                   help='Whole connected octopus avatar mesh, selectively deform only t7 '
+                        'vertices and leave the root and other tentacles anchored')
+    p.add_argument('--avatar-distance-full',type=float,default=0.15,
+                   help='All influence within this distance to selected curve')
+    p.add_argument('--avatar-distance-zero',type=float,default=0.30,
+                   help='No influence beyond this distance to selected curve')
+    p.add_argument('--avatar-owner-band',type=float,default=0.035,
+                   help='Smooth ownership transition between selected and other curves')
+    p.add_argument('--avatar-root-blend-end',type=float,default=0.30,
+                   help='First full root-to-tip influence point (root-hold remains anchored)')
     p.add_argument('--output',type=Path,default=Path('inference/offline_motion_512'))
     p.add_argument('--frames',type=int,default=9)
     p.add_argument('--angle-deg',type=float,default=30)
