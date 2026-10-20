@@ -1688,6 +1688,7 @@ class AgentSDF(AgentBase):
                         'sdf_stream_unified',
                         'sdf_puffer_sparse_groups',
                         'sdf_puffer_minimal_staging',
+                        'sdf_puffer_stop_after',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
                         'sdf_candidate_interval_pad',
@@ -1845,6 +1846,20 @@ class AgentSDF(AgentBase):
         # 0049: only replace dense grid staging; keep existing per-adaptation
         # filters, mapping, model inference, avatar cut and seam rules intact.
         puffer_sparse = bool(extraction_config.get('sdf_puffer_sparse_groups', False))
+        # 0052: explicitly partial benchmark mode: return immediately after
+        # a requested number of COMPLETED adaptations. No root/leaf assembly
+        # is exported, preventing a partial mesh being mistaken for final.
+        puffer_stop_after = extraction_config.get('sdf_puffer_stop_after')
+        if puffer_stop_after is not None:
+            if (isinstance(puffer_stop_after, bool)
+                    or not isinstance(puffer_stop_after, int)
+                    or not (1 <= puffer_stop_after < len(adaptation_items))
+                    or not puffer_sparse or root_leaf_plan is None):
+                raise ValueError('0052 sdf_puffer_stop_after requires integer '
+                                 '1..N-1 in sparse puffer root-leaves mode')
+            print('[sdf_puffer_0052] PARTIAL BENCHMARK ONLY: stop_after=',
+                  puffer_stop_after, 'of', len(adaptation_items),
+                  'final_root_leaf_export=False', flush=True)
         if puffer_sparse:
             if (root_leaf_plan is None or not combine_adaptations
                     or root_leaf_plan.export_legacy_combined
@@ -3019,6 +3034,12 @@ class AgentSDF(AgentBase):
                     f"Adaptation target did not run: {target_key!r}. "
                     f"Available targets: {sorted(available_target_keys.keys())}"
                 )
+            if puffer_stop_after is not None and item_index + 1 == puffer_stop_after:
+                print('[sdf_puffer_0052] PARTIAL BENCHMARK COMPLETED',
+                      'adaptations=', puffer_stop_after,
+                      'total_s=', f'{time()-part_adapt_t0:.3f}',
+                      'no final root-leaf export', flush=True)
+                return
 
         if not combine_adaptations:
             print(

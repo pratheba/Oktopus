@@ -354,12 +354,24 @@ class CurveHandle():
             raise ValueError('0048 interval pad must be nonnegative')
         if interval_audit and not interval_prune:
             raise ValueError('0048 interval audit requires interval pruning')
+        # 0052: the correction-rich puffer path can prune candidates WITHOUT
+        # streaming inference.  Only its explicitly validated 0051 minimal
+        # stage may opt in: accepted rows are still staged in original order,
+        # and global support-quantile corrections are preserved downstream.
+        # Other non-callback consumers retain the 0048 streaming-only guard.
+        puffer_staged_roi = bool(adapt_arg.get('_sdf_puffer_minimal_staging', False))
+        puffer_staged_roi &= adapt_arg.get('_dcsdd_stream_callback') is None
+        puffer_staged_roi &= bool(adapt_arg.get('dcsdd_bounded_filtering', False))
+        puffer_staged_roi &= (bool(adapt_arg.get('rigid_radius', False))
+                              != bool(adapt_arg.get('wrap_radius', False)))
         if interval_prune and (
                 not adapt_arg.get('dcsdd_bounded_filtering', False)
-                or adapt_arg.get('_dcsdd_stream_callback') is None
+                or (adapt_arg.get('_dcsdd_stream_callback') is None
+                    and not puffer_staged_roi)
                 or not use_interval_projection
                 or adapt_arg.get('mode', 'direct') != 'direct'):
-            raise ValueError('0048 interval pruning requires bounded direct streaming with interval projection')
+            raise ValueError('0048 interval pruning requires bounded direct streaming '
+                             'or validated puffer minimal staging with interval projection')
         use_src_interval_filter = (
             bool(adapt_arg.get("adapt_filter_use_src_interval", False))
             or interval_prune
@@ -558,6 +570,10 @@ class CurveHandle():
                                               gate_lo, gate_hi)
             print('[sdf_candidate_interval_0048a] world_gate_envelope=',
                   gate_lo.tolist(), gate_hi.tolist(), flush=True)
+        if interval_prune and puffer_staged_roi:
+            print('[sdf_puffer_0052] candidate_roi=staged_puffer',
+                  'mode=', 'audit' if interval_audit else 'prune',
+                  'global_support_calibration=preserved', flush=True)
         if interval_prune:
             print('[sdf_candidate_interval_0048] mode=',
                   'audit' if interval_audit else 'prune',
