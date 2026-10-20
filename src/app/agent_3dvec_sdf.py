@@ -1533,7 +1533,10 @@ class AgentSDF(AgentBase):
                 # the shared stream, with pre-inference exact-localizer audit.
                 for roi_key in ('sdf_candidate_interval_prune',
                                 'sdf_candidate_interval_audit',
-                                'sdf_candidate_interval_pad'):
+                                'sdf_candidate_interval_pad',
+                                'sdf_projection_workers_0054',
+                                'sdf_projection_cache_0054',
+                                'sdf_projection_profile_0054'):
                     if roi_key in cfg and roi_key not in wrap_arg:
                         wrap_arg[roi_key] = cfg[roi_key]
                 wrap_arg['dcsdd_filter_batch_size'] = int(
@@ -1689,6 +1692,9 @@ class AgentSDF(AgentBase):
                         'sdf_puffer_sparse_groups',
                         'sdf_puffer_minimal_staging',
                         'sdf_puffer_direct_predictions_0053',
+                        'sdf_projection_workers_0054',
+                        'sdf_projection_cache_0054',
+                        'sdf_projection_profile_0054',
                         'sdf_puffer_stop_after',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
@@ -2206,6 +2212,9 @@ class AgentSDF(AgentBase):
                         break
 
                     filter_t0 = time()
+                    projection_profile_start_0054 = (
+                        getattr(curve.core, '_projection_profile_seconds_0054', 0.0),
+                        getattr(curve.core, '_projection_profile_calls_0054', 0))
                     direct_record_0053 = None
                     prediction_stream_0053 = None
                     if direct_0053:
@@ -2238,6 +2247,13 @@ class AgentSDF(AgentBase):
                         accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
                             mc_grid, adapt_arg)
                     filter_elapsed = time() - filter_t0
+                    if adapt_arg.get('sdf_projection_profile_0054', False):
+                        print('[sdf_projection_0054] name=', run_name,
+                              'workers=', adapt_arg.get('sdf_projection_workers_0054', 1),
+                              'cached_tree=', bool(adapt_arg.get('sdf_projection_cache_0054', False)),
+                              'projection_s=', f"{getattr(curve.core, '_projection_profile_seconds_0054', 0.0) - projection_profile_start_0054[0]:.3f}",
+                              'projection_calls=', getattr(curve.core, '_projection_profile_calls_0054', 0) - projection_profile_start_0054[1],
+                              'filter_s=', f'{filter_elapsed:.3f}', flush=True)
 
                     cache_key = item.get("cache_as", accessory_key)
 

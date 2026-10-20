@@ -180,12 +180,31 @@ class _GeometryMixin:
         ]
         return np.stack(cols, axis=1)
 
-    def _projection_skeleton_interval(self, s0, s1, N_discrete):
-        """Build the polyline skeleton + KDTree restricted to [s0, s1]."""
+    def _projection_skeleton_interval(self, s0, s1, N_discrete,
+                                      cache_0054=False):
+        """Build the identical interval projection tree, optionally reusing it.
+
+        Cache is keyed by the exact source curve geometry and interval. A changed
+        key-point position or parameter invalidates it automatically. The cache
+        has only one entry, so it cannot accumulate one tree per tentacle.
+        """
         s_min = max(0.0, min(float(s0), float(s1)))
         s_max = min(1.0, max(float(s0), float(s1)))
         if abs(s_max - s_min) < 1e-12:
             return None, None, None, s_min, s_max
+        cache_key = None
+        if cache_0054:
+            # interpolate(..., radius=False, frame=False) depends only on
+            # key_ts/key_points. Their bytes are tiny compared with a voxel
+            # batch and detect *in-place* edits as well as array replacement.
+            ts = np.asarray(self.key_ts)
+            pos = np.asarray(self.key_points)
+            cache_key = (s_min, s_max, int(N_discrete),
+                         ts.shape, ts.dtype.str, ts.tobytes(),
+                         pos.shape, pos.dtype.str, pos.tobytes())
+            entry = getattr(self, '_projection_interval_cache_0054', None)
+            if entry is not None and entry[0] == cache_key:
+                return entry[1]
         uniform_linear_points = np.linspace(s_min, s_max, int(N_discrete), endpoint=True)
         key_inside = self.key_ts[(self.key_ts >= s_min) & (self.key_ts <= s_max)]
         non_uniform_linear_points = np.unique(np.concatenate([
@@ -197,9 +216,14 @@ class _GeometryMixin:
             non_uniform_linear_points, radius=False, frame=False
         )["points"]
         tree = KDTree(skeletal_verts)
-        return non_uniform_linear_points, skeletal_verts, tree, s_min, s_max
+        result = (non_uniform_linear_points, skeletal_verts, tree, s_min, s_max)
+        if cache_key is not None:
+            self._projection_interval_cache_0054 = (cache_key, result)
+        return result
 
-    def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False):
+    def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False,
+                                  projection_workers_0054=1,
+                                  projection_cache_0054=False):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -207,27 +231,40 @@ class _GeometryMixin:
         full avatar curve before the src_0/src_1 crop.
         """
         samples = np.asarray(samples, dtype=np.float64)
-        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(s0, s1, N_discrete)
+        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(
+            s0, s1, N_discrete, cache_0054=projection_cache_0054)
         if tree is None:
             return np.full(samples.shape[0], s_min, dtype=np.float64)
-        _, vidx = tree.query(samples)
+        workers = int(projection_workers_0054)
+        if not 1 <= workers <= 16:
+            raise ValueError('0054 projection workers must be between 1 and 16')
+        # Preserve the historical SciPy call when single-threaded.
+        _, vidx = (tree.query(samples) if workers == 1
+                   else tree.query(samples, workers=workers))
         ts = self._assign_ts(samples, vidx, pts, verts, outside)
         good = ts >= 0.0
         ts[good] = np.clip(ts[good], s_min, s_max)
         return ts
 
-    def curve_projection_interval_candidates(self, samples, s0, s1, K, N_discrete=n_sample_curve, outside=False):
+    def curve_projection_interval_candidates(self, samples, s0, s1, K, N_discrete=n_sample_curve, outside=False,
+                                             projection_workers_0054=1,
+                                             projection_cache_0054=False):
         """(N, K) candidate arc-length params restricted to [s0, s1] -- the
         loop-aware companion to curve_projection_interval. For a curve that loops
         WITHIN the interval, the K nearest skeleton candidates land on different
         arms, letting localize_samples' k_project path pick the correct one.
         K == 1 reproduces curve_projection_interval exactly."""
         samples = np.asarray(samples, dtype=np.float64)
-        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(s0, s1, N_discrete)
+        pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(
+            s0, s1, N_discrete, cache_0054=projection_cache_0054)
         if tree is None:
             return np.full((samples.shape[0], 1), s_min, dtype=np.float64)
         K = int(max(1, min(K, verts.shape[0])))
-        _, vidx_k = tree.query(samples, k=K)
+        workers = int(projection_workers_0054)
+        if not 1 <= workers <= 16:
+            raise ValueError('0054 projection workers must be between 1 and 16')
+        _, vidx_k = (tree.query(samples, k=K) if workers == 1
+                     else tree.query(samples, k=K, workers=workers))
         if vidx_k.ndim == 1:
             vidx_k = vidx_k[:, None]
         cols = []
