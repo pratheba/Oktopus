@@ -7,6 +7,7 @@ import numpy as np
 import os.path as op
 import trimesh
 from scipy.spatial import KDTree
+from time import perf_counter
 from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import PchipInterpolator
 from handle_utils import CylindersMesh
@@ -114,12 +115,22 @@ class _LocalizeMixin:
         return best_t
 
     def localize_samples(self, pointcloudsamples, return_sdf=False, norm=1.0, update_curve=False, update_radius=False, outside=False, name='', radius_type='cylinder', runtime_cylinder_radius_scale=1.0, runtime_cylinder_radius_add=0.0, projection_s0=None, projection_s1=None, k_project=1,
-                         sdf_localize_after_gate=False):
+                         sdf_localize_after_gate=False,
+                         projection_workers_0054=1,
+                         projection_cache_0054=False,
+                         projection_profile_0054=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
 
+        # 0054a: profile the projection call, not full interpolation/filtering.
+        # Default remains inert for all non-0054 workloads.
+        projection_start_0054 = (
+            perf_counter() if projection_profile_0054
+            and projection_s0 is not None and projection_s1 is not None
+            else None
+        )
         if projection_s0 is not None and projection_s1 is not None:
             if k_project is not None and int(k_project) > 1:
                 # Loop-aware interval projection: pick, per sample, the in-interval
@@ -127,6 +138,8 @@ class _LocalizeMixin:
                 ts_cand = self.curve_projection_interval_candidates(
                     pointcloudsamples, projection_s0, projection_s1,
                     int(k_project), outside=outside,
+                    projection_workers_0054=projection_workers_0054,
+                    projection_cache_0054=projection_cache_0054,
                 )
                 sample_keypoint_map = self._select_projection_candidate(
                     pointcloudsamples, ts_cand, radius_type,
@@ -138,6 +151,8 @@ class _LocalizeMixin:
                     projection_s0,
                     projection_s1,
                     outside=outside,
+                    projection_workers_0054=projection_workers_0054,
+                    projection_cache_0054=projection_cache_0054,
                 )
         elif k_project is not None and int(k_project) > 1:
             # Loop-aware projection: evaluate the K nearest skeleton candidates and
@@ -151,6 +166,14 @@ class _LocalizeMixin:
             )
         else:
             sample_keypoint_map = self.curve_projection(pointcloudsamples, outside=outside)
+        if projection_start_0054 is not None:
+            self._projection_profile_seconds_0054 = (
+                getattr(self, '_projection_profile_seconds_0054', 0.0)
+                + perf_counter() - projection_start_0054
+            )
+            self._projection_profile_calls_0054 = (
+                getattr(self, '_projection_profile_calls_0054', 0) + 1
+            )
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = np.arange(pointcloudsamples.shape[0])
 
@@ -1016,6 +1039,9 @@ class _LocalizeMixin:
             projection_s1=src_1 if use_interval_projection else None,
             k_project=int(adapt_arg.get("loop_projection_candidates", 1)),
             sdf_localize_after_gate=bool(adapt_arg.get("sdf_localize_after_gate", False)),
+            projection_workers_0054=int(adapt_arg.get("sdf_projection_workers_0054", 1)),
+            projection_cache_0054=bool(adapt_arg.get("sdf_projection_cache_0054", False)),
+            projection_profile_0054=bool(adapt_arg.get("sdf_projection_profile_0054", False)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

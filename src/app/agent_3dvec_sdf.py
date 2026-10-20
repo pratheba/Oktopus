@@ -2136,9 +2136,15 @@ class AgentSDF(AgentBase):
                     'dcsdd_fast_bbox_marking',
                     bool(extraction_config.get('dcsdd_fast_bbox_marking', False)),
                 )
+                # 0054a: forward projection controls to each puffer adaptation.
+                # Loading them into extraction_config alone does not activate
+                # caching/workers in localize_samples_adapt.
                 for roi_key in ('sdf_candidate_interval_prune',
                                 'sdf_candidate_interval_audit',
-                                'sdf_candidate_interval_pad'):
+                                'sdf_candidate_interval_pad',
+                                'sdf_projection_workers_0054',
+                                'sdf_projection_cache_0054',
+                                'sdf_projection_profile_0054'):
                     if roi_key in extraction_config and roi_key not in adapt_arg:
                         adapt_arg[roi_key] = extraction_config[roi_key]
                 stream_requested = bool(extraction_config.get('dcsdd_stream_inference', False))
