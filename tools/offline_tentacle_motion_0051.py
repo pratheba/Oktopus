@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial.transform import Rotation
 import trimesh
 
@@ -251,10 +253,79 @@ def load_other_curves(path, target, count=128):
     return np.concatenate(centers, axis=0)
 
 
+
+def isolate_target_surface_by_topology(vertices, faces, centers, s, weights, *,
+                                       root_hold, min_active_weight=1e-4):
+    """Keep only the surface branch containing the selected curve's free tip.
+
+    Euclidean skeleton proximity alone leaks onto a neighboring tentacle when
+    the surfaces approach or cross. Rather than use manually painted weights,
+    this demo isolates the t7 candidate *surface* by triangle adjacency.
+
+    Disconnect the candidate graph through the fixed root (weight zero for
+    s<=root_hold), then select the connected branch nearest the target tip.
+    The original mesh triangles are NEVER modified; only weights are zeroed
+    outside that branch. Genuine welded connections away from the held root
+    cannot be resolved by this heuristic and should be checked visually.
+    """
+    verts = np.asarray(vertices, dtype=np.float64)
+    tri = np.asarray(faces, dtype=np.int64)
+    weights = np.asarray(weights, dtype=np.float64)
+    s = np.asarray(s, dtype=np.float64)
+    if tri.ndim != 2 or tri.shape[1] != 3:
+        raise ValueError('Connected avatar must have Nx3 triangle indices')
+    if len(verts) != len(weights) or len(verts) != len(s):
+        raise ValueError('Topology lock has mismatched vertex/influence arrays')
+    if np.any(tri < 0) or np.any(tri >= len(verts)):
+        raise ValueError('Triangle indices outside mesh vertex range')
+
+    # Excluding the held root separates branches that are only connected to
+    # one another via the body. This is deliberately a *selection graph* cut:
+    # no topology/face indices change in the output mesh.
+    eligible = (weights > min_active_weight) & (s > root_hold)
+    ids = np.flatnonzero(eligible)
+    if len(ids) == 0:
+        raise ValueError('No movable avatar vertices for selected tentacle')
+    remap = np.full(len(verts), -1, dtype=np.int64)
+    remap[ids] = np.arange(len(ids), dtype=np.int64)
+    edge_pairs = np.concatenate((tri[:, [0, 1]], tri[:, [1, 2]],
+                                 tri[:, [2, 0]]), axis=0)
+    active_edges = np.all(eligible[edge_pairs], axis=1)
+    mapped = remap[edge_pairs[active_edges]]
+    if len(mapped):
+        edges = coo_matrix((np.ones(2 * len(mapped), dtype=np.uint8),
+                            (np.r_[mapped[:, 0], mapped[:, 1]],
+                             np.r_[mapped[:, 1], mapped[:, 0]])),
+                           shape=(len(ids), len(ids))).tocsr()
+    else:
+        edges = coo_matrix((len(ids), len(ids)), dtype=np.uint8).tocsr()
+    n_components, component = connected_components(edges, directed=False)
+    # Target tip = C(1). Only the *surface* that actually reaches this point
+    # should be driven. Prefer a strong candidate near the distal third so a
+    # near-root body sliver cannot win if it happens to cross the skeleton.
+    distal = s[ids] >= .65
+    if not np.any(distal):
+        raise ValueError('No distal tentacle surface found in topology candidates')
+    distance_to_tip = np.linalg.norm(verts[ids] - centers[-1], axis=1)
+    qualified = np.where(distal, distance_to_tip, np.inf)
+    seed_component = int(component[np.argmin(qualified)])
+    selected = component == seed_component
+    if not np.any(selected & distal):
+        raise RuntimeError('Topology lock selected a surface without distal tip support')
+    out = weights.copy()
+    out[ids[~selected]] = 0.0
+    print('[avatar_topology_lock] components=', n_components,
+          'eligible=', len(ids), 'selected=', int(np.count_nonzero(selected)),
+          'rejected=', int(np.count_nonzero(~selected)),
+          'selected_tip_distance=', float(np.min(distance_to_tip[selected])),
+          flush=True)
+    return out
+
+
 def bind_connected_avatar(vertices, centers, params, other_centers, *,
                           distance_full=0.15, distance_zero=0.30,
                           owner_band=0.035, root_hold=0.12, root_blend_end=0.30,
-                          batch=150000):
+                          batch=150000, faces=None, topology_lock=True):
     """Automatically compute t7-only vertex influence, including root anchor.
 
     No disconnected mesh extraction and no skin-weight painting: we move
@@ -280,6 +351,9 @@ def bind_connected_avatar(vertices, centers, params, other_centers, *,
                              / (distance_zero-distance_full), 0, 1))
     root = smooth(np.clip((s-root_hold)/(root_blend_end-root_hold), 0, 1))
     weights = nearest * radius * root
+    if faces is not None and topology_lock:
+        weights = isolate_target_surface_by_topology(
+            vertices, faces, centers, s, weights, root_hold=root_hold)
     return s, offsets, weights
 
 
@@ -374,7 +448,9 @@ def export_sequence(args):
                 distance_zero=getattr(args, 'avatar_distance_zero', 0.30),
                 owner_band=getattr(args, 'avatar_owner_band', 0.035),
                 root_hold=args.root_hold,
-                root_blend_end=getattr(args, 'avatar_root_blend_end', 0.30))
+                root_blend_end=getattr(args, 'avatar_root_blend_end', 0.30),
+                faces=mesh.faces,
+                topology_lock=not getattr(args, 'avatar_no_topology_lock', False))
             active = int(np.count_nonzero(bindings[name][2] > .01))
             print(f'[avatar_motion] {name}: {active}/{len(mesh.vertices)} vertices '
                   'follow selected curve; original mesh faces retained', flush=True)
@@ -392,6 +468,7 @@ def export_sequence(args):
             'full_bend_or_straight':args.full_bend,
             'frames':args.frames,'moving':list(meshes),'static':list(static),
             'deformed_full_avatar':list(avatar_meshes),
+            'avatar_topology_lock':not getattr(args, 'avatar_no_topology_lock', False),
             'backend':'rest_vertex_curve_binding; no SDF re-evaluation',
             'connected_surface_validated':False,
             'collision_free_validated':False,'poses':[]}
@@ -463,6 +540,8 @@ def main(argv=None):
                    help='Smooth ownership transition between selected and other curves')
     p.add_argument('--avatar-root-blend-end',type=float,default=0.30,
                    help='First full root-to-tip influence point (root-hold remains anchored)')
+    p.add_argument('--avatar-no-topology-lock',action='store_true',
+                   help='Disable 0054 mesh-adjacency t7 branch selection (legacy distance-only behavior)')
     p.add_argument('--output',type=Path,default=Path('inference/offline_motion_512'))
     p.add_argument('--frames',type=int,default=9)
     p.add_argument('--motion', choices=['bend', 'straighten'], default='bend',
