@@ -120,7 +120,8 @@ class _LocalizeMixin:
                          projection_cache_0054=False,
                          projection_profile_0054=False,
                          projection_refine_fast_0055=False,
-                         projection_profile_split_0055=False):
+                         projection_profile_split_0055=False,
+                         projection_leafsize_0056=10):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
@@ -144,6 +145,7 @@ class _LocalizeMixin:
                     projection_cache_0054=projection_cache_0054,
                     projection_refine_fast_0055=projection_refine_fast_0055,
                     projection_profile_split_0055=projection_profile_split_0055,
+                    projection_leafsize_0056=projection_leafsize_0056,
                 )
                 sample_keypoint_map = self._select_projection_candidate(
                     pointcloudsamples, ts_cand, radius_type,
@@ -159,6 +161,7 @@ class _LocalizeMixin:
                     projection_cache_0054=projection_cache_0054,
                     projection_refine_fast_0055=projection_refine_fast_0055,
                     projection_profile_split_0055=projection_profile_split_0055,
+                    projection_leafsize_0056=projection_leafsize_0056,
                 )
         elif k_project is not None and int(k_project) > 1:
             # Loop-aware projection: evaluate the K nearest skeleton candidates and
@@ -1050,6 +1053,7 @@ class _LocalizeMixin:
             projection_profile_0054=bool(adapt_arg.get("sdf_projection_profile_0054", False)),
             projection_refine_fast_0055=bool(adapt_arg.get("sdf_projection_refine_fast_0055", False)),
             projection_profile_split_0055=bool(adapt_arg.get("sdf_projection_profile_split_0055", False)),
+            projection_leafsize_0056=int(adapt_arg.get("sdf_projection_leafsize_0056", 10)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

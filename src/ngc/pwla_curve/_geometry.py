@@ -254,7 +254,7 @@ class _GeometryMixin:
         return np.stack(cols, axis=1)
 
     def _projection_skeleton_interval(self, s0, s1, N_discrete,
-                                      cache_0054=False):
+                                      cache_0054=False, leafsize_0056=10):
         """Build the identical interval projection tree, optionally reusing it.
 
         Cache is keyed by the exact source curve geometry and interval. A changed
@@ -263,6 +263,9 @@ class _GeometryMixin:
         """
         s_min = max(0.0, min(float(s0), float(s1)))
         s_max = min(1.0, max(float(s0), float(s1)))
+        leafsize_0056 = int(leafsize_0056)
+        if not 1 <= leafsize_0056 <= 128:
+            raise ValueError('0056 KD-tree leaf size must be in [1, 128]')
         if abs(s_max - s_min) < 1e-12:
             return None, None, None, s_min, s_max
         cache_key = None
@@ -272,7 +275,7 @@ class _GeometryMixin:
             # batch and detect *in-place* edits as well as array replacement.
             ts = np.asarray(self.key_ts)
             pos = np.asarray(self.key_points)
-            cache_key = (s_min, s_max, int(N_discrete),
+            cache_key = (s_min, s_max, int(N_discrete), leafsize_0056,
                          ts.shape, ts.dtype.str, ts.tobytes(),
                          pos.shape, pos.dtype.str, pos.tobytes())
             entry = getattr(self, '_projection_interval_cache_0054', None)
@@ -288,7 +291,7 @@ class _GeometryMixin:
         skeletal_verts = self.interpolate(
             non_uniform_linear_points, radius=False, frame=False
         )["points"]
-        tree = KDTree(skeletal_verts)
+        tree = KDTree(skeletal_verts, leafsize=leafsize_0056)
         result = (non_uniform_linear_points, skeletal_verts, tree, s_min, s_max)
         if cache_key is not None:
             self._projection_interval_cache_0054 = (cache_key, result)
@@ -298,7 +301,8 @@ class _GeometryMixin:
                                   projection_workers_0054=1,
                                   projection_cache_0054=False,
                                   projection_refine_fast_0055=False,
-                                  projection_profile_split_0055=False):
+                                  projection_profile_split_0055=False,
+                                  projection_leafsize_0056=10):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -307,7 +311,8 @@ class _GeometryMixin:
         """
         samples = np.asarray(samples, dtype=np.float64)
         pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(
-            s0, s1, N_discrete, cache_0054=projection_cache_0054)
+            s0, s1, N_discrete, cache_0054=projection_cache_0054,
+            leafsize_0056=projection_leafsize_0056)
         if tree is None:
             return np.full(samples.shape[0], s_min, dtype=np.float64)
         workers = int(projection_workers_0054)
@@ -337,7 +342,8 @@ class _GeometryMixin:
                                              projection_workers_0054=1,
                                              projection_cache_0054=False,
                                              projection_refine_fast_0055=False,
-                                             projection_profile_split_0055=False):
+                                             projection_profile_split_0055=False,
+                                             projection_leafsize_0056=10):
         """(N, K) candidate arc-length params restricted to [s0, s1] -- the
         loop-aware companion to curve_projection_interval. For a curve that loops
         WITHIN the interval, the K nearest skeleton candidates land on different
@@ -345,7 +351,8 @@ class _GeometryMixin:
         K == 1 reproduces curve_projection_interval exactly."""
         samples = np.asarray(samples, dtype=np.float64)
         pts, verts, tree, s_min, s_max = self._projection_skeleton_interval(
-            s0, s1, N_discrete, cache_0054=projection_cache_0054)
+            s0, s1, N_discrete, cache_0054=projection_cache_0054,
+            leafsize_0056=projection_leafsize_0056)
         if tree is None:
             return np.full((samples.shape[0], 1), s_min, dtype=np.float64)
         K = int(max(1, min(K, verts.shape[0])))

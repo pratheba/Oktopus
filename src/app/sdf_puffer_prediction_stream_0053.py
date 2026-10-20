@@ -59,6 +59,14 @@ class PredictionStream0053:
         self.seam_corrections = seam_corrections
         self.batch_size = int(batch_size)
         self.avatar_needed = needs_avatar_inference(arg)
+        # 0056: keep large, transient prediction files on optional node-local
+        # scratch instead of the shared grid memmap filesystem. Every file is
+        # consumed and cleaned up in the same process; no persistence required.
+        override = arg.get('sdf_prediction_scratch_dir_0056')
+        if override is not None:
+            scratch_dir = os.path.expanduser(os.path.expandvars(os.fspath(override)))
+            if '$' in scratch_dir:
+                raise ValueError('0056 prediction scratch contains an unresolved variable')
         if not scratch_dir or not os.path.isdir(scratch_dir):
             raise ValueError('0053 requires existing writable --sdf-grid-memmap-dir')
         self.temp = tempfile.TemporaryDirectory(prefix='oktopus-0053-', dir=scratch_dir)
@@ -66,6 +74,7 @@ class PredictionStream0053:
         self.files = {}
         self.schemas = {}
         self.bytes_written = 0
+        self.zero_copy_write_0056 = bool(arg.get('sdf_prediction_zero_copy_write_0056', False))
         self.model_s = 0.0
         self.write_s = 0.0
         self._finished = False
@@ -88,7 +97,11 @@ class PredictionStream0053:
             self.schemas[field] = schema
         elif self.schemas[field] != schema:
             raise ValueError(f'0053 streamed field {field} changed dtype or shape')
-        self.files[field].write(a.tobytes(order='C'))
+        if self.zero_copy_write_0056:
+            # Identical C-order bytes without a full-size temporary bytes object.
+            self.files[field].write(memoryview(a).cast('B'))
+        else:
+            self.files[field].write(a.tobytes(order='C'))
         self.bytes_written += a.nbytes
 
     def push(self, acc, indices, av):
@@ -185,6 +198,8 @@ class PredictionStream0053:
               'predictions_and_calibration_GB=', f'{self.bytes_written/1e9:.3f}',
               'model_s=', f'{self.model_s:.3f}',
               'prediction_write_s=', f'{self.write_s:.3f}',
+              'scratch_dir=', str(Path(self.temp.name).parent),
+              'zero_copy_0056=', self.zero_copy_write_0056,
               'global_support_clamp=deferred_exact', flush=True)
         return result
 
