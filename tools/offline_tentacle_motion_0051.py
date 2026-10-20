@@ -132,6 +132,96 @@ def bend_positions(rest_curve, s_vertex, offsets, *, angle_deg, bend_axis,
     return center + rotate_v.apply(offsets), posed
 
 
+
+def _unit_rows(vectors):
+    vectors = np.asarray(vectors, dtype=np.float64)
+    lengths = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    if np.any(lengths < 1e-12):
+        raise ValueError('Degenerate sampled curve tangent')
+    return vectors / lengths
+
+
+def _minimal_rotation_vectors(directions, target):
+    """Shortest rotations that align each unit tangent with the target.
+
+    Explicit 180-degree handling avoids NaNs when a curved centerline folds
+    back against its root tangent. These are rotations, not skinning weights.
+    """
+    directions = _unit_rows(directions)
+    target = _unit_rows(np.asarray(target, dtype=np.float64)[None, :])[0]
+    dst = np.broadcast_to(target, directions.shape)
+    cross = np.cross(directions, dst)
+    sin_angle = np.linalg.norm(cross, axis=1)
+    dot = np.clip(np.einsum('ij,ij->i', directions, dst), -1., 1.)
+    angle = np.arctan2(sin_angle, dot)
+    result = np.zeros_like(directions)
+    regular = sin_angle > 1e-9
+    result[regular] = (cross[regular] / sin_angle[regular, None]) * angle[regular, None]
+    antiparallel = (~regular) & (dot < 0)
+    if np.any(antiparallel):
+        # Choose a deterministic perpendicular axis for the 180deg case.
+        anti = directions[antiparallel]
+        unit_axes = np.eye(3)[np.argmin(np.abs(anti), axis=1)]
+        axes = _unit_rows(np.cross(anti, unit_axes))
+        result[antiparallel] = np.pi * axes
+    return result
+
+
+def straighten_positions(rest_curve, s_vertex, offsets, *, progress,
+                         root_hold=0.12, full_straight=0.85):
+    """Straighten ONE centerline while keeping its root and arc length.
+
+    After full_straight each tangent aligns with the tangent at the root hold
+    point. For partial poses the rotation field is smoothly ramped in space
+    and time. Vertices follow their bound centerline point and rotated rest
+    offset. This is only a demo deformation, not a collision-free rig.
+    """
+    if not np.isfinite(progress) or not (0.0 <= progress <= 1.0):
+        raise ValueError('straightening progress must be in [0, 1]')
+    if not (0 <= root_hold < full_straight <= 1):
+        raise ValueError('Require 0 <= root_hold < full_straight <= 1')
+    rest_curve = np.asarray(rest_curve, dtype=np.float64)
+    s_vertex = np.asarray(s_vertex, dtype=np.float64).reshape(-1)
+    offsets = np.asarray(offsets, dtype=np.float64)
+    if rest_curve.ndim != 2 or rest_curve.shape[1] != 3 or len(rest_curve) < 3:
+        raise ValueError('Need an Nx3 centerline with at least three samples')
+    if offsets.shape != (len(s_vertex), 3):
+        raise ValueError('Offsets must be one 3D vector per vertex')
+    if np.any((s_vertex < 0) | (s_vertex > 1)):
+        raise ValueError('Curve vertex parameters must lie in [0,1]')
+    u = np.linspace(0.0, 1.0, len(rest_curve))
+    increments = np.diff(rest_curve, axis=0)
+    tangent = _unit_rows(increments)
+    mids = (u[:-1] + u[1:]) * 0.5
+    # Use the tangent immediately before the held/attachment boundary so the
+    # resulting straight portion continues in the root's outgoing direction.
+    junction_edge = int(np.clip(np.searchsorted(mids, root_hold, side='right') - 1,
+                                0, len(tangent) - 1))
+    target_direction = tangent[junction_edge]
+    full_rotations = _minimal_rotation_vectors(tangent, target_direction)
+    segment_factor = progress * smooth_bend_profile(mids, root_hold, full_straight)
+    rotations = Rotation.from_rotvec(full_rotations * segment_factor[:, None])
+    posed_segments = rotations.apply(increments)
+    posed_curve = np.vstack((rest_curve[0], rest_curve[0] +
+                            np.cumsum(posed_segments, axis=0)))
+    anchors = np.stack([np.interp(s_vertex, u, posed_curve[:, i])
+                        for i in range(3)], axis=1)
+    # Interpolate original *unit tangents* at each bound coordinate; construct
+    # the offset rotation with exactly the same shortest-arc rule.
+    vertex_tangent = np.stack([np.interp(s_vertex, mids, tangent[:, j])
+                               for j in range(3)], axis=1)
+    # At an exact U-turn, tangent interpolation could be zero; use nearest
+    # segment tangent for these rare vertices instead of dividing by zero.
+    bad = np.linalg.norm(vertex_tangent, axis=1) < 1e-9
+    if np.any(bad):
+        nearest = np.clip(np.searchsorted(mids, s_vertex[bad]), 0, len(tangent) - 1)
+        vertex_tangent[bad] = tangent[nearest]
+    vertex_rotations = _minimal_rotation_vectors(vertex_tangent, target_direction)
+    vertex_factor = progress * smooth_bend_profile(s_vertex, root_hold, full_straight)
+    offset_rot = Rotation.from_rotvec(vertex_rotations * vertex_factor[:, None])
+    return anchors + offset_rot.apply(offsets), posed_curve
+
+
 def load_other_curves(path, target, count=128):
     """Sample all other avatar curves to identify the target's own surface.
 
@@ -255,7 +345,12 @@ def export_sequence(args):
     curves, body = load_curve_npz(args.handle_npz, args.curve)
     curves, root = orient_from_root(curves, body, args.root_end)
     params, centers = sample_curve(curves, args.curve_samples)
-    axis = select_bend_axis(centers, args.axis)
+    motion = getattr(args, 'motion', 'bend')
+    if motion not in ('bend', 'straighten'):
+        raise ValueError('motion must be bend or straighten')
+    axis = select_bend_axis(centers, args.axis) if motion == 'bend' else None
+    if motion == 'straighten' and not (0 <= args.root_hold < args.full_bend <= 1):
+        raise ValueError('Straighten: require root-hold < full-bend <= 1')
     moving_paths = parse_mesh_args(args.moving)
     static_paths = parse_mesh_args(args.static)
     avatar_paths = parse_mesh_args(getattr(args, 'deform_avatar', []))
@@ -290,14 +385,28 @@ def export_sequence(args):
     if args.frames < 3:
         raise ValueError('frames must be >= 3')
     report={'curve':args.curve,'handle_npz':str(args.handle_npz),
-            'root_end':root,'axis':axis.tolist(),'angle_deg':args.angle_deg,
+            'root_end':root,'motion':motion,
+            'axis':(axis.tolist() if axis is not None else None),
+            'angle_deg':(args.angle_deg if motion == 'bend' else None),
+            'root_hold':args.root_hold,
+            'full_bend_or_straight':args.full_bend,
             'frames':args.frames,'moving':list(meshes),'static':list(static),
             'deformed_full_avatar':list(avatar_meshes),
             'backend':'rest_vertex_curve_binding; no SDF re-evaluation',
             'connected_surface_validated':False,
             'collision_free_validated':False,'poses':[]}
     for i, phase in enumerate(np.linspace(0, np.pi, args.frames)):
-        angle = float(args.angle_deg*np.sin(phase))
+        pose_amount = float(np.sin(phase))  # rest -> maximum -> rest
+        angle = float(args.angle_deg*pose_amount) if motion == 'bend' else None
+        def pose_vertices(s, offsets):
+            if motion == 'straighten':
+                return straighten_positions(centers, s, offsets,
+                                            progress=pose_amount,
+                                            root_hold=args.root_hold,
+                                            full_straight=args.full_bend)
+            return bend_positions(centers, s, offsets, angle_deg=angle,
+                                  bend_axis=axis, root_hold=args.root_hold,
+                                  full_bend=args.full_bend)
         scene=trimesh.Scene()
         for name,mesh in static.items():
             scene.add_geometry(mesh,geom_name=name,node_name=name)
@@ -309,16 +418,11 @@ def export_sequence(args):
                 moved_points = np.array(original.vertices, dtype=np.float64, copy=True)
                 active = weights > 1e-9
                 if np.any(active):
-                    raw, posed_skel = bend_positions(
-                        centers, s[active], offsets[active], angle_deg=angle,
-                        bend_axis=axis, root_hold=args.root_hold,
-                        full_bend=args.full_bend)
+                    raw, posed_skel = pose_vertices(s[active], offsets[active])
                     moved_points[active] += (raw-moved_points[active]) * weights[active,None]
             else:
                 s, offsets = bindings[name]
-                moved_points, posed_skel = bend_positions(centers, s, offsets,
-                    angle_deg=angle, bend_axis=axis, root_hold=args.root_hold,
-                    full_bend=args.full_bend)
+                moved_points, posed_skel = pose_vertices(s, offsets)
             moved=original.copy()
             moved.vertices=moved_points
             # preserve connectivity; no process/weld/automatic fixes
@@ -326,13 +430,15 @@ def export_sequence(args):
             scene.add_geometry(moved,geom_name=name,node_name=name)
             quality[name]=mesh_quality(original,moved)
         if posed_skel is None:
-            _, posed_skel = bend_positions(centers, np.array([0.0]),
-                    np.zeros((1,3)), angle_deg=angle, bend_axis=axis,
-                    root_hold=args.root_hold, full_bend=args.full_bend)
+            _, posed_skel = pose_vertices(np.array([0.0]), np.zeros((1, 3)))
         scene.export(out/f'pose_{i:03d}.glb')
         np.save(out/f'skeleton_{args.curve}_{i:03d}.npy',posed_skel)
-        report['poses'].append({'frame':i,'angle_deg':angle,'quality':quality})
-        print(f'[offline_pose] frame={i:03d} angle={angle:+.2f} deg saved', flush=True)
+        report['poses'].append({'frame':i,'angle_deg':angle,
+                                'straighten_progress':(pose_amount if motion == 'straighten' else None),
+                                'quality':quality})
+        description = (f'progress={pose_amount:.3f}' if motion == 'straighten'
+                       else f'angle={angle:+.2f} deg')
+        print(f'[offline_pose] frame={i:03d} motion={motion} {description} saved', flush=True)
     (out/'pose_manifest.json').write_text(json.dumps(report,indent=2))
     return report
 
@@ -359,11 +465,16 @@ def main(argv=None):
                    help='First full root-to-tip influence point (root-hold remains anchored)')
     p.add_argument('--output',type=Path,default=Path('inference/offline_motion_512'))
     p.add_argument('--frames',type=int,default=9)
-    p.add_argument('--angle-deg',type=float,default=30)
+    p.add_argument('--motion', choices=['bend', 'straighten'], default='bend',
+                   help='bend: original 0052 deformation; straighten: flatten the free tentacle '
+                        'towards its root tangent (rest -> straight -> rest)')
+    p.add_argument('--angle-deg',type=float,default=30,
+                   help='Max bend angle (used only for --motion bend)')
     p.add_argument('--axis',choices=['x','y','z'],default='z')
     p.add_argument('--root-end',choices=['auto','start','end'],default='auto')
     p.add_argument('--root-hold',type=float,default=0.12)
-    p.add_argument('--full-bend',type=float,default=0.85)
+    p.add_argument('--full-bend',type=float,default=0.85,
+                   help='Curve fraction where full bending or straightening begins')
     p.add_argument('--curve-samples',type=int,default=512)
     args=p.parse_args(argv)
     export_sequence(args)
