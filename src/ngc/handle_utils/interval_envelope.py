@@ -81,3 +81,43 @@ class GateEnvelopeCandidates:
             self.original_cylinder.cylinder_samples, mc_grid,
             extend_bbox=extend_bbox, batch_size=batch_size,
             clip_world_aabb=(self.lower, self.upper))
+
+
+def localizer_piecewise_gate_envelopes(core, src_0, src_1, adapt_arg,
+                                       mc_grid, *, bins=12, samples_per_bin=401):
+    """Numerically conservative 0057 intervals, with existing exact audit.
+
+    Each AABB includes the tangent x_radius (including endpoint support).
+    This is not a mathematically certified enclosure of continuous spline
+    interpolation; never skip a configuration's exact excluded-voxel audit.
+    """
+    bins = int(bins)
+    if not 2 <= bins <= 32:
+        raise ValueError('0057 interval bins must be from 2 to 32')
+    if int(samples_per_bin) < 3:
+        raise ValueError('0057 samples_per_bin must be >= 3')
+    lo, hi = sorted((float(src_0), float(src_1)))
+    borders = np.linspace(lo, hi, bins + 1, dtype=np.float64)
+    return [localizer_gate_envelope(
+        core, a, b, adapt_arg, mc_grid, n_samples=int(samples_per_bin))
+        for a, b in zip(borders[:-1], borders[1:])]
+
+
+class PiecewiseGateEnvelopeCandidates:
+    """0057: ORIGINAL full-cylinder union intersected with gate-box union."""
+
+    def __init__(self, original_cylinder, envelopes):
+        self.original_cylinder = original_cylinder
+        self.envelopes = tuple((np.asarray(lo, dtype=np.float64),
+                                np.asarray(hi, dtype=np.float64))
+                               for lo, hi in envelopes)
+        if not self.envelopes:
+            raise ValueError('0057 requires at least one piecewise gate box')
+
+    def iter_filter_grid_indices(self, mc_grid, *, batch_size=262144,
+                                 extend_bbox=False):
+        from .bounded_filter import iter_bbox_kidx
+        return iter_bbox_kidx(
+            self.original_cylinder.cylinder_samples, mc_grid,
+            extend_bbox=extend_bbox, batch_size=batch_size,
+            clip_world_aabbs=self.envelopes)

@@ -348,6 +348,14 @@ class CurveHandle():
         # audits before enabling pruning on a new adaptation/configuration.
         interval_prune = bool(adapt_arg.get('sdf_candidate_interval_prune', False))
         interval_audit = bool(adapt_arg.get('sdf_candidate_interval_audit', False))
+        piecewise_0057 = bool(adapt_arg.get('sdf_candidate_piecewise_0057', False))
+        piecewise_bins_0057 = int(adapt_arg.get('sdf_candidate_piecewise_bins_0057', 12))
+        piecewise_verified_0057 = bool(adapt_arg.get('sdf_candidate_piecewise_verified_0057', False))
+        if piecewise_0057 and (not interval_prune or
+                              not (interval_audit or piecewise_verified_0057)):
+            raise ValueError('0057 piecewise gate requires interval pruning and an exact audit or explicit previously verified configuration')
+        if piecewise_0057 and not 2 <= piecewise_bins_0057 <= 32:
+            raise ValueError('0057 interval bins must be from 2 to 32')
         if interval_prune and float(adapt_arg.get(
                 'sdf_candidate_interval_pad',
                 adapt_arg.get('adapt_filter_src_interval_pad', 0.10))) < 0.0:
@@ -576,8 +584,25 @@ class CurveHandle():
             gate_lo, gate_hi = localizer_gate_envelope(
                 self.core, adapt_arg['src_0'], adapt_arg['src_1'],
                 adapt_arg, mc_grid)
-            cyl_mesh = GateEnvelopeCandidates(full_cylinder_for_audit,
-                                              gate_lo, gate_hi)
+            if piecewise_0057:
+                from ngc.handle_utils.interval_envelope import (
+                    localizer_piecewise_gate_envelopes,
+                    PiecewiseGateEnvelopeCandidates,
+                )
+                sub_envelopes = localizer_piecewise_gate_envelopes(
+                    self.core, adapt_arg['src_0'], adapt_arg['src_1'],
+                    adapt_arg, mc_grid, bins=piecewise_bins_0057)
+                cyl_mesh = PiecewiseGateEnvelopeCandidates(
+                    full_cylinder_for_audit, sub_envelopes)
+                print('[sdf_candidate_piecewise_0057] enabled=True',
+                      'bins=', piecewise_bins_0057,
+                      'envelope_boxes=', len(sub_envelopes),
+                      'audit=', interval_audit,
+                      'verified_without_audit=', piecewise_verified_0057 and not interval_audit,
+                      flush=True)
+            else:
+                cyl_mesh = GateEnvelopeCandidates(full_cylinder_for_audit,
+                                                  gate_lo, gate_hi)
             print('[sdf_candidate_interval_0048a] world_gate_envelope=',
                   gate_lo.tolist(), gate_hi.tolist(), flush=True)
         if interval_prune and puffer_staged_roi:
@@ -610,6 +635,16 @@ class CurveHandle():
                     mc_grid, batch_size=batch_audit),
                 cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_audit),
                 mc_grid.idx2pts, _localize_excluded)
+            if piecewise_0057:
+                print('[sdf_candidate_piecewise_0057 audit] full=',
+                      proof['full_candidates'],
+                      'candidates=', proof['narrow_candidates'],
+                      'pruned=', proof['excluded_candidates'],
+                      'missing_accepted=', proof['missing_accepted'],
+                      'audit_s=', f"{proof['elapsed_s']:.3f}",
+                      'candidate_reduction_pct=',
+                      f"{100.0 * proof['excluded_candidates'] / max(1, proof['full_candidates']):.2f}",
+                      flush=True)
             print('[sdf_candidate_interval_0048 audit] full=', proof['full_candidates'],
                   'pruned=', proof['narrow_candidates'],
                   'excluded=', proof['excluded_candidates'],
