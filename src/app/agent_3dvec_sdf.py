@@ -1536,7 +1536,9 @@ class AgentSDF(AgentBase):
                                 'sdf_candidate_interval_pad',
                                 'sdf_projection_workers_0054',
                                 'sdf_projection_cache_0054',
-                                'sdf_projection_profile_0054'):
+                                'sdf_projection_profile_0054',
+                                'sdf_projection_refine_fast_0055',
+                                'sdf_projection_profile_split_0055'):
                     if roi_key in cfg and roi_key not in wrap_arg:
                         wrap_arg[roi_key] = cfg[roi_key]
                 wrap_arg['dcsdd_filter_batch_size'] = int(
@@ -1695,6 +1697,8 @@ class AgentSDF(AgentBase):
                         'sdf_projection_workers_0054',
                         'sdf_projection_cache_0054',
                         'sdf_projection_profile_0054',
+                        'sdf_projection_refine_fast_0055',
+                        'sdf_projection_profile_split_0055',
                         'sdf_puffer_stop_after',
                         'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
@@ -2144,7 +2148,9 @@ class AgentSDF(AgentBase):
                                 'sdf_candidate_interval_pad',
                                 'sdf_projection_workers_0054',
                                 'sdf_projection_cache_0054',
-                                'sdf_projection_profile_0054'):
+                                'sdf_projection_profile_0054',
+                                'sdf_projection_refine_fast_0055',
+                                'sdf_projection_profile_split_0055'):
                     if roi_key in extraction_config and roi_key not in adapt_arg:
                         adapt_arg[roi_key] = extraction_config[roi_key]
                 stream_requested = bool(extraction_config.get('dcsdd_stream_inference', False))
@@ -2218,6 +2224,10 @@ class AgentSDF(AgentBase):
                         break
 
                     filter_t0 = time()
+                    projection_profile_start_0055 = (
+                        getattr(curve.core, '_projection_knn_seconds_0055', 0.0),
+                        getattr(curve.core, '_projection_refine_seconds_0055', 0.0),
+                    )
                     projection_profile_start_0054 = (
                         getattr(curve.core, '_projection_profile_seconds_0054', 0.0),
                         getattr(curve.core, '_projection_profile_calls_0054', 0))
@@ -2253,6 +2263,12 @@ class AgentSDF(AgentBase):
                         accessory_data, avatar_data, kidx, inside = curve.filter_grid_adapt(
                             mc_grid, adapt_arg)
                     filter_elapsed = time() - filter_t0
+                    if adapt_arg.get('sdf_projection_profile_split_0055', False):
+                        print('[sdf_projection_0055] name=', run_name,
+                              'fast_refine=', bool(adapt_arg.get('sdf_projection_refine_fast_0055', False)),
+                              'knn_s=', f"{getattr(curve.core, '_projection_knn_seconds_0055', 0.0) - projection_profile_start_0055[0]:.3f}",
+                              'refine_s=', f"{getattr(curve.core, '_projection_refine_seconds_0055', 0.0) - projection_profile_start_0055[1]:.3f}",
+                              flush=True)
                     if adapt_arg.get('sdf_projection_profile_0054', False):
                         print('[sdf_projection_0054] name=', run_name,
                               'workers=', adapt_arg.get('sdf_projection_workers_0054', 1),

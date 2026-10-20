@@ -118,7 +118,9 @@ class _LocalizeMixin:
                          sdf_localize_after_gate=False,
                          projection_workers_0054=1,
                          projection_cache_0054=False,
-                         projection_profile_0054=False):
+                         projection_profile_0054=False,
+                         projection_refine_fast_0055=False,
+                         projection_profile_split_0055=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
@@ -140,6 +142,8 @@ class _LocalizeMixin:
                     int(k_project), outside=outside,
                     projection_workers_0054=projection_workers_0054,
                     projection_cache_0054=projection_cache_0054,
+                    projection_refine_fast_0055=projection_refine_fast_0055,
+                    projection_profile_split_0055=projection_profile_split_0055,
                 )
                 sample_keypoint_map = self._select_projection_candidate(
                     pointcloudsamples, ts_cand, radius_type,
@@ -153,6 +157,8 @@ class _LocalizeMixin:
                     outside=outside,
                     projection_workers_0054=projection_workers_0054,
                     projection_cache_0054=projection_cache_0054,
+                    projection_refine_fast_0055=projection_refine_fast_0055,
+                    projection_profile_split_0055=projection_profile_split_0055,
                 )
         elif k_project is not None and int(k_project) > 1:
             # Loop-aware projection: evaluate the K nearest skeleton candidates and
@@ -1042,6 +1048,8 @@ class _LocalizeMixin:
             projection_workers_0054=int(adapt_arg.get("sdf_projection_workers_0054", 1)),
             projection_cache_0054=bool(adapt_arg.get("sdf_projection_cache_0054", False)),
             projection_profile_0054=bool(adapt_arg.get("sdf_projection_profile_0054", False)),
+            projection_refine_fast_0055=bool(adapt_arg.get("sdf_projection_refine_fast_0055", False)),
+            projection_profile_split_0055=bool(adapt_arg.get("sdf_projection_profile_split_0055", False)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

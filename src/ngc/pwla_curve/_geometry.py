@@ -155,6 +155,79 @@ class _GeometryMixin:
 
         return result
 
+    def _projection_edges_0055(self, verts, params):
+        """Reuse adjacent-segment geometry for exact interval refinement.
+
+        The original _assign_ts rebuilds 2 segment vectors, lengths and
+        directions for every grid batch. An interval tree is fixed during a
+        given adaptation; cache only its tiny (roughly 200-edge) geometry.
+        The strong reference to ``verts`` prevents id-reuse cache collisions.
+        """
+        entry = getattr(self, '_projection_edges_cache_0055', None)
+        if entry is not None and entry[0] is verts and entry[1] is params:
+            return entry[2]
+        edge = np.asarray(verts[1:] - verts[:-1], dtype=np.float64)
+        length = np.linalg.norm(edge, axis=1)
+        length_safe = length + 1e-12
+        direction = edge / length_safe[:, None]
+        dt_over_len = (params[1:] - params[:-1]) / length_safe
+        data = (length, direction, dt_over_len)
+        self._projection_edges_cache_0055 = (verts, params, data)
+        return data
+
+    def _assign_ts_fast_0055(self, samples, vidx, params, verts, outside=False):
+        """Same nearest-vertex + adjacent-edge XOR rules as _assign_ts.
+
+        Gather per-sample precomputed segments rather than rebuilding lengths,
+        directions, per-edge index lists, and full-size boolean scatter arrays.
+        Endpoint behavior, including the ``-1`` sentinel, is unchanged.
+        """
+        samples = np.asarray(samples, dtype=np.float64)
+        vidx = np.asarray(vidx, dtype=np.int64).reshape(-1)
+        params = np.asarray(params, dtype=np.float64).reshape(-1)
+        verts = np.asarray(verts, dtype=np.float64)
+        if samples.shape[0] != vidx.shape[0]:
+            raise ValueError('Projection sample/index length mismatch: '
+                             f'samples={samples.shape[0]} vidx={vidx.shape[0]}')
+        n = samples.shape[0]
+        nv = verts.shape[0]
+        result = np.full(n, -1.0, dtype=np.float64)
+        if n == 0 or nv == 0:
+            return result
+        if nv == 1:
+            result[:] = params[0]
+            return result
+        if np.any((vidx < 0) | (vidx >= nv)):
+            raise ValueError('Projection vertex index out of range')
+        length, direction, dt_over_len = self._projection_edges_0055(verts, params)
+        last = nv - 1
+        interior = (vidx > 0) & (vidx < last)
+        first = vidx == 0
+        end = vidx == last
+        result[interior] = params[vidx[interior]]
+        if outside:
+            result[first] = params[0]
+            result[end] = params[-1]
+
+        # The two adjacent edges are gathered in vertex-index order. At the
+        # endpoints one of these is a placeholder, masked out below.
+        ri = np.minimum(vidx, last - 1)
+        li = np.maximum(vidx - 1, 0)
+        rproj = np.einsum('ij,ij->i', samples - verts[ri], direction[ri])
+        lproj = np.einsum('ij,ij->i', samples - verts[li], direction[li])
+        rok = (~end) & (rproj >= 0.0) & (rproj <= length[ri])
+        lok = (~first) & (lproj >= 0.0) & (lproj <= length[li])
+
+        take_r = (first & rok) | (interior & rok & ~lok)
+        take_l = (end & lok) | (interior & lok & ~rok)
+        if np.any(take_r):
+            indices = ri[take_r]
+            result[take_r] = params[indices] + dt_over_len[indices] * rproj[take_r]
+        if np.any(take_l):
+            indices = li[take_l]
+            result[take_l] = params[indices] + dt_over_len[indices] * lproj[take_l]
+        return result
+
     def curve_projection(self, samples, N_discrete=n_sample_curve, outside=False):
         non_uniform_linear_points, skeletal_verts, tree = self._projection_skeleton(N_discrete)
         # not accurate for radius-varying skeleton
@@ -223,7 +296,9 @@ class _GeometryMixin:
 
     def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False,
                                   projection_workers_0054=1,
-                                  projection_cache_0054=False):
+                                  projection_cache_0054=False,
+                                  projection_refine_fast_0055=False,
+                                  projection_profile_split_0055=False):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -239,16 +314,30 @@ class _GeometryMixin:
         if not 1 <= workers <= 16:
             raise ValueError('0054 projection workers must be between 1 and 16')
         # Preserve the historical SciPy call when single-threaded.
+        from time import perf_counter
+        start_knn = perf_counter() if projection_profile_split_0055 else None
         _, vidx = (tree.query(samples) if workers == 1
                    else tree.query(samples, workers=workers))
-        ts = self._assign_ts(samples, vidx, pts, verts, outside)
+        start_refine = perf_counter() if projection_profile_split_0055 else None
+        ts = (self._assign_ts_fast_0055(samples, vidx, pts, verts, outside)
+              if projection_refine_fast_0055
+              else self._assign_ts(samples, vidx, pts, verts, outside))
+        if start_knn is not None:
+            self._projection_knn_seconds_0055 = (
+                getattr(self, '_projection_knn_seconds_0055', 0.0)
+                + start_refine - start_knn)
+            self._projection_refine_seconds_0055 = (
+                getattr(self, '_projection_refine_seconds_0055', 0.0)
+                + perf_counter() - start_refine)
         good = ts >= 0.0
         ts[good] = np.clip(ts[good], s_min, s_max)
         return ts
 
     def curve_projection_interval_candidates(self, samples, s0, s1, K, N_discrete=n_sample_curve, outside=False,
                                              projection_workers_0054=1,
-                                             projection_cache_0054=False):
+                                             projection_cache_0054=False,
+                                             projection_refine_fast_0055=False,
+                                             projection_profile_split_0055=False):
         """(N, K) candidate arc-length params restricted to [s0, s1] -- the
         loop-aware companion to curve_projection_interval. For a curve that loops
         WITHIN the interval, the K nearest skeleton candidates land on different
@@ -263,16 +352,28 @@ class _GeometryMixin:
         workers = int(projection_workers_0054)
         if not 1 <= workers <= 16:
             raise ValueError('0054 projection workers must be between 1 and 16')
+        from time import perf_counter
+        start_knn = perf_counter() if projection_profile_split_0055 else None
         _, vidx_k = (tree.query(samples, k=K) if workers == 1
                      else tree.query(samples, k=K, workers=workers))
+        start_refine = perf_counter() if projection_profile_split_0055 else None
         if vidx_k.ndim == 1:
             vidx_k = vidx_k[:, None]
         cols = []
         for j in range(vidx_k.shape[1]):
-            ts = self._assign_ts(samples, vidx_k[:, j], pts, verts, outside)
+            ts = (self._assign_ts_fast_0055(samples, vidx_k[:, j], pts, verts, outside)
+                  if projection_refine_fast_0055
+                  else self._assign_ts(samples, vidx_k[:, j], pts, verts, outside))
             good = ts >= 0.0
             ts[good] = np.clip(ts[good], s_min, s_max)
             cols.append(ts)
+        if start_knn is not None:
+            self._projection_knn_seconds_0055 = (
+                getattr(self, '_projection_knn_seconds_0055', 0.0)
+                + start_refine - start_knn)
+            self._projection_refine_seconds_0055 = (
+                getattr(self, '_projection_refine_seconds_0055', 0.0)
+                + perf_counter() - start_refine)
         return np.stack(cols, axis=1)
 
     def calc_cylinder_SDF(self, vs):
