@@ -337,13 +337,92 @@ class _GeometryMixin:
         except (AttributeError, TypeError, ValueError):
             return None
 
+    def _projection_grid_filter_0062(self, samples, verts, tree, bound,
+                                      cell_ratio=0.30, max_cells=250000,
+                                      workers=1):
+        """Conservatively discard points before the full-resolution KDTree query.
+
+        Let d(x) be distance to the closest *sampled skeleton vertex*, which is
+        1-Lipschitz: d(x) >= d(cell_center) - ||x-cell_center||. Hence an
+        occupied grid cell is necessary if d(center) <= bound+half_diag.
+        This is an exact BROAD PHASE for 0058's already-proven distance test,
+        not an approximate nearest neighbor or a new adaptation SDF formula.
+
+        Grid data are cached by tree identity, radius bound and grid settings.
+        If its memory cap is exceeded, return None (no pruning).
+        """
+        from time import perf_counter
+        cell_ratio = float(cell_ratio)
+        max_cells = int(max_cells)
+        if not (np.isfinite(cell_ratio) and 0 < cell_ratio <= 1.0):
+            raise ValueError('0062 grid cell ratio must be in (0, 1]')
+        if not 1 <= max_cells <= 4000000:
+            raise ValueError('0062 max grid cells must be in [1, 4000000]')
+        if (bound is None or not np.isfinite(bound) or bound <= 0 or
+                len(verts) == 0 or not np.isfinite(samples).all()):
+            return None
+        # Smaller bounds also mean a smaller admissible tube. Never allow
+        # the fine grid to exceed the configured cell-count budget.
+        cell = max(float(bound) * cell_ratio, 1e-8)
+        entry = getattr(self, '_projection_grid_cache_0062', None)
+        key = (tree, float(bound), cell_ratio, max_cells)
+        if entry is None or entry[0] != key:
+            start = perf_counter()
+            origin = np.min(verts, axis=0) - bound - cell
+            far = np.max(verts, axis=0) + bound + cell
+            counts = np.ceil((far - origin) / cell).astype(np.int64)
+            if (np.any(counts <= 0) or
+                    int(np.prod(counts.astype(np.float64))) > max_cells):
+                self._projection_grid_fallbacks_0062 = (
+                    getattr(self, '_projection_grid_fallbacks_0062', 0) + 1)
+                return None
+            # At most max_cells small query points; chunk-free memory bounded.
+            axes = [origin[k] + (np.arange(counts[k]) + .5) * cell
+                    for k in range(3)]
+            gx, gy, gz = np.meshgrid(*axes, indexing='ij')
+            centers = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+            distance, _ = tree.query(centers, workers=workers)
+            half_diag = (3.0 ** .5) * .5 * cell
+            # Rounding margin makes the prefilter strictly conservative.
+            allowed = (distance <= bound + half_diag +
+                       1e-10 * max(1.0, float(bound), cell))
+            data = (origin, cell, counts, allowed.reshape(tuple(counts)))
+            self._projection_grid_cache_0062 = (key, data)
+            self._projection_grid_build_seconds_0062 = (
+                getattr(self, '_projection_grid_build_seconds_0062', 0.)
+                + perf_counter() - start)
+            self._projection_grid_cells_0062 = len(centers)
+        else:
+            data = entry[1]
+
+        origin, cell, counts, allowed = data
+        start = perf_counter()
+        if len(samples) == 0:
+            ids = np.empty(0, dtype=np.int64)
+        else:
+            ijk = np.floor((samples - origin) / cell).astype(np.int64)
+            valid = ((ijk >= 0) & (ijk < counts)).all(axis=1)
+            # Clip out-of-domain indices before gathering, then AND with valid.
+            # Non-finite samples were rejected from this optimization above.
+            ijk = np.clip(ijk, 0, counts - 1)
+            keep = valid & allowed[ijk[:, 0], ijk[:, 1], ijk[:, 2]]
+            ids = np.flatnonzero(keep)
+        self._projection_grid_filter_seconds_0062 = (
+            getattr(self, '_projection_grid_filter_seconds_0062', 0.)
+            + perf_counter() - start)
+        return ids
+
     def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False,
                                   projection_workers_0054=1,
                                   projection_cache_0054=False,
                                   projection_refine_fast_0055=False,
                                   projection_profile_split_0055=False,
                                   projection_leafsize_0056=10,
-                                  pre_radius_bound_0058=None):
+                                  pre_radius_bound_0058=None,
+                                  projection_grid_0062=False,
+                                  projection_grid_audit_0062=False,
+                                  projection_grid_cell_ratio_0062=0.30,
+                                  projection_bound_query_0062=False):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -362,26 +441,51 @@ class _GeometryMixin:
         workers = int(projection_workers_0054)
         if not 1 <= workers <= 16:
             raise ValueError('0054 projection workers must be between 1 and 16')
-        # Preserve the historical SciPy call when single-threaded.
+        # 0062: optional *pre-query* broad phase built from a coarse occupancy
+        # grid. It must preserve the same exact 0058 sphere survivor indices.
         from time import perf_counter
+        if (projection_grid_0062 or projection_bound_query_0062 or
+                projection_grid_audit_0062) and pre_radius_bound_0058 is None:
+            raise ValueError('0062 requires 0058 sphere bound (direct k=1)')
+        bound = (self._projection_sphere_bound_0058(
+            verts, pts, *pre_radius_bound_0058)
+            if pre_radius_bound_0058 is not None else None)
+        original_samples_0062 = samples if projection_grid_audit_0062 else None
+        grid_indices_0062 = None
+        if projection_grid_0062 and bound is not None:
+            grid_indices_0062 = self._projection_grid_filter_0062(
+                samples, verts, tree, bound,
+                cell_ratio=projection_grid_cell_ratio_0062, workers=workers)
+        n_original_0062 = len(samples)
+        if grid_indices_0062 is not None:
+            samples = samples[grid_indices_0062]
+        if projection_grid_0062 or projection_bound_query_0062:
+            self._projection_grid_considered_0062 = (
+                getattr(self, '_projection_grid_considered_0062', 0) + n_original_0062)
+            self._projection_grid_queried_0062 = (
+                getattr(self, '_projection_grid_queried_0062', 0) + len(samples))
         start_knn = perf_counter() if projection_profile_split_0055 else None
-        distances, vidx = (tree.query(samples) if workers == 1
-                           else tree.query(samples, workers=workers))
+        kwargs = {} if workers == 1 else {'workers': workers}
+        # Strictly greater than bound: SciPy's upper bound uses < rather
+        # than <=; nextafter retains the original <= cutoff in 0058.
+        if projection_bound_query_0062 and bound is not None:
+            kwargs['distance_upper_bound'] = np.nextafter(bound, np.inf)
+        distances, vidx = tree.query(samples, **kwargs)
         if pre_radius_bound_0058 is not None:
-            bound = self._projection_sphere_bound_0058(
-                verts, pts, *pre_radius_bound_0058)
             if bound is None:
-                kept = np.arange(len(samples), dtype=np.int64)
+                local_keep = np.arange(len(samples), dtype=np.int64)
             else:
-                kept = np.flatnonzero(distances <= bound)
+                local_keep = np.flatnonzero(distances <= bound)
+            kept = (grid_indices_0062[local_keep] if grid_indices_0062 is not None
+                    else local_keep)
             self._projection_sphere_considered_0058 = (
-                getattr(self, '_projection_sphere_considered_0058', 0) + len(samples))
+                getattr(self, '_projection_sphere_considered_0058', 0) + n_original_0062)
             self._projection_sphere_rejected_0058 = (
                 getattr(self, '_projection_sphere_rejected_0058', 0)
-                + len(samples) - len(kept))
+                + n_original_0062 - len(kept))
             # Keep exact sample-to-original index mapping for localize_samples.
-            samples = samples[kept]
-            vidx = vidx[kept]
+            samples = samples[local_keep]
+            vidx = vidx[local_keep]
         start_refine = perf_counter() if projection_profile_split_0055 else None
         ts = (self._assign_ts_fast_0055(samples, vidx, pts, verts, outside)
               if projection_refine_fast_0055
@@ -395,6 +499,28 @@ class _GeometryMixin:
                 + perf_counter() - start_refine)
         good = ts >= 0.0
         ts[good] = np.clip(ts[good], s_min, s_max)
+        if projection_grid_audit_0062:
+            # Full KD-tree query *without* the grid or bounded-query switches.
+            # Checking the original kept rows and exact per-row curve params
+            # catches even a near-boundary change missed by aggregate mesh stats.
+            if bound is None:
+                raise ValueError('0062 audit requires a valid 0058 bound')
+            ref_d, ref_vidx = tree.query(original_samples_0062, workers=workers)
+            ref_kept = np.flatnonzero(ref_d <= bound)
+            if not np.array_equal(kept, ref_kept):
+                raise AssertionError('0062 candidate parity failed: KD-tree survivor indices differ')
+            ref_ts = (self._assign_ts_fast_0055(
+                original_samples_0062[ref_kept], ref_vidx[ref_kept],
+                pts, verts, outside) if projection_refine_fast_0055 else
+                self._assign_ts(original_samples_0062[ref_kept],
+                                ref_vidx[ref_kept], pts, verts, outside))
+            ref_good = ref_ts >= 0.
+            ref_ts[ref_good] = np.clip(ref_ts[ref_good], s_min, s_max)
+            if not np.array_equal(ts, ref_ts, equal_nan=True):
+                raise AssertionError('0062 projection parity failed: curve parameters differ')
+            self._projection_grid_audited_rows_0062 = (
+                getattr(self, '_projection_grid_audited_rows_0062', 0) +
+                len(original_samples_0062))
         if pre_radius_bound_0058 is not None:
             return ts, kept
         return ts

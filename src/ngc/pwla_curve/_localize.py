@@ -153,7 +153,11 @@ class _LocalizeMixin:
                          projection_leafsize_0056=10,
                          projection_sphere_0058=False,
                          projection_reuse_0059=False,
-                         localize_profile_0060=False):
+                         localize_profile_0060=False,
+                         projection_grid_0062=False,
+                         projection_grid_audit_0062=False,
+                         projection_grid_cell_ratio_0062=0.30,
+                         projection_bound_query_0062=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
@@ -175,6 +179,9 @@ class _LocalizeMixin:
             raise ValueError('0058 sphere gate requires direct interval k=1 '
                              'localization with post-gate SDF and no outside queries')
 
+        if (projection_grid_0062 or projection_grid_audit_0062 or
+                projection_bound_query_0062) and not projection_sphere_0058:
+            raise ValueError('0062 grid/query requires enabled 0058 sphere mode')
         micro_0060 = _StageTimer0060(self, 'core') if localize_profile_0060 else None
         # 0054a: profile the projection call, not full interpolation/filtering.
         # Default remains inert for all non-0054 workloads.
@@ -215,6 +222,10 @@ class _LocalizeMixin:
                         norm, runtime_cylinder_radius_scale,
                         runtime_cylinder_radius_add)
                     if projection_sphere_0058 else None,
+                    projection_grid_0062=projection_grid_0062,
+                    projection_grid_audit_0062=projection_grid_audit_0062,
+                    projection_grid_cell_ratio_0062=projection_grid_cell_ratio_0062,
+                    projection_bound_query_0062=projection_bound_query_0062,
                 )
                 if projection_sphere_0058:
                     sample_keypoint_map, prefilter_ids_0058 = projection_result_0058
@@ -1162,6 +1173,10 @@ class _LocalizeMixin:
             projection_sphere_0058=bool(adapt_arg.get('sdf_localize_sphere_0058', False)),
             projection_reuse_0059=reuse_0059,
             localize_profile_0060=profile_0060,
+            projection_grid_0062=bool(adapt_arg.get('sdf_projection_grid_0062', False)),
+            projection_grid_audit_0062=bool(adapt_arg.get('sdf_projection_grid_audit_0062', False)),
+            projection_grid_cell_ratio_0062=float(adapt_arg.get('sdf_projection_grid_cell_ratio_0062', 0.30)),
+            projection_bound_query_0062=bool(adapt_arg.get('sdf_projection_bound_query_0062', False)),
         )
 
         if stage_clock_0059 is not None:

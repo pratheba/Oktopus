@@ -1543,6 +1543,10 @@ class AgentSDF(AgentBase):
                                 'sdf_projection_refine_fast_0055',
                                 'sdf_projection_profile_split_0055',
                                 'sdf_projection_leafsize_0056',
+                                'sdf_projection_grid_0062',
+                                'sdf_projection_grid_audit_0062',
+                                'sdf_projection_grid_cell_ratio_0062',
+                                'sdf_projection_bound_query_0062',
                                 'sdf_localize_sphere_0058',
                                 'sdf_localize_sphere_audit_0058',
                                 'sdf_localize_reuse_0059',
@@ -1713,6 +1717,10 @@ class AgentSDF(AgentBase):
                         'sdf_projection_refine_fast_0055',
                         'sdf_projection_profile_split_0055',
                         'sdf_projection_leafsize_0056',
+                        'sdf_projection_grid_0062',
+                        'sdf_projection_grid_audit_0062',
+                        'sdf_projection_grid_cell_ratio_0062',
+                        'sdf_projection_bound_query_0062',
                         'sdf_localize_sphere_0058',
                         'sdf_localize_sphere_audit_0058',
                         'sdf_localize_reuse_0059',
@@ -2183,6 +2191,10 @@ class AgentSDF(AgentBase):
                                 'sdf_projection_refine_fast_0055',
                                 'sdf_projection_profile_split_0055',
                                 'sdf_projection_leafsize_0056',
+                                'sdf_projection_grid_0062',
+                                'sdf_projection_grid_audit_0062',
+                                'sdf_projection_grid_cell_ratio_0062',
+                                'sdf_projection_bound_query_0062',
                         'sdf_localize_sphere_0058',
                         'sdf_localize_sphere_audit_0058',
                         'sdf_localize_reuse_0059',
@@ -2320,6 +2332,20 @@ class AgentSDF(AgentBase):
                               'projection_s=', f"{getattr(curve.core, '_projection_profile_seconds_0054', 0.0) - projection_profile_start_0054[0]:.3f}",
                               'projection_calls=', getattr(curve.core, '_projection_profile_calls_0054', 0) - projection_profile_start_0054[1],
                               'filter_s=', f'{filter_elapsed:.3f}', flush=True)
+
+                    if adapt_arg.get('sdf_projection_grid_0062', False):
+                        print('[sdf_projection_grid_0062] name=', run_name,
+                              'candidates=', getattr(curve.core, '_projection_grid_considered_0062', 0),
+                              'knn_queried=', getattr(curve.core, '_projection_grid_queried_0062', 0),
+                              'prequery_skipped=', (getattr(curve.core, '_projection_grid_considered_0062', 0)
+                                                   - getattr(curve.core, '_projection_grid_queried_0062', 0)),
+                              'grid_cells=', getattr(curve.core, '_projection_grid_cells_0062', 0),
+                              'grid_build_s=', f"{getattr(curve.core, '_projection_grid_build_seconds_0062', 0.):.3f}",
+                              'grid_filter_s=', f"{getattr(curve.core, '_projection_grid_filter_seconds_0062', 0.):.3f}",
+                              'grid_fallbacks=', getattr(curve.core, '_projection_grid_fallbacks_0062', 0),
+                              'bounded_query=', bool(adapt_arg.get('sdf_projection_bound_query_0062', False)),
+                              'audited_rows=', getattr(curve.core, '_projection_grid_audited_rows_0062', 0),
+                              flush=True)
 
                     cache_key = item.get("cache_as", accessory_key)
 
