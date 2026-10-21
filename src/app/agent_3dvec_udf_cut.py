@@ -128,6 +128,249 @@ class AgentUDFCut(AgentUDF):
         return reasons
 
     @staticmethod
+    def _absolute_hysteresis_with_saturation_guard(
+        usable_scores: np.ndarray,
+        *,
+        seed_world: float,
+        grow_world: float,
+        far_world: float,
+        far_band_world: float,
+        min_informative_fraction: float,
+        min_informative_faces: int,
+    ) -> Tuple[float, float, Dict[str, object]]:
+        """Use metric UDF thresholds, abstaining only on a far-value plateau.
+
+        The UDF value is already a world-space distance-like signal.  Do not
+        recalibrate that distance from the SDF mesh's own score distribution;
+        otherwise a mesh with lots of unsupported geometry teaches the cutter
+        to tolerate that same geometry.  The only distributional decision here
+        is whether the queried UDF contains enough non-sentinel information to
+        trust the absolute thresholds at all.
+        """
+        scores = np.asarray(usable_scores, dtype=np.float64).reshape(-1)
+        scores = scores[np.isfinite(scores)]
+        if len(scores) == 0:
+            raise RuntimeError(
+                "absolute UDF hysteresis needs at least one usable finite score"
+            )
+
+        seed_world = float(seed_world)
+        grow_world = float(grow_world)
+        far_world = float(far_world)
+        far_band_world = float(far_band_world)
+        min_informative_fraction = float(min_informative_fraction)
+        min_informative_faces = max(0, int(min_informative_faces))
+
+        if seed_world <= 0.0 or grow_world < 0.0:
+            raise ValueError(
+                "absolute UDF hysteresis requires seed > 0 and grow >= 0"
+            )
+        if grow_world >= seed_world:
+            raise ValueError(
+                "absolute UDF hysteresis requires grow_world < seed_world"
+            )
+        if far_band_world < 0.0:
+            raise ValueError("far_value_band_world must be >= 0")
+        if not (0.0 <= min_informative_fraction <= 1.0):
+            raise ValueError(
+                "min_informative_fraction must be in [0, 1]"
+            )
+
+        far_cutoff = far_world - far_band_world
+        informative = scores < far_cutoff
+        informative_faces = int(np.sum(informative))
+        required_informative = max(
+            min_informative_faces,
+            int(np.ceil(min_informative_fraction * len(scores))),
+        )
+        saturated = informative_faces < required_informative
+        far_like_fraction = float(np.mean(~informative))
+
+        selected_seed = seed_world
+        selected_grow = grow_world
+        if saturated:
+            score_max = float(np.max(scores))
+            margin = max(1.0e-6, abs(score_max) * 1.0e-6)
+            selected_seed = score_max + margin
+            selected_grow = selected_seed
+
+        report = {
+            "enabled": True,
+            "mode": "absolute_hysteresis",
+            "configured_seed_world": seed_world,
+            "configured_grow_world": grow_world,
+            "far_value": far_world,
+            "far_value_band_world": far_band_world,
+            "far_cutoff_world": far_cutoff,
+            "far_like_fraction": far_like_fraction,
+            "informative_faces": informative_faces,
+            "usable_faces": int(len(scores)),
+            "required_informative_faces": int(required_informative),
+            "saturated": bool(saturated),
+            "seed_world": selected_seed,
+            "grow_world": selected_grow,
+        }
+        return selected_seed, selected_grow, report
+
+    def _estimate_udf_metric_calibration(
+        self,
+        mesh: trimesh.Trimesh,
+        *,
+        face_scores: np.ndarray,
+        usable_faces: np.ndarray,
+        avatar_curve,
+        adapt_arg: dict,
+        accessory_key: str,
+        model_batch_size: int,
+        far_world: float,
+        seed_world: float,
+        grow_world: float,
+        max_samples: int = 256,
+        min_samples: int = 32,
+        epsilon_edge_fraction: float = 0.05,
+        band_low_fraction: float = 0.25,
+        band_high_fraction: float = 0.75,
+        far_band_world: float = 0.002,
+    ) -> Dict[str, object]:
+        """Estimate the local metric distortion of the adapted UDF.
+
+        The network is trained in accessory/query coordinates.  After the
+        inverse adaptation warp, ``g(x) = f(T^-1(x))`` has the right zero set
+        but is generally no longer an exact world-space distance field. Near
+        a supported surface, ``g / ||grad_x g||`` is the first-order
+        re-distance approximation.
+
+        This calibration samples a small number of already-computed low-UDF
+        MC face centroids and estimates ``||grad_x g||`` with central
+        differences.  Its proposed seed/grow values are the raw-model
+        thresholds corresponding to the configured world-space tolerances
+        under one robust per-adaptation metric scale.
+        """
+        scores = np.asarray(face_scores, dtype=np.float64).reshape(-1)
+        usable = np.asarray(usable_faces, dtype=bool).reshape(-1)
+        finite = usable & np.isfinite(scores)
+
+        edge_lengths = np.asarray(mesh.edges_unique_length, dtype=np.float64)
+        edge_lengths = edge_lengths[np.isfinite(edge_lengths) & (edge_lengths > 0.0)]
+        if len(edge_lengths) == 0:
+            return {
+                "enabled": True,
+                "status": "no_finite_edges",
+                "sample_count": 0,
+            }
+
+        median_edge = float(np.median(edge_lengths))
+        epsilon_world = max(1.0e-6, float(epsilon_edge_fraction) * median_edge)
+
+        seed_world = float(seed_world)
+        grow_world = float(grow_world)
+        band_lo = max(1.0e-6, float(band_low_fraction) * seed_world)
+        band_hi = max(band_lo, float(band_high_fraction) * seed_world)
+
+        candidate = np.flatnonzero(
+            finite & (scores >= band_lo) & (scores <= band_hi)
+        )
+        fallback = False
+        if len(candidate) < int(min_samples):
+            fallback = True
+            candidate = np.flatnonzero(
+                finite & (scores > 1.0e-6) & (scores <= seed_world)
+            )
+
+        if len(candidate) == 0:
+            return {
+                "enabled": True,
+                "status": "no_near_surface_candidates",
+                "sample_count": 0,
+                "median_edge_world": median_edge,
+                "epsilon_world": epsilon_world,
+                "score_band_world": [band_lo, band_hi],
+                "fallback_band": fallback,
+            }
+
+        # Deterministic coverage across the candidate score range.
+        order = candidate[np.argsort(scores[candidate])]
+        take = min(max(1, int(max_samples)), len(order))
+        if take < len(order):
+            positions = np.linspace(0, len(order) - 1, take).astype(np.int64)
+            selected = order[positions]
+        else:
+            selected = order
+
+        centers = np.asarray(mesh.triangles_center, dtype=np.float64)[selected]
+        offsets = np.repeat(centers[None, :, :], 6, axis=0)
+        for axis in range(3):
+            offsets[2 * axis, :, axis] += epsilon_world
+            offsets[2 * axis + 1, :, axis] -= epsilon_world
+
+        values, valid = self._query_adapted_raw_udf(
+            offsets.reshape(-1, 3),
+            avatar_curve=avatar_curve,
+            adapt_arg=adapt_arg,
+            accessory_key=accessory_key,
+            batch_size=int(model_batch_size),
+            far_world=float(far_world),
+            return_valid=True,
+        )
+        values = np.asarray(values, dtype=np.float64).reshape(6, -1)
+        valid = np.asarray(valid, dtype=bool).reshape(6, -1)
+
+        far_cutoff = float(far_world) - max(0.0, float(far_band_world))
+        valid &= np.isfinite(values) & (values < far_cutoff)
+        sample_valid = np.all(valid, axis=0)
+
+        grad = np.full((len(selected), 3), np.nan, dtype=np.float64)
+        for axis in range(3):
+            axis_valid = valid[2 * axis] & valid[2 * axis + 1]
+            rows = np.flatnonzero(axis_valid)
+            if len(rows):
+                grad[rows, axis] = (
+                    values[2 * axis, rows] - values[2 * axis + 1, rows]
+                ) / (2.0 * epsilon_world)
+
+        grad_norm = np.linalg.norm(grad, axis=1)
+        grad_valid = (
+            sample_valid
+            & np.all(np.isfinite(grad), axis=1)
+            & np.isfinite(grad_norm)
+            & (grad_norm > 1.0e-3)
+            & (grad_norm < 100.0)
+        )
+        good = grad_norm[grad_valid]
+
+        report: Dict[str, object] = {
+            "enabled": True,
+            "status": "ok" if len(good) >= int(min_samples) else "too_few_valid_gradients",
+            "candidate_faces": int(len(candidate)),
+            "sample_count": int(len(selected)),
+            "valid_gradient_count": int(len(good)),
+            "median_edge_world": median_edge,
+            "epsilon_world": epsilon_world,
+            "score_band_world": [band_lo, band_hi],
+            "fallback_band": fallback,
+            "configured_seed_world": seed_world,
+            "configured_grow_world": grow_world,
+        }
+        if len(good):
+            qs = np.percentile(good, [10, 25, 50, 75, 90])
+            metric_scale = float(qs[2])
+            report.update(
+                {
+                    "gradient_norm_percentiles": {
+                        "10": float(qs[0]),
+                        "25": float(qs[1]),
+                        "50": metric_scale,
+                        "75": float(qs[3]),
+                        "90": float(qs[4]),
+                    },
+                    "metric_scale": metric_scale,
+                    "proposed_seed_raw": seed_world * metric_scale,
+                    "proposed_grow_raw": grow_world * metric_scale,
+                }
+            )
+        return report
+
+    @staticmethod
     def _safe_label(text: str) -> str:
         return str(text).replace("|", "_").replace("/", "_")
 
@@ -236,6 +479,129 @@ class AgentUDFCut(AgentUDF):
             "nonmanifold_edges": int(np.sum(counts > 2)),
             "components": int(len(roots)),
         }
+
+    @classmethod
+    def _cleanup_tiny_vertex_components(
+        cls,
+        mesh: trimesh.Trimesh,
+        *,
+        min_faces: int,
+        min_fraction_of_largest: float = 0.0,
+        keep_largest_only: bool = False,
+    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object]]:
+        """Remove vertex-connected leftovers after a UDF cut.
+
+        A legitimate opening can leave isolated triangle islands in the kept
+        mesh. Those islands should not inflate post-cut topology statistics or
+        be used as kept evidence during combined transfer. Connectivity is
+        vertex-based (not ``trimesh.split`` face adjacency) so non-manifold
+        junctions still count as connected.
+        """
+        base_min_faces = max(int(min_faces), 0)
+        min_fraction_of_largest = float(min_fraction_of_largest)
+        if min_fraction_of_largest < 0.0:
+            raise ValueError("min_fraction_of_largest must be >= 0")
+
+        before = cls._topology_stats(mesh)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if len(faces) == 0:
+            empty = trimesh.Trimesh(
+                vertices=np.zeros((0, 3), dtype=np.float64),
+                faces=np.zeros((0, 3), dtype=np.int64),
+                process=False,
+            )
+            return mesh.copy(), empty, {
+                "enabled": (
+                    base_min_faces > 0 or min_fraction_of_largest > 0.0
+                ),
+                "base_min_faces": base_min_faces,
+                "min_fraction_of_largest": min_fraction_of_largest,
+                "largest_component_faces": 0,
+                "effective_min_faces": base_min_faces,
+                "keep_largest_only": bool(keep_largest_only),
+                "component_face_counts": [],
+                "kept_components": int(before["components"]),
+                "removed_components": 0,
+                "removed_faces": 0,
+                "before": before,
+                "after": before,
+            }
+
+        n_vertices = len(mesh.vertices)
+        parent = np.arange(n_vertices, dtype=np.int64)
+        rank = np.zeros(n_vertices, dtype=np.int8)
+
+        def find(x: int) -> int:
+            x = int(x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = int(parent[x])
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
+            else:
+                parent[rb] = ra
+                rank[ra] += 1
+
+        for tri in faces:
+            union(int(tri[0]), int(tri[1]))
+            union(int(tri[1]), int(tri[2]))
+            union(int(tri[2]), int(tri[0]))
+
+        face_roots = np.asarray(
+            [find(int(tri[0])) for tri in faces], dtype=np.int64
+        )
+        roots, counts = np.unique(face_roots, return_counts=True)
+        order = np.argsort(counts)[::-1]
+        component_face_counts = [int(v) for v in counts[order]]
+        largest_component_faces = (
+            int(component_face_counts[0]) if component_face_counts else 0
+        )
+        relative_min_faces = int(
+            np.ceil(min_fraction_of_largest * largest_component_faces)
+        )
+        effective_min_faces = max(base_min_faces, relative_min_faces)
+
+        if keep_largest_only and roots.size:
+            # Final combined garment must remain one connected surface.  Keep
+            # exactly the largest vertex-connected component; unlike the
+            # per-piece cleanup, do not preserve substantial secondary islands.
+            keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
+        else:
+            keep_roots = roots[counts >= effective_min_faces]
+            # Conservative guard: never let cleanup erase an entire non-empty mesh.
+            if keep_roots.size == 0 and roots.size:
+                keep_roots = np.asarray([roots[int(np.argmax(counts))]], dtype=np.int64)
+
+        keep_root_mask = np.isin(roots, keep_roots)
+        keep_mask = np.isin(face_roots, keep_roots)
+        cleaned = cls._mesh_from_face_mask(mesh, keep_mask)
+        removed = cls._mesh_from_face_mask(mesh, ~keep_mask)
+        after = cls._topology_stats(cleaned)
+        report = {
+            "enabled": (
+                base_min_faces > 0 or min_fraction_of_largest > 0.0
+            ),
+            "base_min_faces": base_min_faces,
+            "min_fraction_of_largest": min_fraction_of_largest,
+            "largest_component_faces": largest_component_faces,
+            "effective_min_faces": effective_min_faces,
+            "keep_largest_only": bool(keep_largest_only),
+            "component_face_counts": component_face_counts,
+            "kept_components": int(np.sum(keep_root_mask)),
+            "removed_components": int(np.sum(~keep_root_mask)),
+            "removed_faces": int(np.sum(~keep_mask)),
+            "before": before,
+            "after": after,
+        }
+        return cleaned, removed, report
 
     @staticmethod
     def _existing_boundary_faces(mesh: trimesh.Trimesh) -> np.ndarray:
@@ -2236,13 +2602,164 @@ class AgentUDFCut(AgentUDF):
                 auto_spec = {}
 
             usable_scores = scores[usable & np.isfinite(scores)]
+            metric_calibration_report = None
             auto_mode = str(auto_spec.get("mode", "search")).strip().lower()
-            if auto_mode not in {"search", "p95_hysteresis"}:
+            if auto_mode not in {"search", "p95_hysteresis", "absolute_hysteresis"}:
                 raise ValueError(
                     "udf_cut_auto_thresholds.mode must be one of: "
-                    "search, p95_hysteresis; "
+                    "search, p95_hysteresis, absolute_hysteresis; "
                     f"got {auto_mode!r}"
                 )
+
+            if auto_enabled and auto_mode == "absolute_hysteresis":
+                if len(usable_scores) == 0:
+                    raise RuntimeError(
+                        "udf_cut_auto_thresholds needs at least one usable "
+                        f"finite face score for item {item_index}"
+                    )
+
+                far_band_world = float(
+                    auto_spec.get(
+                        "far_value_band_world",
+                        max(5.0e-4, abs(float(far_world)) * 0.02),
+                    )
+                )
+                min_informative_fraction = float(
+                    auto_spec.get("min_informative_fraction", 0.05)
+                )
+                min_informative_faces = int(
+                    auto_spec.get("min_informative_faces", 128)
+                )
+                seed_world, grow_world, auto_threshold_report = (
+                    self._absolute_hysteresis_with_saturation_guard(
+                        usable_scores,
+                        seed_world=seed_world,
+                        grow_world=grow_world,
+                        far_world=far_world,
+                        far_band_world=far_band_world,
+                        min_informative_fraction=min_informative_fraction,
+                        min_informative_faces=min_informative_faces,
+                    )
+                )
+
+                if bool(auto_threshold_report["saturated"]):
+                    print(
+                        "[udf cut auto saturation]",
+                        f"item={item_index}",
+                        "mode=absolute_hysteresis",
+                        f"far={far_world:.6g}",
+                        f"band={far_band_world:.6g}",
+                        "far_like_fraction="
+                        f"{auto_threshold_report['far_like_fraction']:.3f}",
+                        "informative_faces="
+                        f"{auto_threshold_report['informative_faces']}/"
+                        f"{auto_threshold_report['usable_faces']}",
+                        "required="
+                        f"{auto_threshold_report['required_informative_faces']}",
+                        "action=no_cut",
+                    )
+                else:
+                    print(
+                        "[udf cut absolute threshold]",
+                        f"item={item_index}",
+                        f"seed={seed_world:.6g}",
+                        f"grow={grow_world:.6g}",
+                        "far_like_fraction="
+                        f"{auto_threshold_report['far_like_fraction']:.3f}",
+                        "informative_faces="
+                        f"{auto_threshold_report['informative_faces']}/"
+                        f"{auto_threshold_report['usable_faces']}",
+                    )
+
+                # Re-distance the adapted learned UDF before thresholding.
+                # For g(x) = f(T^-1(x)), the zero set follows the adaptation
+                # but raw g is not generally a world-space Euclidean distance.
+                # Near a supported surface, d ~= g / ||grad_x g||, so convert
+                # the configured world-space seed/grow tolerances into the raw
+                # adapted-UDF scale with one robust per-adaptation metric scale.
+                #
+                # This is intentionally generic: no part names and no score
+                # percentile learned from the candidate SDF mesh.  Saturated
+                # far-value pieces still abstain before reaching this step.
+                if not bool(auto_threshold_report["saturated"]):
+                    metric_calibration_report = (
+                        self._estimate_udf_metric_calibration(
+                            mesh,
+                            face_scores=scores,
+                            usable_faces=usable,
+                            avatar_curve=avatar_curve,
+                            adapt_arg=adapt_arg,
+                            accessory_key=accessory_key,
+                            model_batch_size=model_batch_size,
+                            far_world=far_world,
+                            seed_world=float(
+                                auto_threshold_report[
+                                    "configured_seed_world"
+                                ]
+                            ),
+                            grow_world=float(
+                                auto_threshold_report[
+                                    "configured_grow_world"
+                                ]
+                            ),
+                            max_samples=int(
+                                config.get(
+                                    "udf_cut_metric_calibration_samples", 256
+                                )
+                            ),
+                            min_samples=int(
+                                config.get(
+                                    "udf_cut_metric_calibration_min_samples", 32
+                                )
+                            ),
+                            epsilon_edge_fraction=float(
+                                config.get(
+                                    "udf_cut_metric_calibration_epsilon_edges",
+                                    0.05,
+                                )
+                            ),
+                            far_band_world=far_band_world,
+                        )
+                    )
+                    metric_scale = metric_calibration_report.get("metric_scale")
+                    calibration_ok = (
+                        metric_calibration_report.get("status") == "ok"
+                        and metric_scale is not None
+                    )
+                    if calibration_ok:
+                        seed_world = float(
+                            metric_calibration_report["proposed_seed_raw"]
+                        )
+                        grow_world = float(
+                            metric_calibration_report["proposed_grow_raw"]
+                        )
+                        metric_calibration_report["applied"] = True
+                        auto_threshold_report["metric_calibrated"] = True
+                        auto_threshold_report["metric_scale"] = float(metric_scale)
+                        auto_threshold_report["seed_world"] = seed_world
+                        auto_threshold_report["grow_world"] = grow_world
+                        print(
+                            "[udf cut metric threshold]",
+                            f"item={item_index}",
+                            f"samples={metric_calibration_report['valid_gradient_count']}/"
+                            f"{metric_calibration_report['sample_count']}",
+                            f"grad_p50={metric_scale:.6g}",
+                            f"seed={seed_world:.6g}",
+                            f"grow={grow_world:.6g}",
+                            "grad_p10_p90="
+                            f"{metric_calibration_report['gradient_norm_percentiles']['10']:.6g}/"
+                            f"{metric_calibration_report['gradient_norm_percentiles']['90']:.6g}",
+                        )
+                    else:
+                        metric_calibration_report["applied"] = False
+                        auto_threshold_report["metric_calibrated"] = False
+                        print(
+                            "[udf cut metric threshold]",
+                            f"item={item_index}",
+                            f"status={metric_calibration_report['status']}",
+                            f"fallback_seed={seed_world:.6g}",
+                            f"fallback_grow={grow_world:.6g}",
+                        )
 
             # 0030: return the actual cut to the pre-search behavior that was
             # calibrated visually on t5_2.  The later percentile-grid search
@@ -3506,6 +4023,34 @@ class AgentUDFCut(AgentUDF):
                     f"scalar_max_delta={subtriangle_report['scalar_smooth_max_abs_delta']:.6g}",
                 )
 
+            kept_before_fragment_cleanup = kept.copy()
+            fragment_min_faces = int(
+                config.get("udf_cut_min_kept_component_faces", 20)
+            )
+            fragment_min_fraction = float(
+                config.get("udf_cut_min_kept_component_fraction", 0.001)
+            )
+            kept, fragment_removed, fragment_cleanup_report = (
+                self._cleanup_tiny_vertex_components(
+                    kept,
+                    min_faces=fragment_min_faces,
+                    min_fraction_of_largest=fragment_min_fraction,
+                )
+            )
+            print(
+                "[udf cut fragment cleanup]",
+                f"item={item_index}",
+                f"min_faces={fragment_cleanup_report['effective_min_faces']}",
+                f"base_min_faces={fragment_min_faces}",
+                f"fraction={fragment_min_fraction:.6g}",
+                f"largest_faces={fragment_cleanup_report['largest_component_faces']}",
+                f"components={fragment_cleanup_report['before']['components']}"
+                f"->{fragment_cleanup_report['after']['components']}",
+                f"removed_components={fragment_cleanup_report['removed_components']}",
+                f"removed_faces={fragment_cleanup_report['removed_faces']}",
+                f"faces_top10={fragment_cleanup_report['component_face_counts'][:10]}",
+            )
+
             kept_raw = kept.copy()
             cleanup_enabled = bool(
                 config.get("udf_cut_cleanup_boundary", False)
@@ -3531,7 +4076,12 @@ class AgentUDFCut(AgentUDF):
                 )
 
             if combined_transfer_enabled:
-                combined_removed_references.append(removed.copy())
+                removed_reference = removed.copy()
+                if len(fragment_removed.faces):
+                    removed_reference = trimesh.util.concatenate(
+                        [removed_reference, fragment_removed.copy()]
+                    )
+                combined_removed_references.append(removed_reference)
                 combined_kept_references.append(kept_raw.copy())
 
             safe_key = self._safe_label(accessory_key)
@@ -3682,6 +4232,10 @@ class AgentUDFCut(AgentUDF):
                 "after_raw": self._topology_stats(kept_raw),
                 "after": self._topology_stats(kept),
                 "subtriangle_cut": subtriangle_report,
+                "after_before_fragment_cleanup": self._topology_stats(kept_before_fragment_cleanup),
+                "fragment_removed": self._topology_stats(fragment_removed),
+                "fragment_cleanup": fragment_cleanup_report,
+                "metric_calibration": metric_calibration_report,
                 "boundary_cleanup": cleanup_report,
                 "components": [decision.as_dict() for decision in decisions],
                 "outputs": {
