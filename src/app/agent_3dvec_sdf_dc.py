@@ -30,6 +30,21 @@ _DEFAULT_DCSDD_REPO = op.expanduser(
 )
 
 
+def _dcsdd_profile_enabled_0063(config):
+    """Opt-in wall-clock profiling; env switch avoids YAML/CLI plumbing."""
+    if "dcsdd_profile_0063" in config:
+        return bool(config["dcsdd_profile_0063"])
+    return os.environ.get("OKTOPUS_DCSDD_PROFILE_0063", "0").lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _dcsdd_profile_log_0063(enabled, stage, started):
+    if enabled:
+        elapsed = time.perf_counter() - started
+        print(f"[dcsdd_profile_0063] stage={stage} seconds={elapsed:.6f}")
+
+
 class AgentSDFDC(AgentSDF):
     """Run Oktopus native MC and the DCSDD reference methods on one SDF grid."""
 
@@ -133,6 +148,8 @@ class AgentSDFDC(AgentSDF):
         can change when far-away positive samples are excluded.
         """
         config = {} if config is None else config
+        profile_0063 = _dcsdd_profile_enabled_0063(config)
+        t_grid_0063 = time.perf_counter()
         N, N1, origin, step = self._native_grid_config(sdf_grid)
         kb = np.asarray(sdf_grid.grid_config.get("k_basis", []))
         if type(sdf_grid).__name__ != "MCGrid" or not np.array_equal(
@@ -152,6 +169,8 @@ class AgentSDFDC(AgentSDF):
         else:
             empty_native = np.isclose(S_native, 10.0, rtol=0., atol=1e-12)
 
+        _dcsdd_profile_log_0063(profile_0063, "grid_native_validation", t_grid_0063)
+        t_crop_0063 = time.perf_counter()
         crop = bool(config.get("dcsdd_crop_grid", False))
         if crop:
             neg_lo, neg_hi = self._negative_bbox(S_native, empty_native, N1, level)
@@ -182,6 +201,8 @@ class AgentSDFDC(AgentSDF):
         else:
             S, empty = S_native, empty_native
 
+        _dcsdd_profile_log_0063(profile_0063, "grid_crop", t_crop_0063)
+        t_coords_0063 = time.perf_counter()
         # MCGrid idx2pts uses the exact same x-fast formula. Materialize only
         # the mandatory Nx3 coordinates, in small bounded index chunks.
         count = S.size
@@ -197,6 +218,7 @@ class AgentSDFDC(AgentSDF):
             U[begin:finish, 1] = j * step + origin[1]
             U[begin:finish, 2] = k * step + origin[2]
 
+        _dcsdd_profile_log_0063(profile_0063, "grid_coordinates", t_coords_0063)
         print(
             f"[dcsdd:native-grid] samples={count} shape={N1}x{N1}x{N1} "
             "native_order_mismatches=0 (MCGrid x-fast verified)"
@@ -312,6 +334,8 @@ class AgentSDFDC(AgentSDF):
         distance >= band, so a local EDT yields the identical clamped field.
         """
         from scipy.ndimage import distance_transform_edt
+        profile_0063 = _dcsdd_profile_enabled_0063(config)
+        t_masks_0063 = time.perf_counter()
 
         values = np.asarray(S_raw, dtype=np.float64).reshape(-1)
         empty = np.asarray(unevaluated, dtype=bool).reshape(-1)
@@ -327,6 +351,8 @@ class AgentSDFDC(AgentSDF):
             raise RuntimeError("No negative evaluated samples (negative=inside)")
         n_pos = int(np.count_nonzero(evaluated & (values > level)))
 
+        _dcsdd_profile_log_0063(profile_0063, "field_masks", t_masks_0063)
+        t_clip_0063 = time.perf_counter()
         cell_diag = float(np.sqrt(3.0) * step)
         band = AgentSDFDC._dcsdd_band(step, config)
         safe = np.empty_like(values)
@@ -336,6 +362,8 @@ class AgentSDFDC(AgentSDF):
         # Their exact clipped EDT values differ from band only near negative SDF.
         np.copyto(safe, band, where=~evaluated)
 
+        _dcsdd_profile_log_0063(profile_0063, "field_clip", t_clip_0063)
+        t_edt_0063 = time.perf_counter()
         neg_ids = np.flatnonzero(negative)
         del negative
         ij = N1 * N1
@@ -364,6 +392,7 @@ class AgentSDFDC(AgentSDF):
             roi = safe.reshape(shape, order="F")[sl]
             np.copyto(roi, dist, where=missing_roi)
 
+        _dcsdd_profile_log_0063(profile_0063, "field_edt_and_roi", t_edt_0063)
         print(
             f"[dcsdd:safe-field] evaluated={int(evaluated.sum())} "
             f"negative={n_neg} positive={n_pos} "
@@ -480,7 +509,11 @@ class AgentSDFDC(AgentSDF):
             )
 
     def run_all_reconstructions(self, sdf_grid, config, name, mc_method="extract_mesh"):
+        profile_0063 = _dcsdd_profile_enabled_0063(config)
+        run_started_0063 = time.perf_counter()
+        t_stage_0063 = time.perf_counter()
         contouring, utility, gpy = self._load_dcsdd(config)
+        _dcsdd_profile_log_0063(profile_0063, "load_dcsdd", t_stage_0063)
         output_folder = config.get("output_folder", ".")
         checkpoint = config.get("checkpoint", "eval")
         level = float(config.get("level", sdf_grid.grid_config.get("level", 0.0)))
@@ -500,15 +533,20 @@ class AgentSDFDC(AgentSDF):
             "mc", "mc_ref", "dc", "ours", "rfta", "mnm1", "mnm2"
         ]
 
+        t_stage_0063 = time.perf_counter()
         S_raw, U, unevaluated, N1 = self._grid_to_S_U(
             sdf_grid, config=config, level=level
         )
+        _dcsdd_profile_log_0063(profile_0063, "grid_transfer_total_inclusive", t_stage_0063)
+        t_stage_0063 = time.perf_counter()
         if N1 <= 513 or bool(config.get("dcsdd_full_grid_diagnostics", False)):
             self._print_grid_diagnostics(S_raw, U, unevaluated, N1, level)
         else:
             print("[dcsdd:grid] full diagnostics skipped at >512 to reduce peak memory; "
                   "set dcsdd_full_grid_diagnostics=true to enable")
 
+        _dcsdd_profile_log_0063(profile_0063, "grid_diagnostics", t_stage_0063)
+        t_stage_0063 = time.perf_counter()
         # Reference MC keeps the original Oktopus field. DC and DC-SDD get a
         # separately filled and bounded field because they use abs(S) as a
         # geometric radius.
@@ -529,6 +567,7 @@ class AgentSDFDC(AgentSDF):
                 level=level,
                 config=config,
             )
+        _dcsdd_profile_log_0063(profile_0063, "safe_field_total_inclusive", t_stage_0063)
         contour_iso = 0.0
         cc = contouring._contouring_cpp_module
 
@@ -539,11 +578,14 @@ class AgentSDFDC(AgentSDF):
             if V is None or F is None or len(V) == 0 or len(F) == 0:
                 print(f"[dcsdd:{method}] empty result, not saved")
                 return
+            t_save_0063 = time.perf_counter()
             mesh = trimesh.Trimesh(
                 vertices=np.asarray(V, dtype=np.float64),
                 faces=np.asarray(F, dtype=np.int64),
                 process=False,
             )
+            _dcsdd_profile_log_0063(profile_0063, "mesh_construct", t_save_0063)
+            t_save_0063 = time.perf_counter()
             if output_pattern is not None:
                 method_dir = op.join(output_folder, method)
                 os.makedirs(method_dir, exist_ok=True)
@@ -554,6 +596,8 @@ class AgentSDFDC(AgentSDF):
                     out_dir, f"{name}_{method}_{checkpoint}_mesh{reso}.ply"
                 )
             mesh.export(path)
+            _dcsdd_profile_log_0063(profile_0063, "mesh_export", t_save_0063)
+            t_save_0063 = time.perf_counter()
             results[method] = mesh
             orientation = "undetermined_nonwatertight"
             if mesh.is_watertight:
@@ -574,12 +618,15 @@ class AgentSDFDC(AgentSDF):
                 f"winding_consistent={mesh.is_winding_consistent} "
                 f"signed_volume={float(mesh.volume):.9g} orientation={orientation}"
             )
+            _dcsdd_profile_log_0063(profile_0063, "mesh_quality_and_reporting", t_save_0063)
 
         def contour(method_name, opts, samples):
             t0 = time.time()
+            t_native_0063 = time.perf_counter()
             V, F = contouring.py_contouring(
                 samples, U, N1, N1, N1, contour_iso, opts, None, None
             )
+            _dcsdd_profile_log_0063(profile_0063, "pybind_cpp_contouring", t_native_0063)
             timings[method_name] = time.time() - t0
             save(method_name, V, F)
 
@@ -667,6 +714,7 @@ class AgentSDFDC(AgentSDF):
                 except Exception as exc:
                     print(f"[dcsdd:mnm2] FAILED: {exc}")
 
+        _dcsdd_profile_log_0063(profile_0063, "total_run_inclusive", run_started_0063)
         print(
             f"[dcsdd] timings for {name} @ {reso}^3: "
             + ", ".join(f"{m}={timings[m]:.4f}s" for m in timings)
