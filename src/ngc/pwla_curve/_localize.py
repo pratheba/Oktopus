@@ -1592,6 +1592,13 @@ class _LocalizeMixin:
             if zero_angular_fast:
                 r_src = r_tgt = None
             else:
+                # Do not pass new keyword args to the legacy function or its
+                # existing test doubles when the 0061 optimization is off.
+                wrap_opt_0061 = (
+                    {'vectorized_0061': True,
+                     'audit_0061': bool(adapt_arg.get('sdf_vectorize_wrap_audit_0061', False))}
+                    if adapt_arg.get('sdf_vectorize_wrap_0061', False) else {}
+                )
                 r_src = interpolate_wrap_radius1(
                     self,
                     avatar_coords,
@@ -1599,6 +1606,7 @@ class _LocalizeMixin:
                     wrap_src,
                     theta_bins_src,
                     s_bins_src,
+                    **wrap_opt_0061,
                 )
 
                 r_tgt = interpolate_wrap_radius1(
@@ -1608,6 +1616,7 @@ class _LocalizeMixin:
                     wrap_tgt,
                     theta_bins_tgt,
                     s_bins_tgt,
+                    **wrap_opt_0061,
                 )
 
             skirt_env_scale = None

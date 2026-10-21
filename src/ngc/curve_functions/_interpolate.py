@@ -228,7 +228,46 @@ def interpolate_theta(self, theta, wrap_radius, theta_bins):
     return wrap_theta
 
 
-def interpolate_wrap_radius1(self, ts, theta, wrap, theta_bins, s_bins):
+def _interpolate_wrap_radius_vectorized_0061(ts, theta, wrap, theta_bins, s_bins):
+    """Bilinear wrap lookup in O(N) memory, with no per-point Python loop.
+
+    Use the ORIGINAL angular wrapping/index arithmetic (interpolate_theta),
+    then interpolate just the two adjacent s rows. Unlike the existing
+    interpolate_theta -> (N,Ns) -> np.interp per row path, this constructs
+    only O(N) temporaries; it supports nonuniform, strictly increasing s_bins.
+    The caller handles unsupported/degenerate longitudinal bins by falling
+    back to the original implementation.
+    """
+    n_s, n_theta = wrap.shape
+    theta0 = theta_bins[0]
+    dtheta = theta_bins[1] - theta_bins[0]
+    # Keep the same periodic wrap and index/weight arithmetic as
+    # interpolate_theta. In particular, do not approximate theta by its
+    # nearest bin or assume theta is pre-normalized.
+    theta_mapped = ((theta - theta0) % (2.0 * np.pi)) + theta0
+    delta_theta = (theta_mapped - theta0) / dtheta
+    theta_floor = np.floor(delta_theta)
+    idx0 = theta_floor.astype(np.int64) % n_theta
+    idx1 = (idx0 + 1) % n_theta
+    wt = delta_theta - theta_floor
+
+    # np.interp clamps to the ends, and uses the right interval when the
+    # query lands exactly on a bin. Keep both semantics.
+    s_clip = np.clip(ts, s_bins[0], s_bins[-1])
+    upper = np.searchsorted(s_bins, s_clip, side='right')
+    upper = np.clip(upper, 1, n_s - 1)
+    lower = upper - 1
+    ws = (s_clip - s_bins[lower]) / (s_bins[upper] - s_bins[lower])
+
+    # The old path interpolates ANGLE first and then LONGITUDINAL POSITION.
+    # Preserve that operation order to minimize floating-point differences.
+    r0 = (1.0 - wt) * wrap[lower, idx0] + wt * wrap[lower, idx1]
+    r1 = (1.0 - wt) * wrap[upper, idx0] + wt * wrap[upper, idx1]
+    return r0 + ws * (r1 - r0)
+
+
+def interpolate_wrap_radius1(self, ts, theta, wrap, theta_bins, s_bins,
+                             *, vectorized_0061=False, audit_0061=False):
     ts = np.asarray(ts, dtype=np.float64)
     theta = np.asarray(theta, dtype=np.float64)
     wrap = np.asarray(wrap, dtype=np.float64)
@@ -237,14 +276,56 @@ def interpolate_wrap_radius1(self, ts, theta, wrap, theta_bins, s_bins):
 
     assert wrap.ndim == 2, f"Expected wrap to be 2D, got {wrap.shape}"
 
-    wrap_theta = interpolate_theta(self, theta, wrap, theta_bins)
-    out = np.empty(ts.shape[0], dtype=np.float64)
-    ts_clip = np.clip(ts, s_bins[0], s_bins[-1])
+    # This is the proven legacy reference used by the 0061 audit. Do not
+    # change its numerical behavior, including endpoint clamping.
+    def reference():
+        wrap_theta = interpolate_theta(self, theta, wrap, theta_bins)
+        out = np.empty(ts.shape[0], dtype=np.float64)
+        ts_clip = np.clip(ts, s_bins[0], s_bins[-1])
+        for i in range(ts.shape[0]):
+            out[i] = np.interp(ts_clip[i], s_bins, wrap_theta[i])
+        return out
 
-    for i in range(ts.shape[0]):
-        out[i] = np.interp(ts_clip[i], s_bins, wrap_theta[i])
+    if not vectorized_0061:
+        return reference()
 
-    return out
+    # np.interp has no meaningful interpolation contract for non-monotone
+    # xp; for single/duplicate s positions, fall back rather than divide by
+    # zero or silently change historical behavior. Also guard short angular
+    # tables, which cannot be interpolated by the original fast theta path.
+    supported = (s_bins.ndim == 1 and theta_bins.ndim == 1
+                 and wrap.shape == (len(s_bins), len(theta_bins))
+                 and len(s_bins) >= 2 and len(theta_bins) >= 2
+                 and np.all(np.isfinite(s_bins))
+                 and np.all(np.diff(s_bins) > 0.0))
+    if supported:
+        result = _interpolate_wrap_radius_vectorized_0061(
+            ts, theta, wrap, theta_bins, s_bins)
+    else:
+        result = reference()
+
+    stats = getattr(self, '_wrap_vector_stats_0061', None)
+    if stats is None:
+        stats = {'calls': 0, 'points': 0, 'fallback_calls': 0,
+                 'audited_points': 0, 'max_abs_error': 0.0}
+        self._wrap_vector_stats_0061 = stats
+    stats['calls'] += 1
+    stats['points'] += ts.size
+    stats['fallback_calls'] += not supported
+
+    if audit_0061:
+        legacy = reference() if supported else result
+        # Vectorized reassociation changes last-bit rounding. Preserve a tight
+        # absolute+relative numerical tolerance; do not claim bitwise equality.
+        np.testing.assert_allclose(result, legacy, rtol=1e-12, atol=1e-12,
+                                   equal_nan=True, err_msg='0061 wrap parity')
+        finite = np.isfinite(result) & np.isfinite(legacy)
+        if np.any(finite):
+            stats['max_abs_error'] = max(
+                stats['max_abs_error'],
+                float(np.max(np.abs(result[finite] - legacy[finite]))))
+        stats['audited_points'] += ts.size
+    return result
 
 def interpolate_wrap_radius2(self, ts, theta, wrap, theta_bins, s_bins):
         ts = np.asarray(ts, dtype=np.float64)

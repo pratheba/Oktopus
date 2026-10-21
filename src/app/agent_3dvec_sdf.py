@@ -1549,6 +1549,8 @@ class AgentSDF(AgentBase):
                                 'sdf_localize_reuse_audit_0059',
                                 'sdf_localize_reuse_verified_0059',
                                 'sdf_localize_profile_0060',
+                                'sdf_vectorize_wrap_0061',
+                                'sdf_vectorize_wrap_audit_0061',
                                 'sdf_localize_sphere_verified_0058'):
                     if roi_key in cfg and roi_key not in wrap_arg:
                         wrap_arg[roi_key] = cfg[roi_key]
@@ -1717,6 +1719,8 @@ class AgentSDF(AgentBase):
                         'sdf_localize_reuse_audit_0059',
                         'sdf_localize_reuse_verified_0059',
                                 'sdf_localize_profile_0060',
+                                'sdf_vectorize_wrap_0061',
+                                'sdf_vectorize_wrap_audit_0061',
                         'sdf_localize_sphere_verified_0058',
                         'sdf_prediction_scratch_dir_0056',
                         'sdf_prediction_zero_copy_write_0056',
@@ -2185,6 +2189,8 @@ class AgentSDF(AgentBase):
                         'sdf_localize_reuse_audit_0059',
                         'sdf_localize_reuse_verified_0059',
                                 'sdf_localize_profile_0060',
+                                'sdf_vectorize_wrap_0061',
+                                'sdf_vectorize_wrap_audit_0061',
                         'sdf_localize_sphere_verified_0058',
                                 'sdf_prediction_scratch_dir_0056',
                                 'sdf_prediction_zero_copy_write_0056'):

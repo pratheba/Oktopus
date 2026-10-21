@@ -779,6 +779,22 @@ class CurveHandle():
                           'core_s=', f"{getattr(self.core, '_localize_core_s_0059', 0.0) - core_previous_s_0059:.3f}",
                           'avatar_s=', f"{getattr(self.core, '_localize_avatar_s_0059', 0.0) - avatar_previous_s_0059:.3f}",
                           'audit=', reuse_audit_0059, flush=True)
+                if adapt_arg.get('sdf_vectorize_wrap_0061', False):
+                    accessory = adapt_arg.get('accessory_curve_handle')
+                    for label, core in (
+                            ('source', self.core),
+                            ('target', getattr(accessory, 'core', None))):
+                        if core is None:
+                            continue
+                        stats = getattr(core, '_wrap_vector_stats_0061', None)
+                        if stats:
+                            print('[sdf_wrap_vector_0061]', 'curve=', label,
+                                  'calls=', stats['calls'],
+                                  'points=', stats['points'],
+                                  'fallback_calls=', stats['fallback_calls'],
+                                  'audited_points=', stats['audited_points'],
+                                  'max_abs_error=', f"{stats['max_abs_error']:.3e}",
+                                  flush=True)
                 if stage_profile_0060:
                     # Exclusivity: `adapt.avatar_localize` includes the whole
                     # `core.*` scope. Do not add these scope totals together.
