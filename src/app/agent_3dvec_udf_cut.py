@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import os.path as op
+from pathlib import Path
 from time import perf_counter
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1546,6 +1547,21 @@ class AgentUDFCut(AgentUDF):
                 'grow_world': grow,
             })
 
+        # 0070: Explicitly authorize direct-final cutting per part. Without
+        # the option, the 0069 behavior is unchanged. This safety control is
+        # intentionally not an automatic classification of which cuts are right.
+        allowed_raw = extraction_config.get('udf_cut_direct_allowed_parts_0070')
+        allowed_parts = None
+        if allowed_raw is not None:
+            if not isinstance(allowed_raw, list) or not allowed_raw or any(
+                not isinstance(part, str) or not part.strip() for part in allowed_raw
+            ):
+                raise ValueError('udf_cut_direct_allowed_parts_0070 must be a non-empty list of part names')
+            allowed_parts = set(allowed_raw)
+            unknown = allowed_parts - set(rig_parts_plan.part_names)
+            if unknown:
+                raise ValueError(f'Unknown 0070 direct UDF cut parts: {sorted(unknown)}')
+        debug_removed = bool(extraction_config.get('udf_cut_direct_export_removed_0070', False))
         result = {}
         part_reports = {}
         cleanup = bool(extraction_config.get('udf_cut_cleanup_boundary', False))
@@ -1554,6 +1570,24 @@ class AgentUDFCut(AgentUDF):
             owners = owners_by_part[part]
             if not owners:
                 raise ValueError(f'Root/leaf part has no UDF owner: {part}')
+            if allowed_parts is not None and part not in allowed_parts:
+                # A direct-final cut is not geometrically verified for this
+                # part. Keep its exact input geometry rather than opening an
+                # unapproved hole. A future pass can explicitly enable it.
+                result[part] = mesh
+                part_reports[part] = {
+                    'input': str(source_dir / f'{part}.ply'),
+                    'adaptation_indices': [o['item_index'] for o in owners],
+                    'faces_before': int(len(mesh.faces)),
+                    'faces_removed': 0,
+                    'faces_after': int(len(mesh.faces)),
+                    'direct_udf': None,
+                    'cleanup': None,
+                    'status': 'preserved_not_authorized_0070',
+                }
+                print('[udf cut safety 0070]', 'part=', part,
+                      'action=preserve_uncut', 'faces=', len(mesh.faces), flush=True)
+                continue
             kept, removed, scoring, _evidence = self._direct_udf_cut_combined_mesh(
                 mesh, owners=owners, config=extraction_config,
                 model_batch_size=model_batch_size,
@@ -1567,6 +1601,12 @@ class AgentUDFCut(AgentUDF):
             )
             if not len(kept.faces):
                 raise RuntimeError(f'UDF cut would remove all faces from {part}')
+            if debug_removed and len(removed.faces):
+                removed_dir = Path(output_folder) / 'udf_cut_removed_diagnostics_0070'
+                removed_dir.mkdir(parents=True, exist_ok=True)
+                removed.export(removed_dir / f'{part}_removed.ply')
+                print('[udf cut safety 0070]', 'part=', part,
+                      'diagnostic_removed_faces=', len(removed.faces), flush=True)
             cleanup_report = None
             if cleanup:
                 kept, cleanup_report = cleanup_cut_boundary(
