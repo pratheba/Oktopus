@@ -40,6 +40,9 @@ from udf_cut_subtriangle import clip_accepted_udf_components
 from udf_cut_combined_transfer import transfer_udf_cut_to_combined_mesh
 from root_leaf_combination import build_root_leaf_plan
 from udf_cut_root_leaf_transfer import transfer_udf_cut_root_leaves
+from udf_cut_cap_guard_0071 import (
+    calibrate_p95_from_final_faces, endcap_face_evidence, filter_cap_components,
+)
 from udf_cut_final_root_leaves import (
     load_final_root_leaf_meshes, export_direct_root_leaf_results,
     curve_interval_owner_masks,
@@ -1085,10 +1088,41 @@ class AgentUDFCut(AgentUDF):
             valid_owner_count[valid_ids] += 1
             if ownership_mode in {"udf_support", "curve_interval"}:
                 owner_count[valid_ids] += 1
+            # 0071: Apply the legacy P95 *formula* independently to each
+            # adaptation's valid, informative final-mesh faces. The sample
+            # population differs from legacy individual references, so this
+            # remains an opt-in experiment, not numerical parity.
+            seed_world = float(owner["seed_world"])
+            grow_world = float(owner["grow_world"])
+            calibration = None
+            if bool(owner.get('calibrate_0071', False)):
+                seed_world, grow_world, calibration = calibrate_p95_from_final_faces(
+                    scores, usable, far_world=far_world,
+                    percentile=float(config.get('udf_cut_direct_p95_percentile_0071', 95)),
+                    seed_multiplier=float(config.get('udf_cut_direct_p95_seed_multiplier_0071', 1.10)),
+                    grow_multiplier=float(config.get('udf_cut_direct_p95_grow_multiplier_0071', 0.65)),
+                    far_band_world=float(config.get('udf_cut_direct_p95_far_band_0071', 0.002)),
+                    min_calibration_fraction=float(config.get('udf_cut_direct_p95_min_fraction_0071', 0.05)),
+                    min_calibration_faces=int(config.get('udf_cut_direct_p95_min_faces_0071', 128)),
+                )
+                print('[udf cut p95 0071]', f"item={owner['item_index']}",
+                      f"informative={calibration['informative']}",
+                      f"usable={calibration['usable']}",
+                      f"saturated={calibration['saturated']}",
+                      f'seed={seed_world}', f'grow={grow_world}', flush=True)
+                if seed_world is None:
+                    # No defensible threshold; abstain on this owner.
+                    # This owner must not contribute plateau evidence.
+                    # Undo counts for the accepted scores in this owner.
+                    valid_owner_count[valid_ids] -= 1
+                    if ownership_mode in {"udf_support", "curve_interval"}:
+                        owner_count[valid_ids] -= 1
+                    usable[:] = False
+                    valid_ids = face_ids[usable]
             evidence = self._normalize_owner_evidence(
                 scores[usable],
-                grow_world=float(owner["grow_world"]),
-                seed_world=float(owner["seed_world"]),
+                grow_world=float(grow_world) if grow_world is not None else 0.01,
+                seed_world=float(seed_world) if seed_world is not None else 0.02,
             )
             fused_evidence[valid_ids] = np.minimum(
                 fused_evidence[valid_ids], evidence
@@ -1100,8 +1134,9 @@ class AgentUDFCut(AgentUDF):
                     "accessory_key": str(owner["accessory_key"]),
                     "owned_faces": int(face_ids.size),
                     "usable_faces": int(np.sum(usable)),
-                    "seed_world": float(owner["seed_world"]),
-                    "grow_world": float(owner["grow_world"]),
+                    "seed_world": seed_world,
+                    "grow_world": grow_world,
+                    "calibration_0071": calibration,
                 }
             )
             print(
@@ -1109,8 +1144,8 @@ class AgentUDFCut(AgentUDF):
                 f"item={int(owner['item_index'])}",
                 f"owned={face_ids.size}",
                 f"usable={int(np.sum(usable))}",
-                f"seed={float(owner['seed_world']):.6g}",
-                f"grow={float(owner['grow_world']):.6g}",
+                f"seed={seed_world}",
+                f"grow={grow_world}",
             )
 
         # Conservative validity: all geometrically relevant owners must have
@@ -1159,6 +1194,37 @@ class AgentUDFCut(AgentUDF):
             topology=topology,
         )
 
+        cap_guard_report = None
+        cap_preselection = remove_mask.copy()
+        if bool(config.get('_udf_cut_cap_guard_active_0071', False)):
+            if ownership_mode != 'curve_interval':
+                raise ValueError('0071 cap guard requires curve_interval ownership')
+            source_ends = [float(o['adapt_arg'][k]) for o in owners for k in ('src_0', 'src_1')]
+            in_endpoint, axial, cap_geometry = endcap_face_evidence(
+                combined_mesh, owners[0]['avatar_curve'],
+                source_bounds=(min(source_ends), max(source_ends)),
+                endpoint_band=float(config.get('udf_cut_direct_endpoint_band_0071', 0.07)),
+                min_normal_dot=float(config.get('udf_cut_direct_axial_dot_0071', 0.70)),
+                curve_samples=int(config.get('udf_cut_direct_curve_samples_0069', 1025)),
+                end=str(config.get('udf_cut_direct_cap_end_0071', 'low')),
+            )
+            remove_mask, component_reasons = filter_cap_components(
+                combined_mesh, remove_mask, grow_mask, decisions,
+                adjacency=adjacency, in_endpoint=in_endpoint, axial=axial,
+                component_func=self._face_components_fast,
+                min_end_fraction=float(config.get('udf_cut_direct_cap_min_end_fraction_0071', 0.80)),
+                min_axial_fraction=float(config.get('udf_cut_direct_cap_min_axial_fraction_0071', 0.60)),
+                min_cap_faces=int(config.get('udf_cut_direct_cap_min_faces_0071', 12)),
+            )
+            kept_stats, removed_stats = self._topology_stats_from_remove_mask(topology, remove_mask)
+            cap_guard_report = {'geometry': cap_geometry, 'components': component_reasons,
+                                'accepted_faces': int(remove_mask.sum()),
+                                'blocked_faces': int(np.count_nonzero(cap_preselection & ~remove_mask))}
+            print('[udf cut cap guard 0071]',
+                  f"kept_components={sum(d['action'] == 'keep_cut' for d in component_reasons)}",
+                  f"rejected_components={sum(d['action'] == 'reject' for d in component_reasons)}",
+                  f"removed_faces={int(remove_mask.sum())}", flush=True)
+
         topology_pruned = 0
         if bool(config.get("udf_cut_combined_direct_preserve_components", True)):
             max_components = int(input_stats["components"])
@@ -1200,6 +1266,7 @@ class AgentUDFCut(AgentUDF):
             "mode": "direct_udf",
             "ownership_mode": ownership_mode,
             "curve_interval_0069": interval_summary,
+            "cap_guard_0071": cap_guard_report,
             "median_edge_length": edge_scale,
             "owner_radius_edges": radius_edges,
             "owner_radius_world": radius_world,
@@ -1223,6 +1290,9 @@ class AgentUDFCut(AgentUDF):
             "owners": owner_reports,
             "components": [decision.as_dict() for decision in decisions],
         }
+        if bool(config.get('udf_cut_direct_export_blocked_0071', False)) and cap_guard_report is not None:
+            # Caller removes this private, non-JSON payload before reporting.
+            report['_blocked_mask_0071'] = cap_preselection & ~remove_mask
         return kept, removed, report, fused_evidence
 
     def _query_vertex_values(
@@ -1561,6 +1631,12 @@ class AgentUDFCut(AgentUDF):
             unknown = allowed_parts - set(rig_parts_plan.part_names)
             if unknown:
                 raise ValueError(f'Unknown 0070 direct UDF cut parts: {sorted(unknown)}')
+        calibrate_parts = set(extraction_config.get('udf_cut_direct_calibrate_parts_0071', []))
+        guard_parts = set(extraction_config.get('udf_cut_direct_cap_guard_parts_0071', []))
+        for name, selected in [('calibrate', calibrate_parts), ('cap_guard', guard_parts)]:
+            unknown = selected - set(rig_parts_plan.part_names)
+            if unknown:
+                raise ValueError(f'0071 {name} unknown part(s): {sorted(unknown)}')
         debug_removed = bool(extraction_config.get('udf_cut_direct_export_removed_0070', False))
         result = {}
         part_reports = {}
@@ -1588,8 +1664,14 @@ class AgentUDFCut(AgentUDF):
                 print('[udf cut safety 0070]', 'part=', part,
                       'action=preserve_uncut', 'faces=', len(mesh.faces), flush=True)
                 continue
+            # Per-part 0071 settings must not be inserted into adaptation
+            # items: SDF fingerprints must remain byte-for-byte compatible.
+            for owner in owners:
+                owner['calibrate_0071'] = part in calibrate_parts
+            part_config = dict(extraction_config)
+            part_config['_udf_cut_cap_guard_active_0071'] = part in guard_parts
             kept, removed, scoring, _evidence = self._direct_udf_cut_combined_mesh(
-                mesh, owners=owners, config=extraction_config,
+                mesh, owners=owners, config=part_config,
                 model_batch_size=model_batch_size,
                 query_batch_size=query_batch_size, far_world=far_world,
                 ownership_mode=(
@@ -1599,6 +1681,15 @@ class AgentUDFCut(AgentUDF):
                     else 'udf_support'
                 ),
             )
+            blocked_mask = scoring.pop('_blocked_mask_0071', None)
+            if blocked_mask is not None and np.any(blocked_mask):
+                blocked_dir = Path(output_folder) / 'udf_cut_blocked_diagnostics_0071'
+                blocked_dir.mkdir(parents=True, exist_ok=True)
+                blocked_path = blocked_dir / f'{part}_blocked.ply'
+                self._mesh_from_face_mask(mesh, blocked_mask).export(blocked_path)
+                print('[udf cut blocked 0071]', f'part={part}',
+                      f'faces={int(np.sum(blocked_mask))}',
+                      f'path={blocked_path}', flush=True)
             if not len(kept.faces):
                 raise RuntimeError(f'UDF cut would remove all faces from {part}')
             if debug_removed and len(removed.faces):
