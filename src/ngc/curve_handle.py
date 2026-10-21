@@ -653,6 +653,20 @@ class CurveHandle():
                   'candidate_reduction_pct=',
                   f"{100.0 * proof['excluded_candidates'] / max(1, proof['full_candidates']):.2f}",
                   flush=True)
+        sphere_0058 = bool(adapt_arg.get('sdf_localize_sphere_0058', False))
+        sphere_audit_0058 = bool(adapt_arg.get('sdf_localize_sphere_audit_0058', False))
+        if sphere_0058:
+            if not (puffer_direct_0053 and puffer_wrap_staging and interval_prune
+                    and use_interval_projection and
+                    int(adapt_arg.get('loop_projection_candidates', 1)) == 1
+                    and bool(adapt_arg.get('sdf_localize_after_gate', False))):
+                raise ValueError('0058 sphere gate restricted to tested direct puffer single-projection streaming path')
+            if not (sphere_audit_0058 or
+                    adapt_arg.get('sdf_localize_sphere_verified_0058', False)):
+                raise ValueError('0058 sphere gate requires audit or verified profile setting')
+            print('[sdf_localize_sphere_0058] enabled=True audit=', sphere_audit_0058,
+                  'verified_without_audit=', bool(adapt_arg.get('sdf_localize_sphere_verified_0058', False))
+                  and not sphere_audit_0058, flush=True)
         if bounded:
             # Optional compact staging is deliberately limited to the independent
             # rigid-radius SDF inference path. Its six fields are exactly those
@@ -673,6 +687,7 @@ class CurveHandle():
                 callback_s = 0.0
                 quiet_arg = dict(adapt_arg)
                 quiet_arg['adapt_debug_counts'] = False
+                sphere_previous_count_0058 = int(getattr(self.core, '_projection_sphere_rejected_0058', 0))
                 for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
                     n_candidate += len(candidate_idx)
                     point_t0 = perf_counter() if profile_sdf else None
@@ -683,6 +698,20 @@ class CurveHandle():
                     acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
                         sample_chunk, quiet_arg)
                     localize_compute_s += perf_counter() - clock
+                    if sphere_audit_0058:
+                        reference_arg = dict(quiet_arg)
+                        reference_arg['sdf_localize_sphere_0058'] = False
+                        ref_acc, ref_av, ref_inside = self.core.localize_samples_adapt(
+                            sample_chunk, reference_arg)
+                        if not np.array_equal(accepted_local, ref_inside):
+                            raise ValueError('0058 UNSAFE: sphere gate changed accepted voxel indices')
+                        for label, actual, expected in (('accessory', acc_chunk, ref_acc),
+                                                        ('avatar', av_chunk, ref_av)):
+                            if actual.keys() != expected.keys():
+                                raise ValueError('0058 UNSAFE: changed ' + label + ' field keys')
+                            for k in actual:
+                                if not np.array_equal(actual[k], expected[k], equal_nan=True):
+                                    raise ValueError('0058 UNSAFE: changed ' + label + '.' + k)
                     selected = candidate_idx[accepted_local]
                     n_accepted += len(selected)
                     if len(selected):
@@ -693,6 +722,12 @@ class CurveHandle():
                             stream_callback(acc_chunk, selected)
                         if profile_sdf:
                             callback_s += perf_counter() - callback_t0
+                if sphere_0058:
+                    rejected_0058 = int(getattr(self.core, '_projection_sphere_rejected_0058', 0)) - sphere_previous_count_0058
+                    print('[sdf_localize_sphere_0058] candidates=', n_candidate,
+                          'early_rejected=', rejected_0058,
+                          'early_reduction_pct=', f'{100.0 * rejected_0058 / max(1, n_candidate):.2f}',
+                          'audit=', sphere_audit_0058, flush=True)
                 if profile_sdf:
                     print('[sdf_localize_0041] candidates=', n_candidate,
                           'accepted=', n_accepted,

@@ -1542,7 +1542,10 @@ class AgentSDF(AgentBase):
                                 'sdf_projection_profile_0054',
                                 'sdf_projection_refine_fast_0055',
                                 'sdf_projection_profile_split_0055',
-                                'sdf_projection_leafsize_0056'):
+                                'sdf_projection_leafsize_0056',
+                                'sdf_localize_sphere_0058',
+                                'sdf_localize_sphere_audit_0058',
+                                'sdf_localize_sphere_verified_0058'):
                     if roi_key in cfg and roi_key not in wrap_arg:
                         wrap_arg[roi_key] = cfg[roi_key]
                 wrap_arg['dcsdd_filter_batch_size'] = int(
@@ -1704,6 +1707,9 @@ class AgentSDF(AgentBase):
                         'sdf_projection_refine_fast_0055',
                         'sdf_projection_profile_split_0055',
                         'sdf_projection_leafsize_0056',
+                        'sdf_localize_sphere_0058',
+                        'sdf_localize_sphere_audit_0058',
+                        'sdf_localize_sphere_verified_0058',
                         'sdf_prediction_scratch_dir_0056',
                         'sdf_prediction_zero_copy_write_0056',
                         'sdf_puffer_stop_after',
@@ -2165,6 +2171,9 @@ class AgentSDF(AgentBase):
                                 'sdf_projection_refine_fast_0055',
                                 'sdf_projection_profile_split_0055',
                                 'sdf_projection_leafsize_0056',
+                        'sdf_localize_sphere_0058',
+                        'sdf_localize_sphere_audit_0058',
+                        'sdf_localize_sphere_verified_0058',
                                 'sdf_prediction_scratch_dir_0056',
                                 'sdf_prediction_zero_copy_write_0056'):
                     if roi_key in extraction_config and roi_key not in adapt_arg:

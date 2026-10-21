@@ -121,11 +121,20 @@ class _LocalizeMixin:
                          projection_profile_0054=False,
                          projection_refine_fast_0055=False,
                          projection_profile_split_0055=False,
-                         projection_leafsize_0056=10):
+                         projection_leafsize_0056=10,
+                         projection_sphere_0058=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
+
+        if projection_sphere_0058 and (
+                projection_s0 is None or projection_s1 is None
+                or (k_project is not None and int(k_project) != 1)
+                or return_sdf or update_curve or outside
+                or not sdf_localize_after_gate):
+            raise ValueError('0058 sphere gate requires direct interval k=1 '
+                             'localization with post-gate SDF and no outside queries')
 
         # 0054a: profile the projection call, not full interpolation/filtering.
         # Default remains inert for all non-0054 workloads.
@@ -152,7 +161,7 @@ class _LocalizeMixin:
                     runtime_cylinder_radius_scale, runtime_cylinder_radius_add,
                 )
             else:
-                sample_keypoint_map = self.curve_projection_interval(
+                projection_result_0058 = self.curve_projection_interval(
                     pointcloudsamples,
                     projection_s0,
                     projection_s1,
@@ -162,7 +171,16 @@ class _LocalizeMixin:
                     projection_refine_fast_0055=projection_refine_fast_0055,
                     projection_profile_split_0055=projection_profile_split_0055,
                     projection_leafsize_0056=projection_leafsize_0056,
+                    pre_radius_bound_0058=(
+                        norm, runtime_cylinder_radius_scale,
+                        runtime_cylinder_radius_add)
+                    if projection_sphere_0058 else None,
                 )
+                if projection_sphere_0058:
+                    sample_keypoint_map, prefilter_ids_0058 = projection_result_0058
+                    pointcloudsamples = pointcloudsamples[prefilter_ids_0058]
+                else:
+                    sample_keypoint_map = projection_result_0058
         elif k_project is not None and int(k_project) > 1:
             # Loop-aware projection: evaluate the K nearest skeleton candidates and
             # keep, per sample, the arm with the smallest cylinder-normalized radius.
@@ -184,7 +202,10 @@ class _LocalizeMixin:
                 getattr(self, '_projection_profile_calls_0054', 0) + 1
             )
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
-        sample_index = np.arange(pointcloudsamples.shape[0])
+        sample_index = (prefilter_ids_0058 if projection_sphere_0058
+                        and projection_s0 is not None and projection_s1 is not None
+                        and (k_project is None or int(k_project) <= 1)
+                        else np.arange(pointcloudsamples.shape[0]))
 
         ### Keep only the points that fall within the rane of 0 and 1
         if update_curve:
@@ -1054,6 +1075,7 @@ class _LocalizeMixin:
             projection_refine_fast_0055=bool(adapt_arg.get("sdf_projection_refine_fast_0055", False)),
             projection_profile_split_0055=bool(adapt_arg.get("sdf_projection_profile_split_0055", False)),
             projection_leafsize_0056=int(adapt_arg.get("sdf_projection_leafsize_0056", 10)),
+            projection_sphere_0058=bool(adapt_arg.get('sdf_localize_sphere_0058', False)),
         )
 
         if adapt_arg.get("debug_interval_projection", False):

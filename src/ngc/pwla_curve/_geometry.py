@@ -297,12 +297,53 @@ class _GeometryMixin:
             self._projection_interval_cache_0054 = (cache_key, result)
         return result
 
+    def _projection_sphere_bound_0058(self, verts, points, norm, scale, add):
+        """Upper bound on distance to the nearest sampled interval vertex.
+
+        For this PWLA representation, the centerline is linear between key
+        points (all included in `verts`), frames are Gram-Schmidt normalized,
+        and calc_x_radius is the constant one. An accepted ellipsoid point is
+        at most norm * max(1, |scaled cylinder radius|) from its centerline
+        projection. That projection lies on a sampled straight segment, at
+        most one segment length from an endpoint. The nearest vertex cannot
+        be further away than that endpoint. Rejected points therefore cannot
+        pass the exact cylinder gate. This is intentionally an *upper* bound.
+
+        Return None (no pruning) if the assumptions aren't satisfied.
+        """
+        try:
+            norm, scale, add = float(norm), float(scale), float(add)
+            r = np.asarray(self.key_cylinder_radius, dtype=np.float64)
+            if (not np.isfinite([norm, scale, add]).all()
+                    or norm <= 0 or r.ndim != 2 or r.shape[1] != 2
+                    or not np.isfinite(r).all() or not np.isfinite(verts).all()
+                    or len(verts) < 2):
+                return None
+            # This optimization is only valid for the existing constant-one
+            # PWLA along-tangent radius. Disable on custom radius functions.
+            from pwla_curve._radius import _RadiusMixin
+            radius_method = getattr(getattr(self.calc_x_radius, '__func__', None), '__code__', None)
+            stock_method = _RadiusMixin.calc_x_radius.__code__
+            if (radius_method is None or
+                    (radius_method.co_filename, radius_method.co_firstlineno) !=
+                    (stock_method.co_filename, stock_method.co_firstlineno)):
+                return None
+            rmax = max(1.0, float(np.max(np.abs(r * scale + add))))
+            max_gap = float(np.max(np.linalg.norm(np.diff(verts, axis=0), axis=1)))
+            if not np.isfinite(max_gap):
+                return None
+            # One-sided rounding margin, including Gram-Schmidt's 1e-12.
+            return norm * rmax + max_gap + 1e-7 * max(1.0, rmax, max_gap)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
     def curve_projection_interval(self, samples, s0, s1, N_discrete=n_sample_curve, outside=False,
                                   projection_workers_0054=1,
                                   projection_cache_0054=False,
                                   projection_refine_fast_0055=False,
                                   projection_profile_split_0055=False,
-                                  projection_leafsize_0056=10):
+                                  projection_leafsize_0056=10,
+                                  pre_radius_bound_0058=None):
         """
         Project samples only onto a source interval [s0, s1].
 
@@ -314,15 +355,33 @@ class _GeometryMixin:
             s0, s1, N_discrete, cache_0054=projection_cache_0054,
             leafsize_0056=projection_leafsize_0056)
         if tree is None:
-            return np.full(samples.shape[0], s_min, dtype=np.float64)
+            ts = np.full(samples.shape[0], s_min, dtype=np.float64)
+            if pre_radius_bound_0058 is not None:
+                return ts, np.arange(len(samples), dtype=np.int64)
+            return ts
         workers = int(projection_workers_0054)
         if not 1 <= workers <= 16:
             raise ValueError('0054 projection workers must be between 1 and 16')
         # Preserve the historical SciPy call when single-threaded.
         from time import perf_counter
         start_knn = perf_counter() if projection_profile_split_0055 else None
-        _, vidx = (tree.query(samples) if workers == 1
-                   else tree.query(samples, workers=workers))
+        distances, vidx = (tree.query(samples) if workers == 1
+                           else tree.query(samples, workers=workers))
+        if pre_radius_bound_0058 is not None:
+            bound = self._projection_sphere_bound_0058(
+                verts, pts, *pre_radius_bound_0058)
+            if bound is None:
+                kept = np.arange(len(samples), dtype=np.int64)
+            else:
+                kept = np.flatnonzero(distances <= bound)
+            self._projection_sphere_considered_0058 = (
+                getattr(self, '_projection_sphere_considered_0058', 0) + len(samples))
+            self._projection_sphere_rejected_0058 = (
+                getattr(self, '_projection_sphere_rejected_0058', 0)
+                + len(samples) - len(kept))
+            # Keep exact sample-to-original index mapping for localize_samples.
+            samples = samples[kept]
+            vidx = vidx[kept]
         start_refine = perf_counter() if projection_profile_split_0055 else None
         ts = (self._assign_ts_fast_0055(samples, vidx, pts, verts, outside)
               if projection_refine_fast_0055
@@ -336,6 +395,8 @@ class _GeometryMixin:
                 + perf_counter() - start_refine)
         good = ts >= 0.0
         ts[good] = np.clip(ts[good], s_min, s_max)
+        if pre_radius_bound_0058 is not None:
+            return ts, kept
         return ts
 
     def curve_projection_interval_candidates(self, samples, s0, s1, K, N_discrete=n_sample_curve, outside=False,
