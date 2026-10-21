@@ -1258,6 +1258,48 @@ class AgentUDFCut(AgentUDF):
         scores[~usable] = np.nan
         return scores, usable
 
+    def _direct_metric_calibrate_owner_0073(
+        self, mesh, *, face_scores, usable_faces, owner,
+        model_batch_size, far_world, config,
+    ):
+        """Use the recovered 2026-10-18 gradient-based UDF metric calibration.
+
+        Inputs are owned *final-mesh* faces; thus this restores the legacy
+        mathematics, not the old intermediate surface sampling distribution.
+        Refuse a saturated or uncalibratable owner rather than overcutting.
+        """
+        raw_seed = float(owner['seed_world'])
+        raw_grow = float(owner['grow_world'])
+        scores = np.asarray(face_scores, dtype=np.float64)
+        usable = np.asarray(usable_faces, dtype=bool) & np.isfinite(scores)
+        if not np.any(usable):
+            return raw_seed, raw_grow, {'status': 'no_usable_faces'}
+        band = float(config.get('udf_cut_direct_far_band_world', 0.002))
+        seed, grow, saturation = self._absolute_hysteresis_with_saturation_guard(
+            scores[usable], seed_world=raw_seed, grow_world=raw_grow,
+            far_world=float(far_world), far_band_world=band,
+            min_informative_fraction=float(config.get('udf_cut_direct_min_informative_fraction', .05)),
+            min_informative_faces=int(config.get('udf_cut_direct_min_informative_faces', 128)),
+        )
+        if saturation['saturated']:
+            return seed, grow, {'status': 'saturated', 'saturation': saturation}
+        metric = self._estimate_udf_metric_calibration(
+            mesh, face_scores=scores, usable_faces=usable,
+            avatar_curve=owner['avatar_curve'],
+            adapt_arg=owner['adapt_arg'],
+            accessory_key=str(owner['accessory_key']),
+            model_batch_size=int(model_batch_size), far_world=float(far_world),
+            seed_world=raw_seed, grow_world=raw_grow,
+            max_samples=int(config.get('udf_cut_metric_calibration_samples', 256)),
+            min_samples=int(config.get('udf_cut_metric_calibration_min_samples', 32)),
+            epsilon_edge_fraction=float(config.get('udf_cut_metric_calibration_epsilon_edges', .05)),
+            far_band_world=band,
+        )
+        metric['saturation'] = saturation
+        if metric['status'] == 'ok':
+            return float(metric['proposed_seed_raw']), float(metric['proposed_grow_raw']), metric
+        return raw_seed, raw_grow, metric
+
     @staticmethod
     def _normalize_owner_evidence(
         scores: np.ndarray,
@@ -1485,6 +1527,44 @@ class AgentUDFCut(AgentUDF):
                         owner_count[valid_ids] -= 1
                     usable[:] = False
                     valid_ids = face_ids[usable]
+            # 0073: Recover the *legacy absolute-hysteresis metric* calibration
+            # for direct-final meshes.  The original algorithm estimates the
+            # gradient of the warped UDF in world coordinates, then converts
+            # world-space seed/grow tolerances into raw UDF thresholds.  Never
+            # fit thresholds from a final mesh's P95 distribution.
+            metric_report = None
+            if bool(owner.get('metric_0073', False)):
+                if owner.get('calibrate_0071', False):
+                    raise ValueError('0073 metric and 0071 P95 cannot both be enabled')
+                full_scores = np.full(n_faces, np.nan, dtype=np.float64)
+                full_usable = np.zeros(n_faces, dtype=bool)
+                full_scores[face_ids] = scores
+                full_usable[face_ids] = usable
+                seed_world, grow_world, metric_report = (
+                    self._direct_metric_calibrate_owner_0073(
+                        combined_mesh, face_scores=full_scores,
+                        usable_faces=full_usable, owner=owner,
+                        model_batch_size=model_batch_size,
+                        far_world=far_world, config=config,
+                    )
+                )
+                if metric_report['status'] != 'ok':
+                    # A per-owner unsupported/saturated model must not
+                    # generate a removal proposal for this part.  This is
+                    # safer than reverting silently to raw .02/.01.
+                    valid_owner_count[valid_ids] -= 1
+                    if ownership_mode in {'udf_support', 'curve_interval'}:
+                        owner_count[valid_ids] -= 1
+                    usable[:] = False
+                    valid_ids = face_ids[usable]
+                print('[udf cut metric 0073]',
+                      f"item={owner['item_index']}",
+                      f"status={metric_report['status']}",
+                      f"scale={metric_report.get('metric_scale')}",
+                      f"samples={metric_report.get('valid_gradient_count', 0)}/"
+                      f"{metric_report.get('sample_count', 0)}",
+                      f'seed={seed_world:.8g}', f'grow={grow_world:.8g}',
+                      flush=True)
             evidence = self._normalize_owner_evidence(
                 scores[usable],
                 grow_world=float(grow_world) if grow_world is not None else 0.01,
@@ -1503,6 +1583,7 @@ class AgentUDFCut(AgentUDF):
                     "seed_world": seed_world,
                     "grow_world": grow_world,
                     "calibration_0071": calibration,
+                    "metric_calibration_0073": metric_report,
                 }
             )
             print(
@@ -2003,6 +2084,18 @@ class AgentUDFCut(AgentUDF):
             unknown = selected - set(rig_parts_plan.part_names)
             if unknown:
                 raise ValueError(f'0071 {name} unknown part(s): {sorted(unknown)}')
+        # No per-item YAML changes: the SDF/UDF ownership fingerprint remains
+        # identical.  All settings are top-level and opt-in.
+        metric_parts = set(extraction_config.get('udf_cut_direct_metric_parts_0073', []))
+        dry_parts = set(extraction_config.get('udf_cut_direct_dry_run_parts_0073', []))
+        for label, selected in [('metric', metric_parts), ('dry_run', dry_parts)]:
+            unknown = selected - set(rig_parts_plan.part_names)
+            if unknown:
+                raise ValueError(f'0073 {label} unknown part(s): {sorted(unknown)}')
+        if metric_parts & calibrate_parts:
+            raise ValueError('0073 gradient metric and 0071 P95 overlap')
+        if metric_parts & guard_parts:
+            raise ValueError('0073 metric trial must disable experimental 0071 cap guards')
         debug_removed = bool(extraction_config.get('udf_cut_direct_export_removed_0070', False))
         result = {}
         part_reports = {}
@@ -2034,6 +2127,7 @@ class AgentUDFCut(AgentUDF):
             # items: SDF fingerprints must remain byte-for-byte compatible.
             for owner in owners:
                 owner['calibrate_0071'] = part in calibrate_parts
+                owner['metric_0073'] = part in metric_parts
             part_config = dict(extraction_config)
             part_config['_udf_cut_cap_guard_active_0071'] = part in guard_parts
             kept, removed, scoring, _evidence = self._direct_udf_cut_combined_mesh(
@@ -2064,6 +2158,22 @@ class AgentUDFCut(AgentUDF):
                 removed.export(removed_dir / f'{part}_removed.ply')
                 print('[udf cut safety 0070]', 'part=', part,
                       'diagnostic_removed_faces=', len(removed.faces), flush=True)
+            if part in dry_parts:
+                print('[udf cut dry run 0073]', f'part={part}',
+                      f'candidate_removed={len(removed.faces)}',
+                      'action=preserve_input', flush=True)
+                result[part] = mesh
+                part_reports[part] = {
+                    'input': str(source_dir / f'{part}.ply'),
+                    'adaptation_indices': [o['item_index'] for o in owners],
+                    'faces_before': int(len(mesh.faces)),
+                    'faces_removed': 0,
+                    'faces_after': int(len(mesh.faces)),
+                    'candidate_removed_0073': int(len(removed.faces)),
+                    'direct_udf': scoring,
+                    'status': 'dry_run_preserved_0073',
+                }
+                continue
             cleanup_report = None
             if cleanup:
                 kept, cleanup_report = cleanup_cut_boundary(
