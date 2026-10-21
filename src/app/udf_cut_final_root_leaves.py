@@ -84,3 +84,95 @@ def export_direct_root_leaf_results(*, plan, source_dir, meshes, per_part_report
     print('[udf cut final root_leaves] saved', scene_path,
           'parts=', len(meshes), 'leaf_leaf_boolean=False', flush=True)
     return report
+
+
+def curve_interval_owner_masks(mesh, owners, *, pad=0.035, samples=1025):
+    """Assign each final face to one adaptation along its target curve.
+
+    No source/intermediate mesh is needed.  A face is owned by the adaptation
+    whose source interval contains its projected target-curve parameter.  At
+    overlaps it belongs to the interval whose center is closest, normalised
+    by interval width.  Faces outside every padded interval remain unowned.
+
+    This is *not* exact legacy reference transfer; it restores localized UDF
+    queries rather than all-owner score fusion and must be validated at 512.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    if not owners:
+        raise ValueError('Curve-interval UDF ownership requires owners')
+    pad = float(pad)
+    if not np.isfinite(pad) or not (0 <= pad <= 0.25):
+        raise ValueError('udf_cut_direct_interval_pad_0069 must be within [0, 0.25]')
+    samples = int(samples)
+    if not (32 <= samples <= 8192):
+        raise ValueError('udf_cut_direct_curve_samples_0069 must be within [32, 8192]')
+
+    target_keys = {str(owner['target_key']) for owner in owners}
+    if len(target_keys) != 1:
+        raise ValueError('Curve-interval UDF ownership requires one target curve per final part')
+    curve = owners[0]['avatar_curve']
+    core = curve.core
+    ts = np.asarray(core.key_ts, dtype=np.float64).reshape(-1)
+    if len(ts) < 2 or not np.all(np.isfinite(ts)) or not np.all(np.diff(ts) > 0):
+        raise ValueError('Invalid target curve parameterization for UDF ownership')
+
+    sample_ts = np.linspace(float(ts[0]), float(ts[-1]), samples)
+    curve_points = np.asarray(core.interpolate(sample_ts)['points'], dtype=np.float64)
+    if curve_points.shape != (samples, 3) or not np.all(np.isfinite(curve_points)):
+        raise ValueError('Target curve interpolation failed for UDF ownership')
+
+    face_centers = np.asarray(mesh.triangles_center, dtype=np.float64)
+    nearest_idx = np.asarray(cKDTree(curve_points).query(face_centers, k=1)[1], dtype=np.int64)
+    # Refine the nearest sampled point against its two adjacent segments.
+    # This remains lightweight: there is no UDF evaluation in ownership.
+    param = np.empty(len(face_centers), dtype=np.float64)
+    best_dist2 = np.full(len(face_centers), np.inf, dtype=np.float64)
+    for start_idx in (np.clip(nearest_idx - 1, 0, samples - 2),
+                      np.clip(nearest_idx, 0, samples - 2)):
+        p0 = curve_points[start_idx]
+        delta = curve_points[start_idx + 1] - p0
+        length2 = np.einsum('ij,ij->i', delta, delta)
+        fraction = np.divide(np.einsum('ij,ij->i', face_centers - p0, delta),
+                             length2, out=np.zeros(len(face_centers)), where=length2 > 1e-20)
+        fraction = np.clip(fraction, 0.0, 1.0)
+        projected = p0 + fraction[:, None] * delta
+        d2 = np.einsum('ij,ij->i', face_centers - projected, face_centers - projected)
+        better = d2 < best_dist2
+        param[better] = sample_ts[start_idx[better]] + fraction[better] * (
+            sample_ts[start_idx[better] + 1] - sample_ts[start_idx[better]])
+        best_dist2[better] = d2[better]
+
+    intervals = []
+    priority = np.full((len(owners), len(face_centers)), np.inf, dtype=np.float64)
+    for i, owner in enumerate(owners):
+        adapt = owner['adapt_arg']
+        if 'src_0' not in adapt or 'src_1' not in adapt:
+            raise ValueError(f"Missing src_0/src_1 for UDF owner {owner['item_index']}")
+        a, b = float(adapt['src_0']), float(adapt['src_1'])
+        if not np.isfinite(a + b) or abs(a - b) < 1e-9:
+            raise ValueError(f"Invalid source interval for UDF owner {owner['item_index']}")
+        lo, hi = sorted((a, b))
+        lo = max(float(ts[0]), lo - pad)
+        hi = min(float(ts[-1]), hi + pad)
+        width = max(hi - lo, 1e-9)
+        center = 0.5 * (lo + hi)
+        eligible = (param >= lo) & (param <= hi)
+        priority[i, eligible] = np.abs(param[eligible] - center) / width
+        intervals.append((lo, hi))
+
+    eligible_count = np.sum(np.isfinite(priority), axis=0)
+    preferred = np.argmin(priority, axis=0)
+    masks = [(preferred == i) & (eligible_count > 0) for i in range(len(owners))]
+    summary = {
+        'mode': 'curve_interval',
+        'assigned_faces': int(np.count_nonzero(eligible_count)),
+        'unassigned_faces': int(np.count_nonzero(eligible_count == 0)),
+        'overlap_faces': int(np.count_nonzero(eligible_count > 1)),
+        'interval_pad': pad,
+        'curve_samples': samples,
+        'owner_assigned': {str(o['item_index']): int(mask.sum()) for o, mask in zip(owners, masks)},
+        'owner_intervals': {str(o['item_index']): list(bounds) for o, bounds in zip(owners, intervals)},
+    }
+    return masks, summary

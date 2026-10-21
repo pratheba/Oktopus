@@ -41,6 +41,7 @@ from root_leaf_combination import build_root_leaf_plan
 from udf_cut_root_leaf_transfer import transfer_udf_cut_root_leaves
 from udf_cut_final_root_leaves import (
     load_final_root_leaf_meshes, export_direct_root_leaf_results,
+    curve_interval_owner_masks,
 )
 
 
@@ -982,11 +983,24 @@ class AgentUDFCut(AgentUDF):
         # root/leaf ownership manifest limits each mesh to its assigned UDFs.
         # A face belongs to an assigned UDF only when its direct query has
         # valid model support. Unknown evidence never triggers a cut.
-        if ownership_mode not in {"reference_points", "udf_support"}:
+        if ownership_mode not in {"reference_points", "udf_support", "curve_interval"}:
             raise ValueError(f"Unsupported UDF ownership mode: {ownership_mode}")
         owner_masks: List[np.ndarray] = []
         fallback = np.zeros(n_faces, dtype=bool)
-        if ownership_mode == "udf_support":
+        interval_summary = None
+        if ownership_mode == "curve_interval":
+            owner_masks, interval_summary = curve_interval_owner_masks(
+                combined_mesh, owners,
+                pad=float(config.get('udf_cut_direct_interval_pad_0069', 0.035)),
+                samples=int(config.get('udf_cut_direct_curve_samples_0069', 1025)),
+            )
+            owner_count = np.zeros(n_faces, dtype=np.int16)
+            print('[udf cut owner intervals 0069]',
+                  'assigned=', interval_summary['assigned_faces'],
+                  'unassigned=', interval_summary['unassigned_faces'],
+                  'overlap=', interval_summary['overlap_faces'],
+                  'owner_faces=', interval_summary['owner_assigned'], flush=True)
+        elif ownership_mode == "udf_support":
             owner_masks = [np.ones(n_faces, dtype=bool) for _ in owners]
             owner_count = np.zeros(n_faces, dtype=np.int16)
         else:
@@ -1051,7 +1065,7 @@ class AgentUDFCut(AgentUDF):
             # plateau, do not interpret it as evidence to remove the mesh.
             # This is the direct-final analogue of the old informative-score
             # guard, without reintroducing intermediate-mesh calibration.
-            if ownership_mode == "udf_support":
+            if ownership_mode in {"udf_support", "curve_interval"}:
                 far_band = float(config.get('udf_cut_direct_far_band_world', 0.002))
                 min_fraction = float(config.get('udf_cut_direct_min_informative_fraction', 0.05))
                 min_faces = int(config.get('udf_cut_direct_min_informative_faces', 128))
@@ -1068,7 +1082,7 @@ class AgentUDFCut(AgentUDF):
                     usable = np.zeros_like(usable, dtype=bool)
             valid_ids = face_ids[usable]
             valid_owner_count[valid_ids] += 1
-            if ownership_mode == "udf_support":
+            if ownership_mode in {"udf_support", "curve_interval"}:
                 owner_count[valid_ids] += 1
             evidence = self._normalize_owner_evidence(
                 scores[usable],
@@ -1184,6 +1198,7 @@ class AgentUDFCut(AgentUDF):
         report = {
             "mode": "direct_udf",
             "ownership_mode": ownership_mode,
+            "curve_interval_0069": interval_summary,
             "median_edge_length": edge_scale,
             "owner_radius_edges": radius_edges,
             "owner_radius_world": radius_world,
@@ -1543,7 +1558,12 @@ class AgentUDFCut(AgentUDF):
                 mesh, owners=owners, config=extraction_config,
                 model_batch_size=model_batch_size,
                 query_batch_size=query_batch_size, far_world=far_world,
-                ownership_mode='udf_support',
+                ownership_mode=(
+                    'curve_interval'
+                    if str(extraction_config.get('udf_cut_final_owner_mode_0069', 'udf_support'))
+                        == 'curve_interval'
+                    else 'udf_support'
+                ),
             )
             if not len(kept.faces):
                 raise RuntimeError(f'UDF cut would remove all faces from {part}')
