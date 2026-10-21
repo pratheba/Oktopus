@@ -43,6 +43,7 @@ from udf_cut_root_leaf_transfer import transfer_udf_cut_root_leaves
 from udf_cut_cap_guard_0071 import (
     calibrate_p95_from_final_faces, endcap_face_evidence, filter_cap_components,
 )
+from udf_cut_evidence_0074 import export_evidence
 from udf_cut_final_root_leaves import (
     load_final_root_leaf_meshes, export_direct_root_leaf_results,
     curve_interval_owner_masks,
@@ -1447,9 +1448,19 @@ class AgentUDFCut(AgentUDF):
         valid_owner_count = np.zeros(n_faces, dtype=np.int16)
         fused_evidence = np.full(n_faces, np.inf, dtype=np.float64)
         owner_reports: List[Dict[str, object]] = []
+        # 0074 does not query the model a second time or change any cut
+        # decisions. Capture per-owner face evidence before and after metric
+        # calibration, so missing ownership != missing UDF support.
+        diagnostic_0074 = bool(config.get('udf_cut_evidence_0074', False))
+        assignment_count_0074 = np.zeros(n_faces, dtype=np.int16) if diagnostic_0074 else None
+        raw_valid_count_0074 = np.zeros(n_faces, dtype=np.int16) if diagnostic_0074 else None
+        effective_valid_count_0074 = np.zeros(n_faces, dtype=np.int16) if diagnostic_0074 else None
+        owner_evidence_0074 = []
 
         for owner_index, (owner, owner_mask) in enumerate(zip(owners, owner_masks)):
             face_ids = np.flatnonzero(owner_mask)
+            if diagnostic_0074:
+                assignment_count_0074[face_ids] += 1
             if face_ids.size == 0:
                 owner_reports.append(
                     {
@@ -1472,6 +1483,9 @@ class AgentUDFCut(AgentUDF):
                 query_batch_size=query_batch_size,
                 far_world=far_world,
             )
+            if diagnostic_0074:
+                raw_valid_0074 = np.asarray(usable, dtype=bool).copy()
+                raw_valid_count_0074[face_ids[raw_valid_0074]] += 1
             # The learned UDF can saturate at the configured far-value
             # plateau even for localized points. If almost everything is a
             # plateau, do not interpret it as evidence to remove the mesh.
@@ -1565,6 +1579,20 @@ class AgentUDFCut(AgentUDF):
                       f"{metric_report.get('sample_count', 0)}",
                       f'seed={seed_world:.8g}', f'grow={grow_world:.8g}',
                       flush=True)
+            if diagnostic_0074:
+                effective_valid_count_0074[face_ids[usable]] += 1
+                owner_evidence_0074.append({
+                    'item_index': int(owner['item_index']),
+                    'face_ids': face_ids.copy(),
+                    'raw_scores': np.asarray(scores, dtype=np.float64).copy(),
+                    'raw_valid': raw_valid_0074,
+                    'effective_valid': np.asarray(usable, dtype=bool).copy(),
+                    'seed_world': float(seed_world),
+                    'grow_world': float(grow_world),
+                    'metric_status': (
+                        metric_report.get('status') if metric_report is not None else None
+                    ),
+                })
             evidence = self._normalize_owner_evidence(
                 scores[usable],
                 grow_world=float(grow_world) if grow_world is not None else 0.01,
@@ -1672,6 +1700,9 @@ class AgentUDFCut(AgentUDF):
                   f"rejected_components={sum(d['action'] == 'reject' for d in component_reasons)}",
                   f"removed_faces={int(remove_mask.sum())}", flush=True)
 
+        # Capture the pre-topology proposal separately: topology safeguards
+        # can reject a valid UDF candidate even if no geometric cap guard runs.
+        pre_topology_mask_0074 = remove_mask.copy() if diagnostic_0074 else None
         topology_pruned = 0
         if bool(config.get("udf_cut_combined_direct_preserve_components", True)):
             max_components = int(input_stats["components"])
@@ -1737,6 +1768,18 @@ class AgentUDFCut(AgentUDF):
             "owners": owner_reports,
             "components": [decision.as_dict() for decision in decisions],
         }
+        if diagnostic_0074:
+            # Private arrays are popped and serialized by the caller; never
+            # include NumPy arrays in JSON part reports.
+            report['_evidence_payload_0074'] = {
+                'assignment_count': assignment_count_0074,
+                'raw_valid_count': raw_valid_count_0074,
+                'effective_valid_count': effective_valid_count_0074,
+                'fused': fused_evidence.copy(),
+                'remove_mask': remove_mask.copy(),
+                'pre_topology_mask': pre_topology_mask_0074,
+                'owners': owner_evidence_0074,
+            }
         if bool(config.get('udf_cut_direct_export_blocked_0071', False)) and cap_guard_report is not None:
             # Caller removes this private, non-JSON payload before reporting.
             report['_blocked_mask_0071'] = cap_preselection & ~remove_mask
@@ -2141,6 +2184,28 @@ class AgentUDFCut(AgentUDF):
                     else 'udf_support'
                 ),
             )
+            evidence_payload_0074 = scoring.pop('_evidence_payload_0074', None)
+            if evidence_payload_0074 is not None:
+                summary_0074 = export_evidence(
+                    mesh, part=part, output_folder=output_folder,
+                    payload=evidence_payload_0074,
+                    regions=[r for r in extraction_config.get('udf_cut_regions_0074', [])
+                             if r.get('part', 'body') == part],
+                )
+                scoring['evidence_0074'] = {
+                    'all': summary_0074['all'],
+                    'owners': summary_0074['owners'],
+                    'regions': summary_0074['regions'],
+                    'output': summary_0074['exports']['json'],
+                }
+                print('[udf cut evidence 0074]',
+                      f'part={part}',
+                      f"unassigned={summary_0074['all']['classes']['not_assigned']}",
+                      f"no_raw={summary_0074['all']['classes']['assigned_no_raw_udf']}",
+                      f"abstained={summary_0074['all']['classes']['raw_valid_abstained']}",
+                      f"seed_not_removed={summary_0074['all']['classes']['seed_not_removed']}",
+                      f"removed={summary_0074['all']['classes']['removed']}",
+                      flush=True)
             blocked_mask = scoring.pop('_blocked_mask_0071', None)
             if blocked_mask is not None and np.any(blocked_mask):
                 blocked_dir = Path(output_folder) / 'udf_cut_blocked_diagnostics_0071'
