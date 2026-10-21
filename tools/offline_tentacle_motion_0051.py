@@ -255,18 +255,20 @@ def load_other_curves(path, target, count=128):
 
 
 def isolate_target_surface_by_topology(vertices, faces, centers, s, weights, *,
-                                       root_hold, min_active_weight=1e-4):
-    """Keep only the surface branch containing the selected curve's free tip.
+                                       root_hold, min_active_weight=1e-4,
+                                       selected_distance=None, competing_distance=None,
+                                       distance_zero=0.30, owner_band=0.035):
+    """0055: select a long, curve-consistent t7 surface, not the closest tip island.
 
-    Euclidean skeleton proximity alone leaks onto a neighboring tentacle when
-    the surfaces approach or cross. Rather than use manually painted weights,
-    this demo isolates the t7 candidate *surface* by triangle adjacency.
+    0054 selected the connected component containing the closest-to-tip
+    vertex. On the real octopus mesh, a small fragment can win that test,
+    leaving the main t7 surface completely stationary. Here connectivity is
+    evaluated on a relaxed geometry gate (to bridge low-weight seams) while
+    the ORIGINAL influence values still control vertex displacement.
 
-    Disconnect the candidate graph through the fixed root (weight zero for
-    s<=root_hold), then select the connected branch nearest the target tip.
-    The original mesh triangles are NEVER modified; only weights are zeroed
-    outside that branch. Genuine welded connections away from the held root
-    cannot be resolved by this heuristic and should be checked visually.
+    Rank components using centerline progress coverage then proximity to the
+    target centerline. Only add nonoverlapping, well-supported pieces to the
+    primary component. This never changes the actual mesh connectivity.
     """
     verts = np.asarray(vertices, dtype=np.float64)
     tri = np.asarray(faces, dtype=np.int64)
@@ -279,19 +281,35 @@ def isolate_target_surface_by_topology(vertices, faces, centers, s, weights, *,
     if np.any(tri < 0) or np.any(tri >= len(verts)):
         raise ValueError('Triangle indices outside mesh vertex range')
 
-    # Excluding the held root separates branches that are only connected to
-    # one another via the body. This is deliberately a *selection graph* cut:
-    # no topology/face indices change in the output mesh.
-    eligible = (weights > min_active_weight) & (s > root_hold)
+    if selected_distance is None:
+        samples = np.asarray(centers, dtype=np.float64)
+        u = np.linspace(0., 1., len(samples))
+        foot = np.stack([np.interp(s, u, samples[:, axis])
+                         for axis in range(3)], axis=1)
+        selected_distance = np.linalg.norm(verts - foot, axis=1)
+    selected_distance = np.asarray(selected_distance, dtype=np.float64)
+    if selected_distance.shape != s.shape:
+        raise ValueError('Target distance must be one value per vertex')
+    if competing_distance is not None:
+        competing_distance = np.asarray(competing_distance, dtype=np.float64)
+        if competing_distance.shape != s.shape:
+            raise ValueError('Competing distance must be one value per vertex')
+
+    # Relax the narrow final-influence gate to reconstruct the t7 surface
+    # branch across tiny zero-weight seams. Protect other limbs using a soft
+    # nearest-skeleton condition. Never expand the actual motion weights.
+    eligible = (s > root_hold) & (selected_distance < distance_zero)
+    if competing_distance is not None:
+        eligible &= selected_distance <= competing_distance + owner_band
     ids = np.flatnonzero(eligible)
-    if len(ids) == 0:
-        raise ValueError('No movable avatar vertices for selected tentacle')
+    if not len(ids):
+        raise ValueError('Topology lock has no t7 geometry within the radius gate')
     remap = np.full(len(verts), -1, dtype=np.int64)
     remap[ids] = np.arange(len(ids), dtype=np.int64)
-    edge_pairs = np.concatenate((tri[:, [0, 1]], tri[:, [1, 2]],
-                                 tri[:, [2, 0]]), axis=0)
-    active_edges = np.all(eligible[edge_pairs], axis=1)
-    mapped = remap[edge_pairs[active_edges]]
+    edges_global = np.concatenate((tri[:, [0, 1]], tri[:, [1, 2]],
+                                   tri[:, [2, 0]]), axis=0)
+    active_edges = np.all(eligible[edges_global], axis=1)
+    mapped = remap[edges_global[active_edges]]
     if len(mapped):
         edges = coo_matrix((np.ones(2 * len(mapped), dtype=np.uint8),
                             (np.r_[mapped[:, 0], mapped[:, 1]],
@@ -299,26 +317,70 @@ def isolate_target_surface_by_topology(vertices, faces, centers, s, weights, *,
                            shape=(len(ids), len(ids))).tocsr()
     else:
         edges = coo_matrix((len(ids), len(ids)), dtype=np.uint8).tocsr()
-    n_components, component = connected_components(edges, directed=False)
-    # Target tip = C(1). Only the *surface* that actually reaches this point
-    # should be driven. Prefer a strong candidate near the distal third so a
-    # near-root body sliver cannot win if it happens to cross the skeleton.
-    distal = s[ids] >= .65
-    if not np.any(distal):
-        raise ValueError('No distal tentacle surface found in topology candidates')
-    distance_to_tip = np.linalg.norm(verts[ids] - centers[-1], axis=1)
-    qualified = np.where(distal, distance_to_tip, np.inf)
-    seed_component = int(component[np.argmin(qualified)])
-    selected = component == seed_component
-    if not np.any(selected & distal):
-        raise RuntimeError('Topology lock selected a surface without distal tip support')
+    count, labels = connected_components(edges, directed=False)
+
+    # Sample progress, rather than a single point at s=1: the real t7 mesh
+    # need not reach the centerline tip, and a tiny passing neighbor may sit
+    # closer to that tip than the actual tentacle surface.
+    n_bins = 32
+    bin_id = np.clip(np.floor(s[ids] * n_bins).astype(np.int32), 0, n_bins-1)
+    nonzero = weights[ids] > min_active_weight
+    # Include s>0.15 but emphasize the freely moving part for coverage.
+    credible = nonzero & (s[ids] > max(root_hold, .20))
+    if not np.any(credible):
+        raise ValueError('Topology lock found no nonzero t7 motion weights')
+    metrics = []
+    for component in np.unique(labels[credible]):
+        sub = (labels == component) & credible
+        indices = np.flatnonzero(sub)
+        bins = np.unique(bin_id[indices])
+        # Most important: coverage across the centerline, not minimum tip
+        # distance; tie-break with distance to the centerline itself.
+        metrics.append((int(component), len(indices), bins,
+                        float(np.median(selected_distance[ids[indices]])),
+                        float(np.max(s[ids[indices]]))))
+    # More progress bins = better; prefer a branch closer to the target
+    # curve over a densely tessellated but neighboring limb on ties.
+    primary = max(metrics, key=lambda m: (len(m[2]), -m[3], m[1]))
+    selected_components = {primary[0]}
+    used_bins = set(primary[2].tolist())
+    primary_median = primary[3]
+    # If a genuine curve surface is fragmented, allow substantial additional
+    # components only where they extend *uncovered* portions of the curve.
+    # A parallel neighboring tentacle spans the same s bins, so it cannot be
+    # added simply because it happens to be geometrically close.
+    for component, size, bins, median_d, _ in sorted(
+            metrics, key=lambda m: (-len(m[2]), -m[1], m[3])):
+        if component in selected_components or size < 8 or len(bins) < 3:
+            continue
+        novel = set(bins.tolist()) - used_bins
+        overlap = len(bins) - len(novel)
+        if (len(novel) >= 3 and overlap <= max(2, len(bins) // 4)
+                and median_d <= max(distance_zero * .65, primary_median * 1.5)):
+            selected_components.add(component)
+            used_bins.update(novel)
+
+    selected = np.isin(labels, list(selected_components))
+    original_motion = np.flatnonzero(weights > .01)
     out = weights.copy()
     out[ids[~selected]] = 0.0
-    print('[avatar_topology_lock] components=', n_components,
-          'eligible=', len(ids), 'selected=', int(np.count_nonzero(selected)),
-          'rejected=', int(np.count_nonzero(~selected)),
-          'selected_tip_distance=', float(np.min(distance_to_tip[selected])),
-          flush=True)
+    # Motion weights outside the relaxed candidate envelope are zeroed as
+    # well, guaranteeing the selected component is the only moving region.
+    out[~eligible] = 0.0
+    moved = np.flatnonzero(out > .01)
+    ratio = float(len(moved) / max(len(original_motion), 1))
+    s_extent = (float(np.min(s[moved])), float(np.max(s[moved]))) if len(moved) else (0., 0.)
+    print('[avatar_topology_lock_0055] components=', count,
+          'selected_components=', sorted(selected_components),
+          'eligible=', len(ids), 'movable_before=', len(original_motion),
+          'movable_after=', len(moved), 'retained_ratio=', round(ratio, 4),
+          's_extent=', tuple(round(v, 4) for v in s_extent),
+          'primary_bins=', len(primary[2]), 'primary_median_distance=',
+          round(primary_median, 5), flush=True)
+    if not len(moved) or ratio < 0.08:
+        raise ValueError('Topology lock selected almost no avatar motion; '
+                         'review NPZ/mesh alignment or try '
+                         '--avatar-no-topology-lock for diagnostic comparison')
     return out
 
 
@@ -353,7 +415,9 @@ def bind_connected_avatar(vertices, centers, params, other_centers, *,
     weights = nearest * radius * root
     if faces is not None and topology_lock:
         weights = isolate_target_surface_by_topology(
-            vertices, faces, centers, s, weights, root_hold=root_hold)
+            vertices, faces, centers, s, weights, root_hold=root_hold,
+            selected_distance=selected_d, competing_distance=competing_d,
+            distance_zero=distance_zero, owner_band=owner_band)
     return s, offsets, weights
 
 
