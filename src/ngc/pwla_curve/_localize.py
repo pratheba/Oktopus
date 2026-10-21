@@ -29,6 +29,35 @@ n_sample_circle = 120
 
 
 
+class _StageTimer0060:
+    """Opt-in, exclusive wall-clock checkpoints; no data-path modifications.
+
+    Each scope is timed independently.  `adapt.avatar_localize` contains the
+    entire `core.*` scope, so never add scopes together in a performance report.
+    """
+    __slots__ = ('owner', 'scope', 'started')
+
+    def __init__(self, owner, scope):
+        self.owner = owner
+        self.scope = scope
+        self.started = perf_counter()
+
+    def mark(self, phase):
+        now = perf_counter()
+        table = getattr(self.owner, '_localize_stages_0060', None)
+        if table is None:
+            table = {}
+            self.owner._localize_stages_0060 = table
+        key = self.scope + '.' + phase
+        record = table.get(key)
+        if record is None:
+            table[key] = [now - self.started, 1]
+        else:
+            record[0] += now - self.started
+            record[1] += 1
+        self.started = perf_counter()
+
+
 class _LocalizeMixin:
 
 
@@ -123,7 +152,8 @@ class _LocalizeMixin:
                          projection_profile_split_0055=False,
                          projection_leafsize_0056=10,
                          projection_sphere_0058=False,
-                         projection_reuse_0059=False):
+                         projection_reuse_0059=False,
+                         localize_profile_0060=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
@@ -145,6 +175,7 @@ class _LocalizeMixin:
             raise ValueError('0058 sphere gate requires direct interval k=1 '
                              'localization with post-gate SDF and no outside queries')
 
+        micro_0060 = _StageTimer0060(self, 'core') if localize_profile_0060 else None
         # 0054a: profile the projection call, not full interpolation/filtering.
         # Default remains inert for all non-0054 workloads.
         projection_start_0054 = (
@@ -210,6 +241,8 @@ class _LocalizeMixin:
             self._projection_profile_calls_0054 = (
                 getattr(self, '_projection_profile_calls_0054', 0) + 1
             )
+        if micro_0060 is not None:
+            micro_0060.mark('projection')
         sample_keypoint_map_range = np.logical_and(sample_keypoint_map >= 0., sample_keypoint_map <= 1.)
         sample_index = (prefilter_ids_0058 if projection_sphere_0058
                         and projection_s0 is not None and projection_s1 is not None
@@ -223,9 +256,13 @@ class _LocalizeMixin:
         pointcloudsamples = pointcloudsamples[sample_keypoint_map_range]
         sample_index = sample_index[sample_keypoint_map_range]
 
+        if micro_0060 is not None:
+            micro_0060.mark('projection_select')
         # interpolate with the new additional non linear skeletal keypoints
         intpl = self.interpolate(sample_keypoint_map, radius_type=radius_type, radius=False, frame=True)
 
+        if micro_0060 is not None:
+            micro_0060.mark('frame_interpolation')
         ## The new keypoiints in 3D world coord system based on the curve projection from the surface/space samples
         proj_vs = intpl['points']
         #yz_radius = intpl['radius']
@@ -240,6 +277,8 @@ class _LocalizeMixin:
         #print(samples_local0)
         # And all are bounding to radius
         w, u, v = samples_local0[:,0], samples_local0[:, 1], samples_local0[:, 2]
+        if micro_0060 is not None:
+            micro_0060.mark('world_to_local')
         # The cylinder gate needs only cylinder radii and the local projection.
         # For SDF streaming, postpone the train-radius interpolation, normalized
         # model coordinates and angles until AFTER rejecting outside samples.
@@ -252,24 +291,30 @@ class _LocalizeMixin:
         )
         x_radius = self.calc_x_radius(sample_keypoint_map)
 
+        if micro_0060 is not None:
+            micro_0060.mark('cylinder_radius_interpolation')
         if sdf_localize_after_gate and not return_sdf and not update_curve:
             radius_cyl_temp = np.concatenate([x_radius[:, None], r_cyl], axis=1)
             samples_local_cyl = samples_local0 / (radius_cyl_temp + 1e-12)
             inside_cyl = np.linalg.norm(samples_local_cyl, axis=1) <= norm
             selected_t = sample_keypoint_map[inside_cyl]
             selected_local0 = samples_local0[inside_cyl]
+            if micro_0060 is not None:
+                micro_0060.mark('cylinder_gate')
             selected_r_train = self.interpolate(
                 selected_t, points=False, frame=False, radius=True,
                 radius_type="train",
             )["radius"]
             selected_x_radius = x_radius[inside_cyl]
+            if micro_0060 is not None:
+                micro_0060.mark('train_radius_interpolation')
             if projection_reuse_0059:
                 # localize_samples_adapt immediately recomputes all normalized
                 # avatar fields from the SAME curve frame and projected point.
                 # Return exact pre-normalization values for that second stage;
                 # its final public result still has the historical field keys.
                 # No formula or curve coordinate changes are made here.
-                return {
+                result_0060 = {
                     'samples': pointcloudsamples[inside_cyl],
                     'coords': selected_t,
                     'radius': selected_r_train,
@@ -277,7 +322,10 @@ class _LocalizeMixin:
                     'frame_mat': frame_mat[inside_cyl],
                     '_proj_points_0059': proj_vs[inside_cyl],
                     '_local0_0059': selected_local0,
-                }, sample_index[inside_cyl]
+                }
+                if micro_0060 is not None:
+                    micro_0060.mark('output_gather')
+                return result_0060, sample_index[inside_cyl]
             radius_train_temp = np.concatenate(
                 [selected_x_radius[:, None], selected_r_train], axis=1)
             samples_local_train = selected_local0 / (radius_train_temp + 1e-12)
@@ -1056,6 +1104,8 @@ class _LocalizeMixin:
           7. pack accessory samples_local for model inference
         """
 
+        profile_0060 = bool(adapt_arg.get('sdf_localize_profile_0060', False))
+        adapt_timer_0060 = _StageTimer0060(self, 'adapt') if profile_0060 else None
         accessory_curve_handle = adapt_arg["accessory_curve_handle"]
         accessory_curve_handle.core.update_coords()
         accessory_curve_handle.core.update_frame()
@@ -1090,6 +1140,8 @@ class _LocalizeMixin:
                 or projection_outside):
             raise ValueError('0059 reuse is limited to unchanged avatar '
                              'frames/points/train radii and direct SDF queries')
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('setup')
         stage_clock_0059 = perf_counter() if reuse_0059 else None
         avatar_data, inside = self.localize_samples(
             vs,
@@ -1109,12 +1161,15 @@ class _LocalizeMixin:
             projection_leafsize_0056=int(adapt_arg.get("sdf_projection_leafsize_0056", 10)),
             projection_sphere_0058=bool(adapt_arg.get('sdf_localize_sphere_0058', False)),
             projection_reuse_0059=reuse_0059,
+            localize_profile_0060=profile_0060,
         )
 
         if stage_clock_0059 is not None:
             elapsed_0059 = perf_counter() - stage_clock_0059
             self._localize_core_s_0059 = getattr(self, '_localize_core_s_0059', 0.0) + elapsed_0059
             stage_clock_0059 = perf_counter()
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('avatar_localize')
 
         if adapt_arg.get("debug_interval_projection", False):
             coords_dbg = avatar_data.get("coords", np.asarray([], dtype=np.float64))
@@ -1162,6 +1217,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 3) Avatar points/frame/radius actually used for adaptation.
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('source_interval_crop')
         use_adapt_control = bool(adapt_arg.get("use_adapt_control_field", False))
 
         if use_adapt_control:
@@ -1245,9 +1302,13 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 4) Map avatar/source coords to accessory/target coords
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('avatar_fields')
         acc_coords = self.map_coords_to_by_arclen(
             avatar_coords, accessory_curve_handle.core, src_0, src_1, tgt_0, tgt_1
         )
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('arclength_mapping')
 
 
         if adapt_arg.get("debug_export_adapt_control_rings", False):
@@ -1303,6 +1364,8 @@ class _LocalizeMixin:
         # 5) Optional source/target UV-center correction.
         # This changes rho/theta before wrap lookup.
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('optional_ring_exports')
         use_src_center = bool(
             adapt_arg.get("use_src_runtime_uv_center", adapt_arg.get("use_runtime_uv_center", False))
         )
@@ -1334,6 +1397,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 6) actually aradius  for adaptationed for model coords.
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('source_uv_center')
         wrap_n = adapt_arg.get("wrap_adapt_n_keypoints", None)
         n_lookup = int(adapt_arg.get("wrap_adapt_lookup_n", 128))
 
@@ -1432,6 +1497,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 6) Accessory points/frame/radius actually used for model coords.
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('wrap_table_preparation')
         if use_adapt_control:
             acc_ctrl = accessory_curve_handle.core.build_adapt_control_field(
                 acc_coords,
@@ -1484,6 +1551,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 9) Radial mapping
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('accessory_interpolation')
         global_scale = float(adapt_arg.get("scale", 1.0))
 
         if adapt_arg.get("wrap_radius", False):
@@ -2093,6 +2162,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 10) Build accessory physical local coordinates
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('radial_mapping')
         u_acc = cu_tgt + rho_acc * np.cos(theta_tgt)
         v_acc = cv_tgt + rho_acc * np.sin(theta_tgt)
         w_acc = w_avatar * scale_w
@@ -2101,6 +2172,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 11) Normalize accessory local coords for model input
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('physical_local_coordinates')
         #tloc = np.array([0.0, -0.15, 0.0], dtype=np.float64)
 
         # Local translation in accessory frame [T, N, B]
@@ -2262,6 +2335,8 @@ class _LocalizeMixin:
         # ------------------------------------------------------------
         # 12) Return data dicts
         # ------------------------------------------------------------
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('normalize_model_coordinates')
         # These are the ONLY fields used by adapt inference/model input.
         # No runtime_support object is returned; the model consumes samples_local.
         accessory_data = dict(avatar_data)
@@ -2275,6 +2350,8 @@ class _LocalizeMixin:
         accessory_data["points"] = acc_intpl["points"]
         accessory_data["x_radius"] = tangent_acc
 
+        if adapt_timer_0060 is not None:
+            adapt_timer_0060.mark('pack_output_fields')
         return accessory_data, avatar_data, inside_final
 
     def localize_occ_samples(self, samples):

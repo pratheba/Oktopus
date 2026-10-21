@@ -698,6 +698,18 @@ class CurveHandle():
                 n_accepted = 0
                 localize_compute_s = 0.0
                 profile_sdf = bool(adapt_arg.get('sdf_localize_after_gate', False))
+                stage_profile_0060 = bool(adapt_arg.get('sdf_localize_profile_0060', False))
+                stage_before_0060 = (
+                    {k: (v[0], v[1]) for k, v in
+                     getattr(self.core, '_localize_stages_0060', {}).items()}
+                    if stage_profile_0060 else None
+                )
+                iterator_s_0060 = 0.0
+                audit_s_0060 = 0.0
+                select_s_0060 = 0.0
+                batch_total_0060 = []
+                batch_count_0060 = 0
+                previous_batch_end_0060 = perf_counter()
                 stream_t0 = perf_counter()
                 point_decode_s = 0.0
                 callback_s = 0.0
@@ -707,6 +719,10 @@ class CurveHandle():
                 core_previous_s_0059 = float(getattr(self.core, '_localize_core_s_0059', 0.0))
                 avatar_previous_s_0059 = float(getattr(self.core, '_localize_avatar_s_0059', 0.0))
                 for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
+                    if stage_profile_0060:
+                        batch_start_0060 = perf_counter()
+                        iterator_s_0060 += batch_start_0060 - previous_batch_end_0060
+                        batch_count_0060 += 1
                     n_candidate += len(candidate_idx)
                     point_t0 = perf_counter() if profile_sdf else None
                     sample_chunk = mc_grid.idx2pts(candidate_idx)
@@ -716,6 +732,8 @@ class CurveHandle():
                     acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
                         sample_chunk, quiet_arg)
                     localize_compute_s += perf_counter() - clock
+                    if stage_profile_0060:
+                        after_localize_0060 = perf_counter()
                     if sphere_audit_0058 or reuse_audit_0059:
                         reference_arg = dict(quiet_arg)
                         if sphere_audit_0058:
@@ -732,8 +750,13 @@ class CurveHandle():
                             for k in actual:
                                 if not np.array_equal(actual[k], expected[k], equal_nan=True):
                                     raise ValueError('0058/0059 UNSAFE: changed ' + label + '.' + k)
+                    if stage_profile_0060:
+                        after_audit_0060 = perf_counter()
+                        audit_s_0060 += after_audit_0060 - after_localize_0060
                     selected = candidate_idx[accepted_local]
                     n_accepted += len(selected)
+                    if stage_profile_0060:
+                        select_s_0060 += perf_counter() - after_audit_0060
                     if len(selected):
                         callback_t0 = perf_counter() if profile_sdf else None
                         if cone_bounded or puffer_direct_0053:
@@ -742,6 +765,9 @@ class CurveHandle():
                             stream_callback(acc_chunk, selected)
                         if profile_sdf:
                             callback_s += perf_counter() - callback_t0
+                    if stage_profile_0060:
+                        previous_batch_end_0060 = perf_counter()
+                        batch_total_0060.append(previous_batch_end_0060 - batch_start_0060)
                 if sphere_0058:
                     rejected_0058 = int(getattr(self.core, '_projection_sphere_rejected_0058', 0)) - sphere_previous_count_0058
                     print('[sdf_localize_sphere_0058] candidates=', n_candidate,
@@ -753,6 +779,46 @@ class CurveHandle():
                           'core_s=', f"{getattr(self.core, '_localize_core_s_0059', 0.0) - core_previous_s_0059:.3f}",
                           'avatar_s=', f"{getattr(self.core, '_localize_avatar_s_0059', 0.0) - avatar_previous_s_0059:.3f}",
                           'audit=', reuse_audit_0059, flush=True)
+                if stage_profile_0060:
+                    # Exclusivity: `adapt.avatar_localize` includes the whole
+                    # `core.*` scope. Do not add these scope totals together.
+                    profile_now_0060 = getattr(self.core, '_localize_stages_0060', {})
+                    scopes_0060 = {}
+                    for stage_key, (cumulative_s, cumulative_calls) in profile_now_0060.items():
+                        before_s, before_calls = stage_before_0060.get(stage_key, (0.0, 0))
+                        elapsed_s = cumulative_s - before_s
+                        calls = cumulative_calls - before_calls
+                        if calls and elapsed_s >= 0.0:
+                            scope, phase = stage_key.split('.', 1)
+                            scopes_0060.setdefault(scope, []).append((phase, elapsed_s, calls))
+                    stream_total_0060 = perf_counter() - stream_t0
+                    batch_median_0060 = float(np.median(batch_total_0060)) if batch_total_0060 else 0.0
+                    batch_p95_0060 = float(np.percentile(batch_total_0060, 95)) if batch_total_0060 else 0.0
+                    print('[sdf_profile_0060] scope=stream',
+                          'candidates=', n_candidate, 'accepted=', n_accepted,
+                          'batches=', batch_count_0060,
+                          'wall_s=', f'{stream_total_0060:.3f}',
+                          'candidate_iterator_s=', f'{iterator_s_0060:.3f}',
+                          'decode_s=', f'{point_decode_s:.3f}',
+                          'localize_s=', f'{localize_compute_s:.3f}',
+                          'audit_s=', f'{audit_s_0060:.3f}',
+                          'selection_s=', f'{select_s_0060:.3f}',
+                          'callback_s=', f'{callback_s:.3f}',
+                          'batch_p50_s=', f'{batch_median_0060:.4f}',
+                          'batch_p95_s=', f'{batch_p95_0060:.4f}', flush=True)
+                    for scope, stages in sorted(scopes_0060.items()):
+                        total_s = sum(value for _, value, _ in stages)
+                        print('[sdf_profile_0060] scope=', scope,
+                              'exclusive_sum_s=', f'{total_s:.3f}',
+                              'stages=', len(stages), flush=True)
+                        for phase, seconds, calls in sorted(stages, key=lambda x: (-x[1], x[0])):
+                            print('[sdf_profile_0060_stage] scope=', scope,
+                                  'stage=', phase,
+                                  'seconds=', f'{seconds:.3f}',
+                                  'pct_scope=', f'{100.0*seconds/max(1e-12, total_s):.1f}',
+                                  'calls=', calls,
+                                  'avg_ms=', f'{1000.0*seconds/max(1, calls):.3f}',
+                                  flush=True)
                 if profile_sdf:
                     print('[sdf_localize_0041] candidates=', n_candidate,
                           'accepted=', n_accepted,
