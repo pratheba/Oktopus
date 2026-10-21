@@ -39,6 +39,9 @@ from udf_cut_subtriangle import clip_accepted_udf_components
 from udf_cut_combined_transfer import transfer_udf_cut_to_combined_mesh
 from root_leaf_combination import build_root_leaf_plan
 from udf_cut_root_leaf_transfer import transfer_udf_cut_root_leaves
+from udf_cut_final_root_leaves import (
+    load_final_root_leaf_meshes, export_direct_root_leaf_results,
+)
 
 
 @dataclass
@@ -935,6 +938,7 @@ class AgentUDFCut(AgentUDF):
         model_batch_size: int,
         query_batch_size: int,
         far_world: float,
+        ownership_mode: str = "reference_points",
     ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, Dict[str, object], np.ndarray]:
         """Score and cut the *actual final combined SDF mesh* with UDFs.
 
@@ -973,36 +977,46 @@ class AgentUDFCut(AgentUDF):
         radius_world = max(0.0, radius_edges) * edge_scale
         fallback_world = max(radius_world, max(0.0, fallback_edges) * edge_scale)
 
+        # Historical combined mode uses individual surface reference points.
+        # The final-root/leaf mode deliberately has NO individual meshes: the
+        # root/leaf ownership manifest limits each mesh to its assigned UDFs.
+        # A face belongs to an assigned UDF only when its direct query has
+        # valid model support. Unknown evidence never triggers a cut.
+        if ownership_mode not in {"reference_points", "udf_support"}:
+            raise ValueError(f"Unsupported UDF ownership mode: {ownership_mode}")
         owner_masks: List[np.ndarray] = []
-        best_distance = np.full(n_faces, np.inf, dtype=np.float64)
-        best_owner = np.full(n_faces, -1, dtype=np.int64)
-        for owner_index, owner in enumerate(owners):
-            ref_points = np.asarray(owner["ownership_points"], dtype=np.float64)
-            if len(ref_points) == 0:
-                distances = np.full(n_faces, np.inf, dtype=np.float64)
-            else:
-                distances, _ = cKDTree(ref_points).query(centroids, k=1)
-                distances = np.asarray(distances, dtype=np.float64)
-            owner_masks.append(distances <= radius_world)
-            better = distances < best_distance
-            best_distance[better] = distances[better]
-            best_owner[better] = int(owner_index)
+        fallback = np.zeros(n_faces, dtype=bool)
+        if ownership_mode == "udf_support":
+            owner_masks = [np.ones(n_faces, dtype=bool) for _ in owners]
+            owner_count = np.zeros(n_faces, dtype=np.int16)
+        else:
+            best_distance = np.full(n_faces, np.inf, dtype=np.float64)
+            best_owner = np.full(n_faces, -1, dtype=np.int64)
+            for owner_index, owner in enumerate(owners):
+                ref_points = np.asarray(owner["ownership_points"], dtype=np.float64)
+                if len(ref_points) == 0:
+                    distances = np.full(n_faces, np.inf, dtype=np.float64)
+                else:
+                    distances, _ = cKDTree(ref_points).query(centroids, k=1)
+                    distances = np.asarray(distances, dtype=np.float64)
+                owner_masks.append(distances <= radius_world)
+                better = distances < best_distance
+                best_distance[better] = distances[better]
+                best_owner[better] = int(owner_index)
 
-        owner_count = np.zeros(n_faces, dtype=np.int16)
-        for mask in owner_masks:
-            owner_count += np.asarray(mask, dtype=np.int16)
+            owner_count = np.zeros(n_faces, dtype=np.int16)
+            for mask in owner_masks:
+                owner_count += np.asarray(mask, dtype=np.int16)
 
-        # Smooth-union surfaces can sit a few cells away from every isolated
-        # member.  Give otherwise-unowned faces to their nearest item within a
-        # wider fallback radius; beyond that, keep them rather than guessing.
-        unowned = owner_count == 0
-        fallback = unowned & (best_owner >= 0) & (best_distance <= fallback_world)
-        if np.any(fallback):
-            for owner_index, mask in enumerate(owner_masks):
-                add = fallback & (best_owner == owner_index)
-                if np.any(add):
-                    mask[add] = True
-                    owner_count[add] += 1
+            # Preserve the original conservative fallback ownership semantics.
+            unowned = owner_count == 0
+            fallback = unowned & (best_owner >= 0) & (best_distance <= fallback_world)
+            if np.any(fallback):
+                for owner_index, mask in enumerate(owner_masks):
+                    add = fallback & (best_owner == owner_index)
+                    if np.any(add):
+                        mask[add] = True
+                        owner_count[add] += 1
 
         valid_owner_count = np.zeros(n_faces, dtype=np.int16)
         fused_evidence = np.full(n_faces, np.inf, dtype=np.float64)
@@ -1032,8 +1046,30 @@ class AgentUDFCut(AgentUDF):
                 query_batch_size=query_batch_size,
                 far_world=far_world,
             )
+            # The learned UDF can saturate at the configured far-value
+            # plateau even for localized points. If almost everything is a
+            # plateau, do not interpret it as evidence to remove the mesh.
+            # This is the direct-final analogue of the old informative-score
+            # guard, without reintroducing intermediate-mesh calibration.
+            if ownership_mode == "udf_support":
+                far_band = float(config.get('udf_cut_direct_far_band_world', 0.002))
+                min_fraction = float(config.get('udf_cut_direct_min_informative_fraction', 0.05))
+                min_faces = int(config.get('udf_cut_direct_min_informative_faces', 128))
+                if far_band < 0 or not (0 <= min_fraction <= 1) or min_faces < 0:
+                    raise ValueError('Invalid direct UDF informativeness guard')
+                valid_scores = np.asarray(scores[usable], dtype=np.float64)
+                informative = int(np.count_nonzero(valid_scores < float(far_world) - far_band))
+                required = max(min_faces, int(np.ceil(min_fraction * len(valid_scores))))
+                if informative < required:
+                    print('[udf cut final saturation]',
+                          f"item={owner['item_index']}",
+                          f'informative={informative}', f'required={required}',
+                          'action=no_cut', flush=True)
+                    usable = np.zeros_like(usable, dtype=bool)
             valid_ids = face_ids[usable]
             valid_owner_count[valid_ids] += 1
+            if ownership_mode == "udf_support":
+                owner_count[valid_ids] += 1
             evidence = self._normalize_owner_evidence(
                 scores[usable],
                 grow_world=float(owner["grow_world"]),
@@ -1147,6 +1183,7 @@ class AgentUDFCut(AgentUDF):
         owner_hist = np.bincount(owner_count.astype(np.int64), minlength=2)
         report = {
             "mode": "direct_udf",
+            "ownership_mode": ownership_mode,
             "median_edge_length": edge_scale,
             "owner_radius_edges": radius_edges,
             "owner_radius_world": radius_world,
@@ -1412,6 +1449,130 @@ class AgentUDFCut(AgentUDF):
             ),
         }
 
+    def _cut_final_root_leaf_parts(
+        self, *, adaptation_items, extraction_config, root_path,
+        output_folder, target_curves, seam_plan, apply_seam_warp,
+        rig_parts_plan, rig_parts_spec, model_batch_size, query_batch_size,
+        far_world,
+    ):
+        """Direct UDF scoring on the 8 final root/leaf meshes, no item MC.
+
+        This opt-in mode uses explicit world-space thresholds. Automatic
+        threshold search calibrated on intermediate meshes is not equivalent;
+        it is rejected rather than silently altering the cutting criterion.
+        """
+        auto = extraction_config.get('udf_cut_auto_thresholds', {})
+        if isinstance(auto, dict) and auto.get('enabled', False):
+            raise ValueError(
+                'udf_cut_direct_root_leaves requires '
+                'udf_cut_auto_thresholds.enabled: false; individual-mesh '
+                'automatic threshold calibration is unavailable in direct mode'
+            )
+        base_seed = float(extraction_config.get('udf_cut_seed_world', 0.02))
+        base_grow = float(extraction_config.get('udf_cut_grow_world', 0.01))
+        if not (0 <= base_grow <= base_seed):
+            raise ValueError('Explicit UDF cut thresholds require 0 <= grow <= seed')
+        source_dir, part_meshes = load_final_root_leaf_meshes(
+            plan=rig_parts_plan, mc_parts_dir=rig_parts_spec,
+            root_path=root_path, require_manifest=True,
+        )
+        owners_by_part = {part: [] for part in rig_parts_plan.part_names}
+        for item_index, item in enumerate(adaptation_items):
+            if str(item.get('mode', 'direct')) != 'direct':
+                raise ValueError('Direct final root/leaf UDF cutting requires mode=direct')
+            target_key = item['target_key']
+            accessory_key = item['accessory_key']
+            adapt_arg = {
+                'mode': 'direct',
+                'avatar_curve_handle': target_curves[target_key],
+                'accessory_curve_handle': self.curve_from_key(accessory_key),
+                'device': self.device,
+                'infer_scale': 2.0,
+                'avatar_curve_idx': self.feat_dict[target_key],
+                'accessory_curve_idx': self.feat_dict[accessory_key],
+            }
+            adapt_arg.update(item)
+            if apply_seam_warp and item_index in seam_plan:
+                adapt_arg['_seam_corrections'] = seam_plan[item_index]
+            shared_snug_spec = adapt_arg.get('shared_snug_field')
+            if shared_snug_spec:
+                shared_path = resolve_shared_snug_field_path(
+                    str(shared_snug_spec), root_path=root_path,
+                    output_folder=output_folder, item_index=item_index,
+                    mode='direct', target_key=target_key,
+                    accessory_key=accessory_key,
+                )
+                adapt_arg['avatar_snug_scale_field'] = load_shared_snug_field(shared_path)
+            if (adapt_arg.get('auto_avatar_snug_field', False)
+                    and not shared_snug_spec):
+                print('[udf cut final warning] automatic snug field unavailable; '
+                      f'item={item_index}', flush=True)
+            adapt_arg['auto_avatar_snug_field'] = False
+            adapt_arg['adapt_debug_counts'] = False
+            adapt_arg['debug_interval_projection'] = False
+            config = self._extraction_config_for_item(extraction_config, item)
+            grow = float(config.get('udf_cut_grow_world', base_grow))
+            seed = float(config.get('udf_cut_seed_world', base_seed))
+            if not (0 <= grow <= seed):
+                raise ValueError(f'Invalid UDF thresholds for adaptation {item_index}')
+            item_auto = config.get('udf_cut_auto_thresholds', False)
+            if isinstance(item_auto, dict) and item_auto.get('enabled', False):
+                raise ValueError(f'Automatic UDF thresholds unavailable in direct mode for item {item_index}')
+            if item_auto is True:
+                raise ValueError(f'Automatic UDF thresholds unavailable in direct mode for item {item_index}')
+            part = rig_parts_plan.item_to_part[item_index]
+            owners_by_part[part].append({
+                'item_index': item_index,
+                'target_key': target_key,
+                'accessory_key': accessory_key,
+                'avatar_curve': target_curves[target_key],
+                'adapt_arg': adapt_arg,
+                'seed_world': seed,
+                'grow_world': grow,
+            })
+
+        result = {}
+        part_reports = {}
+        cleanup = bool(extraction_config.get('udf_cut_cleanup_boundary', False))
+        for part in rig_parts_plan.part_names:
+            mesh = part_meshes[part]
+            owners = owners_by_part[part]
+            if not owners:
+                raise ValueError(f'Root/leaf part has no UDF owner: {part}')
+            kept, removed, scoring, _evidence = self._direct_udf_cut_combined_mesh(
+                mesh, owners=owners, config=extraction_config,
+                model_batch_size=model_batch_size,
+                query_batch_size=query_batch_size, far_world=far_world,
+                ownership_mode='udf_support',
+            )
+            if not len(kept.faces):
+                raise RuntimeError(f'UDF cut would remove all faces from {part}')
+            cleanup_report = None
+            if cleanup:
+                kept, cleanup_report = cleanup_cut_boundary(
+                    kept, **self._boundary_cleanup_kwargs(extraction_config)
+                )
+                if not len(kept.faces):
+                    raise RuntimeError(f'UDF cleanup removed all faces from {part}')
+            result[part] = kept
+            part_reports[part] = {
+                'input': str(source_dir / f'{part}.ply'),
+                'adaptation_indices': [o['item_index'] for o in owners],
+                'faces_before': int(len(mesh.faces)),
+                'faces_removed': int(len(removed.faces)),
+                'faces_after': int(len(kept.faces)),
+                'direct_udf': scoring,
+                'cleanup': cleanup_report,
+            }
+            print('[udf cut final part]', part,
+                  'owners=', part_reports[part]['adaptation_indices'],
+                  'faces=', len(mesh.faces), '->', len(kept.faces), flush=True)
+        return export_direct_root_leaf_results(
+            plan=rig_parts_plan, source_dir=source_dir,
+            meshes=result, per_part_reports=part_reports,
+            output_folder=output_folder,
+        )
+
     @torch.no_grad()
     def action_part_adapt_udf_cut(self, arg):
         output_folder = arg["output_folder"]
@@ -1479,8 +1640,9 @@ class AgentUDFCut(AgentUDF):
         )
         far_world = float(extraction_config.get("udf_far_value", 0.1))
 
+        direct_root_leaves = bool(extraction_config.get('udf_cut_direct_root_leaves', False))
         mc_mesh_spec = extraction_config.get("mc_mesh")
-        if not mc_mesh_spec:
+        if not mc_mesh_spec and not direct_root_leaves:
             raise ValueError("part_adapt_udf_cut requires --mc-mesh / mc_mesh.")
         reference_spec = extraction_config.get("nsdudf_reference_mesh")
 
@@ -1508,10 +1670,10 @@ class AgentUDFCut(AgentUDF):
             extraction_config.get('udf_cut_root_leaves_mc_dir'))
         rig_parts_plan = None
         if rig_parts_spec is not None:
-            if combined_mode != "transfer":
+            if combined_mode != ('direct_udf' if direct_root_leaves else 'transfer'):
                 raise ValueError(
-                    "udf_cut_root_leaves_mc_dir requires "
-                    "udf_cut_combined_mode: transfer"
+                    "udf_cut_root_leaves_mc_dir requires mode=direct_udf "
+                    "with udf_cut_direct_root_leaves=true, otherwise mode=transfer"
                 )
             rig_parts_plan = build_root_leaf_plan(
                 adaptation_items, extraction_config.get("root_leaves")
@@ -1541,6 +1703,21 @@ class AgentUDFCut(AgentUDF):
         # against these owners directly; no removed/kept geometry is used as a
         # surrogate for learned UDF evidence.
         combined_direct_owners: List[Dict[str, object]] = []
+        if direct_root_leaves:
+            if rig_parts_plan is None:
+                raise ValueError('udf_cut_direct_root_leaves needs root_leaves mapping and final mesh directory')
+            if combined_mc_spec:
+                raise ValueError('Direct root/leaf UDF cutting cannot use a globally combined mesh')
+            return self._cut_final_root_leaf_parts(
+                adaptation_items=adaptation_items,
+                extraction_config=extraction_config,
+                root_path=root_path, output_folder=output_folder,
+                target_curves=target_curves, seam_plan=seam_plan,
+                apply_seam_warp=apply_seam_warp,
+                rig_parts_plan=rig_parts_plan, rig_parts_spec=rig_parts_spec,
+                model_batch_size=model_batch_size,
+                query_batch_size=query_batch_size, far_world=far_world,
+            )
         write_debug_outputs = bool(
             extraction_config.get("udf_cut_write_debug_outputs", True)
         )

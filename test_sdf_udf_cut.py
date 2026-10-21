@@ -68,14 +68,6 @@ def start_test(opt):
     agent.load_data(data_root, data_path)
     print("UDF model and handle data loaded, time cost:", time() - t0)
 
-    mc_grid = MCGrid(
-        {
-            "reso": int(opt.resolution),
-            "level": 0.0,
-            "size": float(opt.grid_size),
-        }
-    )
-
     manipulation_dir = op.join(opt.root_path, "exp", "train", "manipulation")
     adapt_file = (
         opt.test_file
@@ -84,6 +76,26 @@ def start_test(opt):
     )
     if not op.isfile(adapt_file):
         raise FileNotFoundError(f"Adaptation YAML not found: {adapt_file}")
+
+    with open(adapt_file, "r", encoding="utf-8") as handle:
+        cut_config = yaml.safe_load(handle)
+    direct_final_parts = (
+        isinstance(cut_config, dict)
+        and bool(cut_config.get("udf_cut_direct_root_leaves", False))
+    )
+    if direct_final_parts:
+        # Direct final-part UDF cutting never samples an MCGrid. Constructing
+        # an otherwise unused 512^3 or 2048^3 grid wastes substantial RAM.
+        mc_grid = None
+        print("[udf cut final root_leaves] MCGrid allocation skipped")
+    else:
+        mc_grid = MCGrid(
+            {
+                "reso": int(opt.resolution),
+                "level": 0.0,
+                "size": float(opt.grid_size),
+            }
+        )
 
     shape_output = op.join(output_path, opt.shape_name)
     os.makedirs(shape_output, exist_ok=True)
@@ -193,10 +205,12 @@ def build_parser():
     parser.add_argument(
         "--mc-mesh",
         dest="mc_mesh",
-        required=True,
+        required=False,
+        default=None,
         help=(
-            "World-space MC mesh. For multiple YAML adaptations, a format "
-            "template may use {index}, {mode}, {accessory}, and {target}."
+            "Required for legacy per-adaptation UDF cutting. Not needed "
+            "when udf_cut_direct_root_leaves: true selects final part meshes. "
+            "A legacy template may use {index}, {mode}, {accessory}, and {target}."
         ),
     )
     parser.add_argument(
