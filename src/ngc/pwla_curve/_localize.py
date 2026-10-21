@@ -122,11 +122,20 @@ class _LocalizeMixin:
                          projection_refine_fast_0055=False,
                          projection_profile_split_0055=False,
                          projection_leafsize_0056=10,
-                         projection_sphere_0058=False):
+                         projection_sphere_0058=False,
+                         projection_reuse_0059=False):
         # Owned-volume gate: drop samples that fall outside the dilated voxel
         # mask of surface_points_owned BEFORE running the cylinder projection.
         # The returned `inside` indices still index into the ORIGINAL input.
         # No-op when the mask isn't built (owned points missing or gate disabled).
+
+        if projection_reuse_0059 and (
+                not projection_sphere_0058 or return_sdf or update_curve
+                or outside or not sdf_localize_after_gate
+                or (k_project is not None and int(k_project) != 1)
+                or projection_s0 is None or projection_s1 is None):
+            raise ValueError('0059 reuse requires 0058 direct interval k=1 '
+                             'post-gate localization')
 
         if projection_sphere_0058 and (
                 projection_s0 is None or projection_s1 is None
@@ -254,6 +263,21 @@ class _LocalizeMixin:
                 radius_type="train",
             )["radius"]
             selected_x_radius = x_radius[inside_cyl]
+            if projection_reuse_0059:
+                # localize_samples_adapt immediately recomputes all normalized
+                # avatar fields from the SAME curve frame and projected point.
+                # Return exact pre-normalization values for that second stage;
+                # its final public result still has the historical field keys.
+                # No formula or curve coordinate changes are made here.
+                return {
+                    'samples': pointcloudsamples[inside_cyl],
+                    'coords': selected_t,
+                    'radius': selected_r_train,
+                    'radius_cylinder': r_cyl[inside_cyl],
+                    'frame_mat': frame_mat[inside_cyl],
+                    '_proj_points_0059': proj_vs[inside_cyl],
+                    '_local0_0059': selected_local0,
+                }, sample_index[inside_cyl]
             radius_train_temp = np.concatenate(
                 [selected_x_radius[:, None], selected_r_train], axis=1)
             samples_local_train = selected_local0 / (radius_train_temp + 1e-12)
@@ -1059,6 +1083,14 @@ class _LocalizeMixin:
         projection_outside = bool(
             adapt_arg.get("_udf_seam_query_projection_outside", False)
         )
+        reuse_0059 = bool(adapt_arg.get('sdf_localize_reuse_0059', False))
+        if reuse_0059 and (
+                adapt_arg.get('use_adapt_control_field', False)
+                or adapt_arg.get('use_adapt_train_radius', False)
+                or projection_outside):
+            raise ValueError('0059 reuse is limited to unchanged avatar '
+                             'frames/points/train radii and direct SDF queries')
+        stage_clock_0059 = perf_counter() if reuse_0059 else None
         avatar_data, inside = self.localize_samples(
             vs,
             norm=float(adapt_arg.get("adapt_localize_norm", 1.0)),
@@ -1076,7 +1108,13 @@ class _LocalizeMixin:
             projection_profile_split_0055=bool(adapt_arg.get("sdf_projection_profile_split_0055", False)),
             projection_leafsize_0056=int(adapt_arg.get("sdf_projection_leafsize_0056", 10)),
             projection_sphere_0058=bool(adapt_arg.get('sdf_localize_sphere_0058', False)),
+            projection_reuse_0059=reuse_0059,
         )
+
+        if stage_clock_0059 is not None:
+            elapsed_0059 = perf_counter() - stage_clock_0059
+            self._localize_core_s_0059 = getattr(self, '_localize_core_s_0059', 0.0) + elapsed_0059
+            stage_clock_0059 = perf_counter()
 
         if adapt_arg.get("debug_interval_projection", False):
             coords_dbg = avatar_data.get("coords", np.asarray([], dtype=np.float64))
@@ -1144,12 +1182,19 @@ class _LocalizeMixin:
 
         else:
             # Legacy path: use the dense interpolated avatar curve/frame.
-            avatar_world_points = self.interpolate(
-                avatar_coords, radius=False, frame=False
-            )["points"]
-            avatar_world_frames = self.interpolate(
-                avatar_coords, points=False, radius=False
-            )["frame"]
+            if reuse_0059:
+                # Both are exact slices of the values computed before the
+                # cylinder gate; avoid interpolating 12 curve/frame columns
+                # again for every accepted grid sample.
+                avatar_world_points = avatar_data.pop('_proj_points_0059')
+                avatar_world_frames = avatar_data['frame_mat']
+            else:
+                avatar_world_points = self.interpolate(
+                    avatar_coords, radius=False, frame=False
+                )["points"]
+                avatar_world_frames = self.interpolate(
+                    avatar_coords, points=False, radius=False
+                )["frame"]
             if adapt_arg.get("use_adapt_train_radius", False):
                 avatar_radius = self.interpolate_radius_field(
                     avatar_coords, self.key_train_radius_adapt
@@ -1163,11 +1208,16 @@ class _LocalizeMixin:
         # Recompute physical avatar local coords from the chosen avatar frame.
         # This is the part that fixes frame/theta staircase: theta below now
         # comes from the rebuilt 12-control frame when use_adapt_control_field=True.
-        local_avatar = np.einsum(
-            "nij,nj->ni",
-            avatar_world_frames,
-            avatar_samples_world - avatar_world_points,
-        )
+        if reuse_0059:
+            # Exact same einsum as the legacy second transform, already
+            # computed once during sphere-gated localization.
+            local_avatar = avatar_data.pop('_local0_0059')
+        else:
+            local_avatar = np.einsum(
+                "nij,nj->ni",
+                avatar_world_frames,
+                avatar_samples_world - avatar_world_points,
+            )
         w_avatar = local_avatar[:, 0]
         u_avatar = local_avatar[:, 1]
         v_avatar = local_avatar[:, 2]
@@ -1187,6 +1237,10 @@ class _LocalizeMixin:
         avatar_data["rho"] = np.sqrt(u_avatar * u_avatar + v_avatar * v_avatar)
         avatar_data["rho_n"] = np.sqrt(u_n_avatar * u_n_avatar + v_n_avatar * v_n_avatar)
         avatar_data["angles"] = np.arctan2(v_n_avatar, u_n_avatar)
+
+        if stage_clock_0059 is not None:
+            elapsed_0059 = perf_counter() - stage_clock_0059
+            self._localize_avatar_s_0059 = getattr(self, '_localize_avatar_s_0059', 0.0) + elapsed_0059
 
         # ------------------------------------------------------------
         # 4) Map avatar/source coords to accessory/target coords

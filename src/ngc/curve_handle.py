@@ -667,6 +667,22 @@ class CurveHandle():
             print('[sdf_localize_sphere_0058] enabled=True audit=', sphere_audit_0058,
                   'verified_without_audit=', bool(adapt_arg.get('sdf_localize_sphere_verified_0058', False))
                   and not sphere_audit_0058, flush=True)
+        reuse_0059 = bool(adapt_arg.get('sdf_localize_reuse_0059', False))
+        reuse_audit_0059 = bool(adapt_arg.get('sdf_localize_reuse_audit_0059', False))
+        if reuse_0059:
+            if not (sphere_0058 and puffer_direct_0053 and puffer_wrap_staging
+                    and interval_prune and use_interval_projection
+                    and int(adapt_arg.get('loop_projection_candidates', 1)) == 1
+                    and bool(adapt_arg.get('sdf_localize_after_gate', False))
+                    and not adapt_arg.get('use_adapt_control_field', False)
+                    and not adapt_arg.get('use_adapt_train_radius', False)):
+                raise ValueError('0059 reuse only supports tested direct puffer '
+                                 'with unchanged avatar frames and train radii')
+            if not (reuse_audit_0059 or adapt_arg.get('sdf_localize_reuse_verified_0059', False)):
+                raise ValueError('0059 reuse requires parity audit or verified profile')
+            print('[sdf_localize_reuse_0059] enabled=True audit=', reuse_audit_0059,
+                  'verified_without_audit=', bool(adapt_arg.get('sdf_localize_reuse_verified_0059', False))
+                  and not reuse_audit_0059, flush=True)
         if bounded:
             # Optional compact staging is deliberately limited to the independent
             # rigid-radius SDF inference path. Its six fields are exactly those
@@ -688,6 +704,8 @@ class CurveHandle():
                 quiet_arg = dict(adapt_arg)
                 quiet_arg['adapt_debug_counts'] = False
                 sphere_previous_count_0058 = int(getattr(self.core, '_projection_sphere_rejected_0058', 0))
+                core_previous_s_0059 = float(getattr(self.core, '_localize_core_s_0059', 0.0))
+                avatar_previous_s_0059 = float(getattr(self.core, '_localize_avatar_s_0059', 0.0))
                 for candidate_idx in cyl_mesh.iter_filter_grid_indices(mc_grid, batch_size=batch_size):
                     n_candidate += len(candidate_idx)
                     point_t0 = perf_counter() if profile_sdf else None
@@ -698,20 +716,22 @@ class CurveHandle():
                     acc_chunk, av_chunk, accepted_local = self.core.localize_samples_adapt(
                         sample_chunk, quiet_arg)
                     localize_compute_s += perf_counter() - clock
-                    if sphere_audit_0058:
+                    if sphere_audit_0058 or reuse_audit_0059:
                         reference_arg = dict(quiet_arg)
-                        reference_arg['sdf_localize_sphere_0058'] = False
+                        if sphere_audit_0058:
+                            reference_arg['sdf_localize_sphere_0058'] = False
+                        reference_arg['sdf_localize_reuse_0059'] = False
                         ref_acc, ref_av, ref_inside = self.core.localize_samples_adapt(
                             sample_chunk, reference_arg)
                         if not np.array_equal(accepted_local, ref_inside):
-                            raise ValueError('0058 UNSAFE: sphere gate changed accepted voxel indices')
+                            raise ValueError('0058/0059 UNSAFE: optimization changed accepted voxel indices')
                         for label, actual, expected in (('accessory', acc_chunk, ref_acc),
                                                         ('avatar', av_chunk, ref_av)):
                             if actual.keys() != expected.keys():
-                                raise ValueError('0058 UNSAFE: changed ' + label + ' field keys')
+                                raise ValueError('0058/0059 UNSAFE: changed ' + label + ' field keys')
                             for k in actual:
                                 if not np.array_equal(actual[k], expected[k], equal_nan=True):
-                                    raise ValueError('0058 UNSAFE: changed ' + label + '.' + k)
+                                    raise ValueError('0058/0059 UNSAFE: changed ' + label + '.' + k)
                     selected = candidate_idx[accepted_local]
                     n_accepted += len(selected)
                     if len(selected):
@@ -728,6 +748,11 @@ class CurveHandle():
                           'early_rejected=', rejected_0058,
                           'early_reduction_pct=', f'{100.0 * rejected_0058 / max(1, n_candidate):.2f}',
                           'audit=', sphere_audit_0058, flush=True)
+                if reuse_0059:
+                    print('[sdf_localize_reuse_0059] accepted=', n_accepted,
+                          'core_s=', f"{getattr(self.core, '_localize_core_s_0059', 0.0) - core_previous_s_0059:.3f}",
+                          'avatar_s=', f"{getattr(self.core, '_localize_avatar_s_0059', 0.0) - avatar_previous_s_0059:.3f}",
+                          'audit=', reuse_audit_0059, flush=True)
                 if profile_sdf:
                     print('[sdf_localize_0041] candidates=', n_candidate,
                           'accepted=', n_accepted,
