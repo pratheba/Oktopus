@@ -1,6 +1,12 @@
-# OCT22 | Puffer | VERIFIED 0067 SDF settings.
-# This YAML preserves all 15 adaptations and 8-part ownership exactly.
-# Source: adapt_oktopus_puffer_full_0067_sdf_safe.yaml
+# 0087: SAME geometry as validated 0067. Optional true scalar field union.
+# Output: eight riggable parts AND riggable_fused_sdf_exterior.ply.
+# SDF-only: do NOT confuse with 0084 UDF cuts or welded strip stitching.
+# Requires disk-backed global grid: --sdf-grid-memmap-dir /path/to/scratch
+# Additional disk / runtime compared with 0067.
+sdf_fused_exterior_0087: true
+# 0067 safe full-puffer 512: SDF adapts; direct-final UDF cuts.
+# 0057/0058/0059/0062 optimizations only run on the audited wrap body.
+# All 14 rigid sections explicitly opt out and use conservative paths.
 sdf_projection_grid_0062: true
 sdf_projection_grid_cell_ratio_0062: 0.3
 sdf_projection_bound_query_0062: true
