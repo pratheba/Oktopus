@@ -1,0 +1,92 @@
+# OCT22 | Paired UDF adaptation snapshot from adapt_trex2_dress_top.yaml.
+# CAUTION: NOT a runnable 0084 one-command root/leaf config; the current 0084 runner
+# requires a 15-adaptation/8-part puffer ownership manifest and UDF input riggable_parts.
+# These preserve matching transforms and common UDF thresholds for future generic routing.
+# No fabricated source mesh path or root/leaf attachment topology is added.
+udf_model_batch_size: 32768
+udf_cut_query_batch_size: 32768
+udf_cut_seed_world: 0.02
+udf_cut_grow_world: 0.01
+udf_cut_auto_thresholds:
+  enabled: false
+udf_cut_cleanup_boundary: false
+udf_cut_write_debug_outputs: false
+adaptations:
+- target_key: trex_9_v2|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_bottom_upper
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.1
+  tgt_1: 0.7
+  scale: 0.7
+  rot_deg: 0.0
+  tloc:
+  - 0.0
+  - 0.0
+  - 0.03
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+  wrap_radius: true
+  rigid_radius: false
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+  snug_field_n_s: 128
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.9
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.8
+- target_key: trex_9_v2|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_bottom_upper
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.1
+  tgt_1: 0.7
+  scale: 0.7
+  rot_deg: 0.0
+  tloc:
+  - 0.0
+  - 0.0
+  - 0.03
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+  wrap_radius: true
+  rigid_radius: false
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+  snug_field_n_s: 128
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.9
+  use_tiled_detail: false

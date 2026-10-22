@@ -1,0 +1,388 @@
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_2_v1|bottom
+
+  src_0: 0.45
+  src_1: 0.9
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  #iused bu rigid/flow side
+  rigid_blend_scale: 1.2  # used by rigid/flow side
+  rot_deg: 0.0
+  tilt_v: -10.0
+  tilt_v_anchor: 0.25
+  tilt_v_end: 0.8
+
+  wrap_radius: true
+  rigid_radius: false
+  use_wrap_to_rigid_blend: true
+  wrap_blend_coord: accessory
+  wrap_to_rigid_s0: 0.00
+  wrap_to_rigid_s1: 0.25
+  wrap_blend_rigid_mode: rigid
+  wrap_blend_debug: true
+  # Main correction: geometric snug field
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  #snug_penetration_guard: false
+  accessory_offset_mode: none
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: false 
+
+############ BOTTOM ##############
+
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_2_v1|bottom
+
+  src_0: 0.45
+  src_1: 0.9
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  #iused bu rigid/flow side
+  rigid_blend_scale: 1.2  # used by rigid/flow side
+  rot_deg: 0.0
+
+  wrap_radius: true
+  rigid_radius: false
+  use_wrap_to_rigid_blend: true
+  wrap_blend_coord: accessory
+  wrap_to_rigid_s0: 0.00
+  wrap_to_rigid_s1: 0.25
+  wrap_blend_rigid_mode: rigid
+  wrap_blend_debug: true
+  # Main correction: geometric snug field
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+
+  auto_avatar_snug_field: true 
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 3.0
+  snug_min_scale: 0.7
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  #snug_penetration_guard: false
+  accessory_offset_mode: none
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: false 
+
+
+
+########################## BOTTOM ############################
+
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.45
+  src_1: 0.9
+
+  tgt_0: 0.1
+  tgt_1: 0.9
+
+  rot_deg: 0.0
+  tloc: [0.0, 0.00, 0.0]
+  tilt_v: 0.0
+  tilt_v_anchor: 0.25
+  tilt_v_end: 0.9
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 0.8
+
+  wrap_scale_min: 0.15
+  wrap_scale_max: 2.2
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+
+  free_mode: unified_wrap
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.00
+  attach_s1: 0.25
+  unified_release_band: 0.05
+  unified_flare_end: 0.5
+  unified_flare_gain: 0.5
+  unified_hold_umbrella: true 
+
+  auto_avatar_snug_field: true 
+  use_soft_snug: true
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 128
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 3.0
+  snug_min_scale: 0.9
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+
+
+
+
+########################## BOTTOM ############################
+
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.45
+  src_1: 0.9
+
+  tgt_0: 0.1
+  tgt_1: 0.9
+
+  rot_deg: 0.0
+  tloc: [0.0, 0.00, 0.0]
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 0.8
+
+
+  wrap_scale_min: 0.15
+  wrap_scale_max: 2.2
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  free_mode: rigid 
+  profile_type: ramp
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.00
+  attach_s1: 0.18
+  free_scale: 1.0
+  use_free_profile_scale: true 
+  
+  wrap_scale_min: 0.15
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 3.0
+  snug_min_scale: 0.9
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+##############################################
+
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.45
+  src_1: 0.9
+
+  tgt_0: 0.1
+  tgt_1: 0.9
+
+  rot_deg: 0.0
+  tloc: [0.0, 0.0, 0.0]
+  tilt_v: 5.0
+  tilt_v_anchor: 0.1
+  tilt_v_end: 0.9
+
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 0.8
+
+  use_accessory_support_clamp: true
+  support_soft_clamp: true
+  support_rho_limit: 1.00
+  support_rho_fade_limit: 2.80
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  free_mode: wrap 
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.00
+  attach_s1: 0.15
+
+
+  free_scale: 1.0
+  use_free_profile_scale: true
+  profile_type: ramp
+  free_profile_start: 0.15
+  free_profile_end: 0.9
+  free_profile_gain: 0.4
+  free_profile_attach_gap: 0.04
+  
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 3.0
+  snug_min_scale: 0.9
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+###############
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|bottom
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.45
+  src_1: 0.9
+
+  tgt_0: 0.1
+  tgt_1: 0.9
+
+  rot_deg: 0.0
+
+  avatar_cylinder_radius_scale: 3.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true
+  rigid_radius: false
+  scale: 0.8
+
+  use_accessory_support_clamp: true
+  support_soft_clamp: true
+  support_rho_limit: 1.00
+  support_rho_fade_limit: 2.80
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  free_mode: wrap 
+  use_attach_to_free_blend: true
+  attach_blend_coord: accessory
+  attach_coord_space: relative
+  attach_s0: 0.00
+  attach_s1: 0.15
+
+
+  free_scale: 1.0
+  use_free_profile_scale: true
+  profile_type: ramp
+  free_profile_start: 0.15
+  free_profile_end: 0.9
+  free_profile_gain: 0.4
+  free_profile_attach_gap: 0.04
+  
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 3.0
+  snug_min_scale: 0.9
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+

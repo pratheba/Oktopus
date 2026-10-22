@@ -1,0 +1,90 @@
+- target_key: trex_9_v2|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.1
+  tgt_1: 0.7
+
+  scale: 0.7
+  rot_deg: 0.0
+  tloc: [0.0, 0.0, 0.03]
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 128 
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.9
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+
+
+- target_key: trex_9_v2|body
+  accessory_key: dress_2_v1|top
+  mode: direct
+  cache_as: dress_bottom_upper
+
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.1
+  tgt_1: 0.7
+
+  scale: 0.7
+  rot_deg: 0.0
+  tloc: [0.0, 0.0, 0.03]
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_radius: true
+  rigid_radius: false
+  wrap_scale_min: 0.7
+  wrap_scale_max: 1.4
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  snug_field_n_s: 128
+  snug_field_n_theta: 64
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 2.5
+  snug_min_scale: 0.9
+
+  use_tiled_detail: false

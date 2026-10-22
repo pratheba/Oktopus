@@ -1,0 +1,36 @@
+# OCT22 | Paired UDF adaptation snapshot from adapt_oktopus_boots_t6.yaml.
+# CAUTION: NOT a runnable 0084 one-command root/leaf config; the current 0084 runner
+# requires a 15-adaptation/8-part puffer ownership manifest and UDF input riggable_parts.
+# These preserve matching transforms and common UDF thresholds for future generic routing.
+# No fabricated source mesh path or root/leaf attachment topology is added.
+udf_model_batch_size: 32768
+udf_cut_query_batch_size: 32768
+udf_cut_seed_world: 0.02
+udf_cut_grow_world: 0.01
+udf_cut_auto_thresholds:
+  enabled: false
+udf_cut_cleanup_boundary: false
+udf_cut_write_debug_outputs: false
+adaptations:
+- target_key: oktopus_9_v1|t6
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.05
+  src_1: 0.5
+  tgt_0: 0.85
+  tgt_1: 0.0
+  scale: 4.5
+  rot_deg: 0.0
+  cache_as: boots_1_v1|6
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  adapt_use_owned_gate: false
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: false
+  avatar_clearance: 0.0001

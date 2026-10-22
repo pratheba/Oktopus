@@ -1,0 +1,134 @@
+# OCT22 | Paired UDF adaptation snapshot from adapt_trex_dress1.yaml.
+# CAUTION: NOT a runnable 0084 one-command root/leaf config; the current 0084 runner
+# requires a 15-adaptation/8-part puffer ownership manifest and UDF input riggable_parts.
+# These preserve matching transforms and common UDF thresholds for future generic routing.
+# No fabricated source mesh path or root/leaf attachment topology is added.
+udf_model_batch_size: 32768
+udf_cut_query_batch_size: 32768
+udf_cut_seed_world: 0.02
+udf_cut_grow_world: 0.01
+udf_cut_auto_thresholds:
+  enabled: false
+udf_cut_cleanup_boundary: false
+udf_cut_write_debug_outputs: false
+adaptations:
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.85
+  rot_deg: 0.0
+  auto_avatar_snug_field: true
+  snug_field_n_s: 32
+  snug_field_n_theta: 32
+  snug_surface_band: 0.01
+  snug_target_gap: 0.001
+  snug_gain: 4.0
+  snug_min_scale: 0.93
+  snug_max_scale: 1.07
+  snug_min_count: 8
+  snug_smooth_s: 3.0
+  snug_smooth_theta: 2.0
+  accessory_offset_mode: none
+  cut_avatar: false
+  use_hard_avatar_clamp: false
+  accessory_offset: 0.03
+  target_gap: 0.05
+  local_offset_strength: 0.8
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.02
+  use_soft_snug: true
+  hard_clearance: 0.0005
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  accessory_offset_mode: local
+  use_soft_snug: false
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.002
+  cut_avatar: false
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  accessory_offset_mode: global
+  accessory_offset: 0.003
+  cut_avatar: false
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  rot_deg: 0.0
+  accessory_offset_mode: local
+  target_gap: 0.004
+  local_offset_strength: 0.3
+  local_offset_band: 0.012
+  local_offset_gate_sigma: 0.01
+  use_soft_snug: true
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.002
+  cut_avatar: false
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: false
+  rigid_radius: false
+  mode: direct
+  src_0: 0.0
+  src_1: 0.7
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.9
+  cut_avatar: false
+  avatar_clearance: 0.004
+  accessory_offset: 0.002
+  use_adapt_train_radius: true
+  adapt_train_radius_n_control: 12
+  adapt_train_radius_smooth_s: 1.5
+  adapt_train_radius_floor: 0.85
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.7
+  tgt_0: 0.1
+  tgt_1: 0.9
+  scale: 0.8
+  cut_avatar: false
+  avatar_clearance: 0.004
+  accessory_offset: 0.002
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top

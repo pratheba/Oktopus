@@ -1,0 +1,221 @@
+- target_key: armadillo_13_v1|l_leg
+  accessory_key: boots_2_v1|shaft
+  mode: direct
+  cache_as: boots_shaft
+
+  src_0: 0.3
+  src_1: 0.9
+
+  tgt_0: 0.0
+  tgt_1: 0.9
+
+  rot_deg: 175.0
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true 
+  rigid_radius: false
+  scale: 0.8
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 1.0
+  snug_min_scale: 0.95
+  snug_max_scale: 1.05
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+  blend_group: boot
+  mesh_blend_delta: 0.005
+#=============================
+
+- target_key: armadillo_13_v1|l_leg
+  accessory_key: boots_2_v1|shaft
+  mode: direct
+  cache_as: boots_shaft
+
+  src_0: 0.3
+  src_1: 0.9
+
+  tgt_0: 0.0
+  tgt_1: 0.9
+
+  rot_deg: 175.0
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: true 
+  rigid_radius: false
+  scale: 0.8
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: true
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true 
+
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.015
+  snug_target_gap: 0.005
+  snug_gain: 1.0
+  snug_min_scale: 0.95
+  snug_max_scale: 1.05
+  snug_min_count: 6
+  snug_smooth_s: 3.00
+  snug_smooth_theta: 2.00
+  snug_debug: true
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+  use_tiled_detail: false
+
+
+#===============
+
+
+- target_key: armadillo_13_v1|l_leg
+  accessory_key: boots_2_v1|shaft
+  mode: direct
+  cache_as: boots_shaft_direct
+
+  src_0: 0.3
+  src_1: 0.9
+
+  tgt_0: 0.0
+  tgt_1: 0.9
+
+  rot_deg: 175.0
+
+  avatar_cylinder_radius_scale: 1.0
+  avatar_cylinder_radius_add: 0.0
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+
+  wrap_radius: false
+  rigid_radius: true
+  scale: 1.4
+
+  use_accessory_support_clamp: false 
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: false 
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  use_tiled_detail: true
+  detail_tile_start: 0.15
+  detail_tile_end: 0.80
+  # optional; if missing, auto uses abs(src_1-src_0)/abs(tgt_1-tgt_0)
+  # detail_tiles: 2.5
+
+
+
+
+#=========================
+- target_key: armadillo_13_v1|l_foot
+  accessory_key: boots_2_v1|foot
+  mode: direct
+  cache_as: boots_foot
+
+  src_0: 0.0
+  src_1: 1.0
+
+  tgt_0: 0.95
+  tgt_1: 0.0
+
+  rot_deg: 100.0
+  tloc: [0.0, -0.01, 0.06]
+  tilt_v: -3.0
+  tilt_v_anchor: 0.0
+  tilt_v_end: 0.95
+
+  wrap_radius: false
+  rigid_radius: true
+
+  # Slightly larger at the top helps meet upper piece.
+  scale: 1.2
+
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+
+  # Lower starts somewhat attached so it follows the upper/knee area,
+  # then becomes rigid/original.
+
+  adapt_localize_norm: 1.0
+  adapt_use_owned_gate: false
+
+  wrap_scale_min: 0.5
+  wrap_scale_max: 2.2
+
+  auto_avatar_snug_field: false
+  use_soft_snug: false
+  use_hard_avatar_clamp: false
+  cut_avatar: true
+
+  attach_blend_debug: true
+  wrap_debug: true
+  adapt_debug_counts: true
+
+  blend_group: boot

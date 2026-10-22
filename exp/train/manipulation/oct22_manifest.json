@@ -1,0 +1,405 @@
+{
+  "generated": "2026-10-22",
+  "usable_full_pipeline": "oktopus_puffer_full",
+  "status": "The puffer pair is directly aligned with the 0067 SDF and 0084 UDF 8-part stages. Other pairs are snapshots, NOT validated or supported by hard-coded 0084 runner.",
+  "records": [
+    {
+      "stem": "oktopus_puffer_full",
+      "source_sdf": "adapt_oktopus_puffer_full_0067_sdf_safe.yaml",
+      "source_udf": "udf_adapt_oktopus_puffer_0084_full_pipeline.yaml",
+      "adaptations": 15,
+      "targets": 8,
+      "status": "READY_0067_SDF_PLUS_0084_UDF",
+      "changes": []
+    },
+    {
+      "stem": "armadillo_boots2",
+      "source_sdf": "adapt_armadillo_boots2.yaml",
+      "source_udf": "adapt_armadillo_boots2.yaml",
+      "adaptations": 4,
+      "targets": 2,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "armadillo_13_v1|l_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 1,
+          "target_key": "armadillo_13_v1|l_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 2,
+          "target_key": "armadillo_13_v1|l_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 3,
+          "target_key": "armadillo_13_v1|l_foot",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {
+        "armadillo_13_v1|l_leg": 3
+      }
+    },
+    {
+      "stem": "armadillo_dress",
+      "source_sdf": "adapt_armadillo_dress.yaml",
+      "source_udf": "adapt_armadillo_dress.yaml",
+      "adaptations": 5,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "armadillo_13_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {
+        "armadillo_13_v1|body": 5
+      }
+    },
+    {
+      "stem": "oktopus_boots_t1",
+      "source_sdf": "adapt_oktopus_boots_t1.yaml",
+      "source_udf": "adapt_oktopus_boots_t1.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "oktopus_9_v1|t1",
+          "old_cut_avatar": "absent",
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t2",
+      "source_sdf": "adapt_oktopus_boots_t2.yaml",
+      "source_udf": "adapt_oktopus_boots_t2.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t3",
+      "source_sdf": "adapt_oktopus_boots_t3.yaml",
+      "source_udf": "adapt_oktopus_boots_t3.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "oktopus_9_v1|t3",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t4",
+      "source_sdf": "adapt_oktopus_boots_t4.yaml",
+      "source_udf": "adapt_oktopus_boots_t4.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t5",
+      "source_sdf": "adapt_oktopus_boots_t5.yaml",
+      "source_udf": "adapt_oktopus_boots_t5.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "oktopus_9_v1|t5",
+          "old_cut_avatar": "absent",
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t6",
+      "source_sdf": "adapt_oktopus_boots_t6.yaml",
+      "source_udf": "adapt_oktopus_boots_t6.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "oktopus_9_v1|t6",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t7_boot1_only",
+      "source_sdf": "adapt_oktopus_boots_t7_boot1_only(2).yaml",
+      "source_udf": "adapt_oktopus_boots_t7_boot1_only(2).yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_boots_t8",
+      "source_sdf": "adapt_oktopus_boots_t8.yaml",
+      "source_udf": "adapt_oktopus_boots_t8.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "oktopus_cone_post_sdf",
+      "source_sdf": "adapt_oktopus_cone_post_sdf(1).yaml",
+      "source_udf": "adapt_oktopus_cone_post_sdf(1).yaml",
+      "adaptations": 2,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {
+        "oktopus_9_v1|body": 2
+      }
+    },
+    {
+      "stem": "trex1_dress",
+      "source_sdf": "adapt_trex1_dress.yaml",
+      "source_udf": "adapt_trex1_dress.yaml",
+      "adaptations": 6,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {
+        "trex_9_v1|body": 6
+      }
+    },
+    {
+      "stem": "trex2_dress_bottom",
+      "source_sdf": "adapt_trex2_dress_bottom.yaml",
+      "source_udf": "adapt_trex2_dress_bottom.yaml",
+      "adaptations": 1,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "trex2_dress_top",
+      "source_sdf": "adapt_trex2_dress_top.yaml",
+      "source_udf": "adapt_trex2_dress_top.yaml",
+      "adaptations": 2,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "trex_9_v2|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 1,
+          "target_key": "trex_9_v2|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {
+        "trex_9_v2|body": 2
+      }
+    },
+    {
+      "stem": "trex2_puffer",
+      "source_sdf": "adapt_trex2_puffer.yaml",
+      "source_udf": "adapt_trex2_puffer.yaml",
+      "adaptations": 4,
+      "targets": 4,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "trex_9_v2|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 1,
+          "target_key": "trex_9_v2|neck",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 2,
+          "target_key": "trex_9_v2|front_r_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 3,
+          "target_key": "trex_9_v2|front_l_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "trex2_puffer4",
+      "source_sdf": "adapt_trex2_puffer4.yaml",
+      "source_udf": "adapt_trex2_puffer4.yaml",
+      "adaptations": 4,
+      "targets": 4,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "trex_9_v2|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 1,
+          "target_key": "trex_9_v2|neck",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 2,
+          "target_key": "trex_9_v2|front_r_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 3,
+          "target_key": "trex_9_v2|front_l_leg",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {}
+    },
+    {
+      "stem": "trex_dress",
+      "source_sdf": "adapt_trex_dress.yaml",
+      "source_udf": "adapt_trex_dress.yaml",
+      "adaptations": 6,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 0,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 2,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 5,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {
+        "trex_9_v1|body": 6
+      }
+    },
+    {
+      "stem": "trex_dress1",
+      "source_sdf": "adapt_trex_dress1.yaml",
+      "source_udf": "adapt_trex_dress1.yaml",
+      "adaptations": 6,
+      "targets": 1,
+      "status": "SNAPSHOT_GENERIC_RUNNER_NOT_YET_SUPPORTED",
+      "changes": [
+        {
+          "index": 1,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 2,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 3,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 4,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        },
+        {
+          "index": 5,
+          "target_key": "trex_9_v1|body",
+          "old_cut_avatar": true,
+          "new_cut_avatar": false
+        }
+      ],
+      "duplicate_target_keys": {
+        "trex_9_v1|body": 6
+      }
+    }
+  ],
+  "sources_sha256": {
+    "adapt_armadillo_boots2.yaml": "f16eeefc92502088f38f11543a295b103150f2193d14749e574cbcb2145d1a82",
+    "adapt_armadillo_dress.yaml": "2b2628fd2976bd8844ad53125f0ef17bad95b4585849979d9af6e991032cd63a",
+    "adapt_oktopus_boots_t1.yaml": "37da9884de3b8ddaae8dcd3b72113740634f9b638930e7a2d03c64928e0fcd60",
+    "adapt_oktopus_boots_t2.yaml": "c1ef4d4c92bc8af7d5cf661b7fb0d925edf3d50720e668200c44df1d4e72dcf2",
+    "adapt_oktopus_boots_t3.yaml": "39ea0c30fe606a24c8b509314824a8cafc4809c3200bf8801f30aee40380817f",
+    "adapt_oktopus_boots_t4.yaml": "a6b907f126a82ba48a9658d22eb3a7dd069376ff6a8db6eacda76c46028af0dd",
+    "adapt_oktopus_boots_t5.yaml": "1534b0eb0ecb6edbe7a336494cd5ebcc83a4077ca19c6dd2a577050ad21d86e6",
+    "adapt_oktopus_boots_t6.yaml": "7c20b3aac233708a33ce517dbee54505ee36e49868d0a23f517174f767263ac4",
+    "adapt_oktopus_boots_t7_boot1_only(2).yaml": "88dc47d4474a5357fcd9a87f9fd85d7dbe0db411717e11cc436e60ae9d3e7a6d",
+    "adapt_oktopus_boots_t8.yaml": "2ffb1a8d4ba7f1129e1fbbaff15719acd5b6faa8a2377114b303f1b35a22e33c",
+    "adapt_oktopus_cone_post_sdf(1).yaml": "c7c162296c9a0ffc4763c2000bea53594d60b5aeff73274663550ceb23458473",
+    "adapt_oktopus_puffer_full_0067_sdf_safe.yaml": "21fbfe5d46351b3d0cb5bb983bdd32a41ec7b10fac9b25b544b51af70da623ed",
+    "adapt_trex1_dress.yaml": "6e3467b5cf716a00c43b706bdab97d99cb0032b5d914c38b6fbafcfe222a4da9",
+    "adapt_trex2_dress_bottom.yaml": "b0ad7f3a53b48311ba9adb0329d1929e5dc88b4093ef95b31c42abfc5fbcf5ef",
+    "adapt_trex2_dress_top.yaml": "b0030d6b35fc2ef51ea7cfee02a20afd6cf00ed278de5ce9359e592206f903c2",
+    "adapt_trex2_puffer.yaml": "45b16223982d5e594526bfefa1202494cbc2bca9c9483069b5dd248540a1910b",
+    "adapt_trex2_puffer4.yaml": "5989013088a9e38aa7b964cd6c47436c609703a3561ea2dc05cc5971b7559f3a",
+    "adapt_trex_dress.yaml": "cba84e054dbba0f1a66e359c99bc44b2d7999e48507f1741e52f5a8962c95804",
+    "adapt_trex_dress1.yaml": "88cb72e821c756a3550e76b8aed4057a03591dc1199c12a4fdf332edbaeef42d",
+    "udf_adapt_oktopus_puffer_0084_full_pipeline.yaml": "e65cb997fbf97f6188063bdc1417731872d7d4943b7f3912f72f3cf939c8eb30"
+  }
+}

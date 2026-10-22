@@ -1,0 +1,143 @@
+# OCT22 | Imported SDF adaptation snapshot from adapt_trex_dress1.yaml.
+# SDF-first workflow: avatar Boolean disabled; intended removal delegated to learned UDF.
+# IMPORTANT: performance flags and geometry with cut_avatar disabled are NOT regression-validated for this case.
+sdf_projection_workers_0054: 2
+sdf_projection_cache_0054: true
+sdf_projection_refine_fast_0055: true
+sdf_projection_profile_split_0055: false
+sdf_projection_leafsize_0056: 32
+sdf_prediction_scratch_dir_0056: /tmp
+sdf_prediction_zero_copy_write_0056: true
+sdf_inference_batch_size: 262144
+sdf_perf_timing: true
+sdf_localize_after_gate: true
+dcsdd_bounded_filtering: true
+dcsdd_filter_batch_size: 262144
+dcsdd_fast_bbox_marking: true
+dcsdd_crop_grid: true
+sdf_candidate_piecewise_0057: false
+sdf_localize_sphere_0058: false
+sdf_localize_reuse_0059: false
+sdf_projection_grid_0062: false
+sdf_projection_bound_query_0062: false
+adaptations:
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.85
+  rot_deg: 0.0
+  auto_avatar_snug_field: true
+  snug_field_n_s: 32
+  snug_field_n_theta: 32
+  snug_surface_band: 0.01
+  snug_target_gap: 0.001
+  snug_gain: 4.0
+  snug_min_scale: 0.93
+  snug_max_scale: 1.07
+  snug_min_count: 8
+  snug_smooth_s: 3.0
+  snug_smooth_theta: 2.0
+  accessory_offset_mode: none
+  cut_avatar: false
+  use_hard_avatar_clamp: false
+  accessory_offset: 0.03
+  target_gap: 0.05
+  local_offset_strength: 0.8
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.02
+  use_soft_snug: true
+  hard_clearance: 0.0005
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  accessory_offset_mode: local
+  use_soft_snug: false
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.002
+  cut_avatar: false
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  accessory_offset_mode: global
+  accessory_offset: 0.003
+  cut_avatar: false
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: true
+  rigid_radius: false
+  mode: direct
+  src_0: 0.1
+  src_1: 0.6
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.8
+  rot_deg: 0.0
+  accessory_offset_mode: local
+  target_gap: 0.004
+  local_offset_strength: 0.3
+  local_offset_band: 0.012
+  local_offset_gate_sigma: 0.01
+  use_soft_snug: true
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.002
+  cut_avatar: false
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: false
+  rigid_radius: false
+  mode: direct
+  src_0: 0.0
+  src_1: 0.7
+  tgt_0: 0.1
+  tgt_1: 0.8
+  scale: 0.9
+  cut_avatar: false
+  avatar_clearance: 0.004
+  accessory_offset: 0.002
+  use_adapt_train_radius: true
+  adapt_train_radius_n_control: 12
+  adapt_train_radius_smooth_s: 1.5
+  adapt_train_radius_floor: 0.85
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
+- target_key: trex_9_v1|body
+  accessory_key: dress_2_v1|top
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.7
+  tgt_0: 0.1
+  tgt_1: 0.9
+  scale: 0.8
+  cut_avatar: false
+  avatar_clearance: 0.004
+  accessory_offset: 0.002
+  rot_deg: 0.0
+  cache_as: dress_2_v1|top
