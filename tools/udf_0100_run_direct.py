@@ -15,6 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 YAMLS = ROOT / 'exp/train/manipulation'
 
 
+def parse_parts(value):
+    """Preserve the runtime's 'all' sentinel; otherwise return part names."""
+    raw = value.strip()
+    if raw.lower() == 'all':
+        return 'all'
+    parts = [part.strip() for part in raw.split(',')]
+    if not parts or any(not part or part.lower() == 'all' for part in parts):
+        raise ValueError('Use --parts all or comma-separated part names (no empty entries)')
+    if len(parts) != len(set(parts)):
+        raise ValueError('Duplicate part name in --parts')
+    return parts
+
+
+def needs_nonbody_opt_in(parts):
+    """Tentacle thresholds are not calibrated by the body-only 0100 trial."""
+    return parts == 'all' or any(part != 'body' for part in parts)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--sdf-run', required=True)
@@ -25,12 +43,21 @@ def main():
     ap.add_argument('--resolution', type=int, default=1024)
     ap.add_argument('--yaml', default='oct22_adapt_oktopus_puffer_full_udf_fused_0092.yaml')
     ap.add_argument('--config', default='config/config_udf_grid_b13d3_oktopus_puffer.yaml')
-    ap.add_argument('--parts', default='body', help='Comma-separated parts; start with body')
+    ap.add_argument('--parts', default='all',
+                    help='Part names separated by commas, or all (default: all)')
     ap.add_argument('--ckpt', default='final')
     ap.add_argument('--face-batch-size', type=int, default=16384)
     ap.add_argument('--allow-uncalibrated-nonbody', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
+    try:
+        selected_parts = parse_parts(args.parts)
+    except ValueError as exc:
+        ap.error(str(exc))
+    if needs_nonbody_opt_in(selected_parts) and not args.allow_uncalibrated_nonbody:
+        ap.error('Non-body 0100 UDF distance thresholds are not calibrated. '
+                 'For an experimental all-parts preview, pass '
+                 '--allow-uncalibrated-nonbody; or use --parts body.')
     for item in (args.sdf_run, args.udf_run, args.out, args.shape):
         if not item or Path(item).name != item or item in ('.', '..'):
             ap.error('run names and shape must be single directory names')
@@ -64,7 +91,7 @@ def main():
         'sdf_shape': str(sdf),
         'correspondence_0092': str(transfer),
         'correspondence_confirmed_same_sdf': True,
-        'parts': args.parts.split(','),
+        'parts': selected_parts,
         'face_batch_size': args.face_batch_size,
         'allow_uncalibrated_nonbody': args.allow_uncalibrated_nonbody,
     }
@@ -78,7 +105,7 @@ def main():
            '--udf-model-batch-size', '32768', '--udf-cut-query-batch-size', '32768']
     print('[udf direct fused 0100] source:', sdf)
     print('[udf direct fused 0100] routing only:', transfer)
-    print('[udf direct fused 0100] query parts:', args.parts)
+    print('[udf direct fused 0100] query parts:', selected_parts)
     print('[udf direct fused 0100] new output:', dest / 'udf_direct_fused_0100')
     if args.dry_run:
         print('Command:', ' '.join(cmd))
