@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Oct-22 SDF runner + separate existing puffer 0084 UDF-parts runner.
 
-SDF: generic rigid, wrap, mixed. Fused exterior only with an explicitly enabled
-root/leaves SDF configuration (currently the verified 0087 full puffer).
+SDF: generic rigid, wrap, mixed. Part ownership and optional fused exterior
+are defined by YAML root_leaves.parts and sdf_fused_exterior_0087.
 UDF: only the existing puffer eight-parts 0084 implementation; not fused UDF.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 YAML_DIR = ROOT / 'exp/train/manipulation'
-PARTS = ('tentacle_t1', 'tentacle_t2', 'tentacle_t3', 'tentacle_t4',
+PUFFER_UDF_PARTS = ('tentacle_t1', 'tentacle_t2', 'tentacle_t3', 'tentacle_t4',
          'tentacle_t5', 'tentacle_t6', 'tentacle_t8')
 
 
@@ -79,7 +79,7 @@ def root_leaf_is_full_puffer(data):
     plan = data.get('root_leaves') or {}
     return bool(data.get('combine_adaptations') is True and
                 isinstance(plan, dict) and
-                set((plan.get('leaves') or {}).keys()) == set(PARTS) and
+                set((plan.get('leaves') or {}).keys()) == set(PUFFER_UDF_PARTS) and
                 len(data['adaptations']) == 15 and
                 data['adaptations'][0].get('target_key') == 'oktopus_9_v1|body')
 
@@ -121,10 +121,23 @@ def sdf(args):
     if not args.dry_run and not full_path(config).is_file():
         raise ValueError(f'Model config not found: {config}')
     fused = data.get('sdf_fused_exterior_0087') is True
+    targets = {str(a.get('target_key', '')).split('|')[0] for a in data['adaptations']}
+    if targets != {args.shape}:
+        raise ValueError(f'YAML target avatar(s) {sorted(targets)} differ from --shape {args.shape!r}; '
+                         f'use --shape {next(iter(targets))!r} with a matching model --config')
     combine = data.get('combine_adaptations') is True
     has_root = bool(data.get('root_leaves'))
-    if fused and not root_leaf_is_full_puffer(data):
-        raise ValueError('0087 fused SDF presently supports only 15-adaptation puffer root_leaves')
+    if has_root and not combine:
+        raise ValueError('root_leaves requires combine_adaptations: true')
+    if has_root:
+        # Validate part assignment and blend-group ownership before GPU inference.
+        app = str(ROOT / 'src' / 'app')
+        if app not in sys.path:
+            sys.path.insert(0, app)
+        from root_leaf_combination import build_root_leaf_plan
+        plan = build_root_leaf_plan(data['adaptations'], data['root_leaves'])
+        print(f'[oct22 SDF] YAML-owned parts={list(plan.part_names)} '
+              f'attachments={plan.attachments or {}}', flush=True)
     if fused:
         # 0089: preflight the actual action's YAML allowlist, not just YAML.
         verify_fused_yaml_forwarding(ROOT / 'src/app/agent_3dvec_sdf.py')
@@ -132,7 +145,7 @@ def sdf(args):
         raise ValueError('0087 SDF code not installed: apply the 0087 patch first')
     if args.require_fused and not fused:
         raise ValueError('Requested fused exterior, but YAML has no sdf_fused_exterior_0087: true')
-    if args.stream and (fused or combine or kind == 'mixed'):
+    if args.stream and (fused or combine or has_root or kind == 'mixed'):
         raise ValueError('--stream only offered for independent rigid pieces; not for fused/combined SDF')
     if args.stream and kind != 'rigid':
         raise ValueError('--stream currently restricted to independent rigid pieces')
@@ -151,7 +164,8 @@ def sdf(args):
         print('[oct22 SDF] NOTE: mixed rigid/wrap does NOT mean fused/merged. '
               'Your YAML has combine_adaptations unset/false.', flush=True)
     if fused:
-        print('[oct22 SDF] 0087 scalar-field Boolean union enabled; separate eight parts remain.', flush=True)
+        print('[oct22 SDF] 0087 scalar-field Boolean union enabled; '
+              'YAML-defined separate parts remain when root_leaves is present.', flush=True)
     cmd = [sys.executable, str(ROOT / 'test_dc.py'), '-c', config, '-o', args.out,
            '-s', args.shape, '-y', path.name, '-r', str(args.resolution),
            '-ckpt', args.checkpoint, '-a', 'sdf_dc',
@@ -177,7 +191,8 @@ def sdf(args):
             raise RuntimeError(f'0087 fused output missing. Expected {mesh} and {report}')
         print(f'[oct22 SDF] FUSED EXTERIOR: {mesh}', flush=True)
         print(f'[oct22 SDF] FUSION REPORT: {report}', flush=True)
-        print(f'[oct22 SDF] RIGGABLE PARTS: {output / "riggable_parts"}', flush=True)
+        if has_root:
+            print(f'[oct22 SDF] RIGGABLE PARTS: {output / "riggable_parts"}', flush=True)
     else:
         print(f'[oct22 SDF] output: {output}', flush=True)
 
@@ -244,7 +259,7 @@ def udf_parts(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('stage', choices=('sdf', 'udf-parts'))
-    p.add_argument('--case', default='oktopus_puffer_full', help='e.g. oktopus_puffer_full, oktopus_boots_t7_boot1_only, oktopus_cone_post_sdf')
+    p.add_argument('--case', default='oktopus_puffer_full', help='e.g. oktopus_puffer_full, oktopus_boots_t7_boot1_only, oktopus_cone_post_sdf, trex2_puffer')
     p.add_argument('--yaml', help='YAML filename in exp/train/manipulation (stage-specific)')
     p.add_argument('--config', help='model config YAML; defaults provided for puffer/boots/cone')
     p.add_argument('--shape', default='oktopus_9_v1')

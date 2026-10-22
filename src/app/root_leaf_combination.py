@@ -23,6 +23,7 @@ class RootLeafPlan:
     part_names: tuple
     export_legacy_combined: bool
     adaptation_fingerprint: str = ''
+    attachments: dict = None
 
 
 def adaptation_fingerprint(adaptations):
@@ -38,11 +39,97 @@ def adaptation_fingerprint(adaptations):
     return hashlib.sha256(payload).hexdigest()
 
 
+def _build_named_parts_plan(adaptations, spec):
+    """YAML-owned part names and per-part SDF unions; no avatar-specific part names.
+
+    A multi-adaptation part must use ONE shared blend_group in the original
+    adaptation entries. That is the existing SDF group-union mechanism, not a
+    new proximity-based mesh stitcher. Leaving other parts distinct is valid.
+    """
+    if any(k in spec for k in ('root', 'leaves')):
+        raise ValueError('Use root_leaves.parts OR legacy root/leaves, not both')
+    entries = spec['parts']
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError('root_leaves.parts requires a nonempty part mapping')
+    if spec.get('output_mode', 'separate_parts') != 'separate_parts':
+        raise ValueError('root_leaves.parts supports only separate_parts outputs')
+    item_to_part, group_to_part, attachments = {}, {}, {}
+    for part, descriptor in entries.items():
+        if not isinstance(part, str) or not _SAFE_PART.fullmatch(part):
+            raise ValueError('root_leaves.parts part names must be safe identifiers')
+        if isinstance(descriptor, str):
+            descriptor = {'target_key': descriptor}
+        if not isinstance(descriptor, dict):
+            raise ValueError(f'Part {part!r} must have an adaptation selector')
+        selectors = set(descriptor) & {'blend_group', 'target_key', 'adaptation_name', 'adaptation_indices'}
+        unknown = set(descriptor) - selectors - {'attach_to'}
+        if len(selectors) != 1 or unknown:
+            raise ValueError(f'Part {part!r} requires exactly one selector '
+                             '(blend_group, target_key, adaptation_name, adaptation_indices) '
+                             f'and optional attach_to; unexpected keys={sorted(unknown)}')
+        selector = next(iter(selectors))
+        value = descriptor[selector]
+        if selector == 'adaptation_indices':
+            if (not isinstance(value, list) or not value or
+                any(type(i) is not int or i < 0 or i >= len(adaptations) for i in value) or
+                len(value) != len(set(value))):
+                raise ValueError(f'Part {part!r} needs unique valid adaptation_indices')
+            matches = list(value)
+        else:
+            if not isinstance(value, str) or not value:
+                raise ValueError(f'Part {part!r} selector must be a nonempty string')
+            key = 'name' if selector == 'adaptation_name' else selector
+            matches = [i for i, a in enumerate(adaptations) if a.get(key) == value]
+        if not matches:
+            raise ValueError(f'Part {part!r} matches no adaptations')
+        if any(i in item_to_part for i in matches):
+            raise ValueError(f'Part {part!r} overlaps adaptations assigned to another part')
+        if len(matches) > 1:
+            groups = {adaptations[i].get('blend_group') for i in matches}
+            if len(groups) != 1 or next(iter(groups)) in (None, '', False, 'none'):
+                raise ValueError(f'Part {part!r} has multiple adaptations without a single shared blend_group; '
+                                 'set blend_group explicitly on the intended pieces')
+        for i in matches:
+            item_to_part[i] = part
+            group = adaptations[i].get('blend_group')
+            if group not in (None, '', False, 'none'):
+                prior = group_to_part.setdefault(str(group), part)
+                if prior != part:
+                    raise ValueError(f'blend_group {group!r} crosses parts {prior!r} and {part!r}')
+        parent = descriptor.get('attach_to')
+        if parent is not None:
+            if not isinstance(parent, str) or parent == part:
+                raise ValueError(f'Part {part!r}: attach_to must name a different part')
+            attachments[part] = parent
+    missing = sorted(set(range(len(adaptations))) - set(item_to_part))
+    if missing:
+        raise ValueError(f'root_leaves.parts leaves adaptations unassigned: {missing}')
+    for part, parent in attachments.items():
+        if parent not in entries:
+            raise ValueError(f'Part {part!r}: attach_to={parent!r} does not exist')
+        visited = {part}
+        while parent in attachments:
+            if parent in visited:
+                raise ValueError(f'Cycle in root_leaves.parts attachments at {part!r}')
+            visited.add(parent)
+            parent = attachments[parent]
+    return RootLeafPlan(
+        item_to_part=item_to_part,
+        group_to_part=group_to_part,
+        part_names=tuple(entries),
+        export_legacy_combined=bool(spec.get('export_legacy_combined', False)),
+        adaptation_fingerprint=adaptation_fingerprint(adaptations),
+        attachments=attachments,
+    )
+
+
 def build_root_leaf_plan(adaptations, spec):
     if spec is None:
         return None
     if not isinstance(spec, dict):
         raise TypeError('root_leaves must be a mapping')
+    if 'parts' in spec:
+        return _build_named_parts_plan(adaptations, spec)
     root_name = spec.get('root')
     leaves = spec.get('leaves')
     if not isinstance(root_name, str) or not root_name:
@@ -210,6 +297,7 @@ def export_root_leaf_scene(meshes, output_folder, out_name, plan):
         'part_names': list(plan.part_names),
         'item_to_part': {str(k): v for k, v in sorted(plan.item_to_part.items())},
         'parts': {},
+        'attachments': dict(plan.attachments or {}),
     }
     for part_id, part in enumerate(plan.part_names):
         mesh = meshes[part]

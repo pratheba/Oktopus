@@ -1896,11 +1896,11 @@ class AgentSDF(AgentBase):
         puffer_sparse = bool(extraction_config.get('sdf_puffer_sparse_groups', False))
         fused_exterior_0087 = bool(extraction_config.get('sdf_fused_exterior_0087', False))
         if fused_exterior_0087:
-            if root_leaf_plan is None or not combine_adaptations:
-                raise ValueError('0087 fused exterior requires combined root_leaves SDF')
+            if not combine_adaptations:
+                raise ValueError('0087 fused exterior requires combine_adaptations: true')
             if requested_extractor != 'ours':
                 raise ValueError('0087 fused exterior requires DCSDD surface_extraction=ours')
-            if root_leaf_plan.export_legacy_combined:
+            if root_leaf_plan is not None and root_leaf_plan.export_legacy_combined:
                 raise ValueError('Use either 0087 fused exterior or export_legacy_combined, not both')
             from app.sdf_puffer_sparse_groups import merge_sparse_field_min
             if getattr(mc_grid, 'geometry_only', False):
@@ -3161,7 +3161,8 @@ class AgentSDF(AgentBase):
                                 del part_grid
                                 print('[root_leaves] completed part=', part_name,
                                       'faces=', len(part_mesh.faces))
-                            if root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
+                            if (fused_exterior_0087 or root_leaf_plan is None
+                                    or root_leaf_plan.export_legacy_combined):
                                 valid_group = ~group_empty
                                 np.minimum(
                                     mc_grid.val_grid,
@@ -3176,7 +3177,7 @@ class AgentSDF(AgentBase):
                                 "[part_adapt group release]",
                                 f"group={blend_group}",
                                 "merged_into_final=",
-                                root_leaf_plan is None or root_leaf_plan.export_legacy_combined,
+                                fused_exterior_0087 or root_leaf_plan is None or root_leaf_plan.export_legacy_combined,
                             )
 
                         del new_local, overlap_local, group_empty_local
@@ -3188,7 +3189,8 @@ class AgentSDF(AgentBase):
                             print('[sdf fused 0087] single=',
                                   root_leaf_plan.item_to_part[item_index],
                                   'merged_samples=', merged, flush=True)
-                        elif root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
+                        elif (fused_exterior_0087 or root_leaf_plan is None
+                              or root_leaf_plan.export_legacy_combined):
                             current = mc_grid.val_grid[kidx]
                             mc_grid.val_grid[kidx] = np.minimum(
                                 current, np.asarray(vals_final)
@@ -3303,7 +3305,7 @@ class AgentSDF(AgentBase):
             from app.sdf_fused_report_0087 import fused_surface_report
             report = fused_surface_report(mesh)
             report.update({'mode': 'scalar_sdf_min_union',
-                           'source_parts': list(root_leaf_plan.part_names),
+                           'source_parts': list(root_leaf_plan.part_names) if root_leaf_plan is not None else ['combined'],
                            'udf_applied': False,
                            'fused_file': str(fused_path)})
             report_path = Path(output_folder) / 'riggable_fused_sdf_exterior_report.json'

@@ -1,0 +1,184 @@
+# 0090 example: YAML-owned part fusion, not yet geometry-validated.
+# Source: oct22_adapt_trex2_puffer_sdf_optimization.yaml
+# Per-part SDF group fusion is configured by blend_group and root_leaves.parts.
+# Global exterior min-union is controlled by sdf_fused_exterior_0087.
+sdf_projection_workers_0054: 2
+sdf_projection_cache_0054: true
+sdf_projection_refine_fast_0055: true
+sdf_projection_profile_split_0055: false
+sdf_projection_leafsize_0056: 32
+sdf_prediction_scratch_dir_0056: /tmp
+sdf_prediction_zero_copy_write_0056: true
+sdf_inference_batch_size: 262144
+sdf_perf_timing: true
+sdf_localize_after_gate: true
+dcsdd_bounded_filtering: true
+dcsdd_filter_batch_size: 262144
+dcsdd_fast_bbox_marking: true
+dcsdd_crop_grid: true
+sdf_candidate_piecewise_0057: false
+sdf_localize_sphere_0058: false
+sdf_localize_reuse_0059: false
+sdf_projection_grid_0062: false
+sdf_projection_bound_query_0062: false
+adaptations:
+- target_key: trex_9_v2|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.0
+  src_1: 0.5
+  tgt_0: 0.0
+  tgt_1: 0.9
+  scale: 0.8
+  rot_deg: -10.0
+  wrap_radius: true
+  rigid_radius: false
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  auto_avatar_snug_field: true
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 3.0
+  snug_min_scale: 0.0
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.001
+  avatar_clearance: 0.001
+  cut_avatar: false
+- target_key: trex_9_v2|neck
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.5
+  src_1: 0.8
+  tgt_0: 0.0
+  tgt_1: 0.4
+  scale: 0.8
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+  use_accessory_support_clamp: true
+  support_rho_limit: 0.7
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  auto_avatar_snug_field: true
+  snug_field_n_s: 24
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 3.0
+  snug_min_scale: 0.0
+  snug_max_scale: 1.2
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.001
+  avatar_clearance: 0.001
+  cut_avatar: false
+- target_key: trex_9_v2|front_r_leg
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.0
+  src_1: 0.9
+  tgt_0: 0.2
+  tgt_1: 0.9
+  scale: 0.7
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+  auto_avatar_snug_field: true
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+- target_key: trex_9_v2|front_l_leg
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.0
+  src_1: 0.9
+  tgt_0: 0.2
+  tgt_1: 0.9
+  scale: 0.7
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+  auto_avatar_snug_field: true
+  snug_field_n_s: 12
+  snug_field_n_theta: 48
+  snug_surface_band: 0.01
+  snug_target_gap: 0.05
+  snug_gain: 2.0
+  snug_min_scale: 0.8
+  snug_max_scale: 1.4
+  snug_min_count: 6
+  snug_smooth_s: 0.75
+  snug_smooth_theta: 0.75
+  snug_debug: true
+  accessory_offset_mode: local
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+combine_adaptations: true
+root_leaves:
+  output_mode: separate_parts
+  export_legacy_combined: false
+  parts:
+    body:
+      target_key: trex_9_v2|body
+    neck:
+      target_key: trex_9_v2|neck
+      attach_to: body
+    front_r_leg:
+      target_key: trex_9_v2|front_r_leg
+      attach_to: body
+    front_l_leg:
+      target_key: trex_9_v2|front_l_leg
+      attach_to: body
+export_individual_meshes: false
+sdf_fused_exterior_0087: true
