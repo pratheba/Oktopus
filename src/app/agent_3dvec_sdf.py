@@ -2151,6 +2151,23 @@ class AgentSDF(AgentBase):
                     and adapt_arg.get('dcsdd_bounded_filtering', False)
                     and not extraction_config.get('dcsdd_stream_inference', False)
                 )
+                # 0091: YAML/global CLI defaults are NOT proof that every
+                # adaptation can use bounded filtering. In particular, the
+                # ordinary cone wrap path is not the cone callback stream.
+                # Disable only the unsupported acceleration; keep geometry,
+                # correction settings, and part ownership unchanged.
+                if adapt_arg.get('dcsdd_bounded_filtering', False):
+                    from app.sdf_bounded_eligibility_0091 import permitted_bounded_localization
+                    allowed_bounded, bounded_reason = permitted_bounded_localization(
+                        adapt_arg,
+                        staged_wrap=adapt_arg['_sdf_puffer_bounded_wrap_staging'],
+                    )
+                    if not allowed_bounded:
+                        adapt_arg['dcsdd_bounded_filtering'] = False
+                        adapt_arg['_sdf_puffer_bounded_wrap_staging'] = False
+                        print('[sdf bounded 0091] name=', run_name,
+                              'enabled=False', 'reason=', bounded_reason,
+                              'using_original_full_localization=True', flush=True)
                 if adapt_arg['_sdf_puffer_bounded_wrap_staging']:
                     print('[sdf_puffer_0050a] name=', run_name,
                           'bounded_wrap_staging=True',
