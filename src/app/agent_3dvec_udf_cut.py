@@ -2509,6 +2509,207 @@ class AgentUDFCut(AgentUDF):
             output_folder=output_folder,
         )
 
+    def _cut_fused_direct_0100(self, *, settings, adaptation_items,
+                               extraction_config, root_path, output_folder,
+                               target_curves, seam_plan, apply_seam_warp,
+                               model_batch_size, query_batch_size, far_world):
+        """Experimental direct learned-UDF query ON the true fused mesh.
+
+        No 0079 votes, 0081 growth, 0092 cut-mask transfer, or cross-resolution
+        guidance. A saved 0092 part correspondence only ROUTES queries to the
+        correct learned owner, never supplies a keep/remove decision.
+        """
+        from udf_direct_surface_0100 import classify_consistency, classify_owner_scores
+        from udf_cut_final_root_leaves import curve_interval_owner_masks, load_final_root_leaf_meshes
+        from udf_cut_fused_exterior_0092 import mesh_from_mask, transfer_cut_to_fused
+
+        if not isinstance(settings, dict):
+            raise ValueError('udf_direct_fused_0100 must be a YAML mapping')
+        shape_dir = Path(settings['sdf_shape'])
+        if not shape_dir.is_absolute():
+            shape_dir = Path(root_path) / shape_dir
+        fused_file = shape_dir / 'riggable_fused_sdf_exterior.ply'
+        if not fused_file.is_file():
+            raise FileNotFoundError(f'0100 requires actual fused SDF: {fused_file}')
+        mesh = trimesh.load(str(fused_file), force='mesh', process=False)
+        if not isinstance(mesh, trimesh.Trimesh) or not len(mesh.faces):
+            raise ValueError('0100 empty fused mesh')
+        plan = build_root_leaf_plan(adaptation_items, extraction_config.get('root_leaves'))
+        if plan is None:
+            raise ValueError('0100 requires root_leaves matching the SDF manifest')
+        part_dir, part_meshes = load_final_root_leaf_meshes(
+            plan=plan, mc_parts_dir=shape_dir / 'riggable_parts',
+            root_path=root_path, require_manifest=True)
+        part_names = list(plan.part_names)
+
+        # A saved correspondence is a performance shortcut, not learned-UDF
+        # evidence. Never use its old cut_mask as a deletion instruction.
+        reference = settings.get('correspondence_0092')
+        if reference:
+            reference_path = Path(reference)
+            if not reference_path.is_absolute():
+                reference_path = Path(root_path) / reference_path
+            with np.load(reference_path) as z:
+                routed = np.asarray(z['source_part_index'], np.int32).copy()
+            if len(routed) != len(mesh.faces) or np.any((routed < -1) | (routed >= len(part_names))):
+                raise ValueError('0100 saved 0092 correspondence does not match fused mesh/part count')
+            # The 0092 correspondence file has no vertex hash. Require
+            # explicit acknowledgement rather than silently trust arbitrary runs.
+            if settings.get('correspondence_confirmed_same_sdf') is not True:
+                raise ValueError('Set correspondence_confirmed_same_sdf: true ONLY for the exact 0092/SDF pair')
+        else:
+            _, routed, _, _ = transfer_cut_to_fused(
+                mesh, {name: (part_meshes[name], np.zeros(len(part_meshes[name].faces), bool))
+                       for name in part_names},
+                distance_edge_factor=float(settings.get('distance_edge_factor', 1.75)),
+                normal_dot=float(settings.get('normal_dot', .55)))
+
+        requested = settings.get('parts', ['body'])
+        if requested == 'all':
+            requested = part_names
+        if not isinstance(requested, list) or not requested or set(requested) - set(part_names):
+            raise ValueError(f'0100 parts must be subset of {part_names} or "all"')
+        if settings.get('allow_uncalibrated_nonbody', False) is not True and any(p != 'body' for p in requested):
+            raise ValueError('0100 non-body metric thresholds require explicit validation; set allow_uncalibrated_nonbody for diagnostic experiment only')
+        n = len(mesh.faces)
+        assigned = np.zeros(n, dtype=np.int16)
+        valid = np.zeros(n, dtype=np.int16)
+        supported = np.zeros(n, dtype=np.int16)
+        absent = np.zeros(n, dtype=np.int16)
+        report_parts = {}
+        batch_faces = int(settings.get('face_batch_size', 16384))
+        if not 1 <= batch_faces <= 131072:
+            raise ValueError('0100 face_batch_size must be between 1 and 131072')
+
+        for part in requested:
+            global_ids = np.flatnonzero(routed == part_names.index(part))
+            if global_ids.size == 0:
+                report_parts[part] = {'faces': 0, 'owners': []}
+                continue
+            # Preserve global indices while owning/querying just this part.
+            submesh = trimesh.Trimesh(vertices=np.asarray(mesh.vertices),
+                                      faces=np.asarray(mesh.faces)[global_ids], process=False)
+            owners = []
+            for index, item in enumerate(adaptation_items):
+                if plan.item_to_part[index] != part:
+                    continue
+                target_key, accessory_key = item['target_key'], item['accessory_key']
+                adapt_arg = {
+                    'mode': 'direct', 'avatar_curve_handle': target_curves[target_key],
+                    'accessory_curve_handle': self.curve_from_key(accessory_key),
+                    'device': self.device, 'infer_scale': 2.0,
+                    'avatar_curve_idx': self.feat_dict[target_key],
+                    'accessory_curve_idx': self.feat_dict[accessory_key],
+                }
+                adapt_arg.update(item)
+                if apply_seam_warp and index in seam_plan:
+                    adapt_arg['_seam_corrections'] = seam_plan[index]
+                snug = adapt_arg.get('shared_snug_field')
+                if snug:
+                    snug_path = resolve_shared_snug_field_path(
+                        str(snug), root_path=root_path, output_folder=output_folder,
+                        item_index=index, mode='direct', target_key=target_key,
+                        accessory_key=accessory_key)
+                    adapt_arg['avatar_snug_scale_field'] = load_shared_snug_field(snug_path)
+                adapt_arg['auto_avatar_snug_field'] = False
+                adapt_arg['adapt_debug_counts'] = False
+                adapt_arg['debug_interval_projection'] = False
+                cfg = self._extraction_config_for_item(extraction_config, item)
+                owners.append({'item_index': index, 'target_key': target_key,
+                               'accessory_key': accessory_key,
+                               'avatar_curve': target_curves[target_key],
+                               'adapt_arg': adapt_arg,
+                               'grow': float(cfg.get('udf_cut_grow_world', .01)),
+                               'seed': float(cfg.get('udf_cut_seed_world', .02))})
+            if not owners:
+                raise ValueError(f'0100 missing owner for {part}')
+            masks, _ = curve_interval_owner_masks(
+                submesh, owners,
+                pad=float(extraction_config.get('udf_cut_direct_interval_pad_0069', .035)),
+                samples=int(extraction_config.get('udf_cut_direct_curve_samples_0069', 1025)),
+                preserve_overlaps=True)
+            part_stats = {'faces': len(global_ids), 'owners': []}
+            for owner, mask in zip(owners, masks):
+                local_ids = np.flatnonzero(mask)
+                all_ids = global_ids[local_ids]
+                assigned[all_ids] += 1
+                owner_valid = owner_supported = owner_absent = 0
+                for a in range(0, len(local_ids), batch_faces):
+                    ids = all_ids[a:a + batch_faces]
+                    scores, usable = self._query_face_scores_for_ids(
+                        mesh, ids, avatar_curve=owner['avatar_curve'],
+                        adapt_arg=owner['adapt_arg'], accessory_key=owner['accessory_key'],
+                        model_batch_size=model_batch_size,
+                        query_batch_size=query_batch_size, far_world=far_world)
+                    v, k, r = classify_owner_scores(
+                        scores, usable, grow=owner['grow'],
+                        seed=owner['seed'], far=far_world)
+                    valid[ids] += v.astype(np.int16)
+                    supported[ids] += k.astype(np.int16)
+                    absent[ids] += r.astype(np.int16)
+                    owner_valid += int(v.sum())
+                    owner_supported += int(k.sum())
+                    owner_absent += int(r.sum())
+                part_stats['owners'].append({
+                    'item_index': owner['item_index'], 'assigned': int(len(all_ids)),
+                    'valid': owner_valid, 'supported': owner_supported,
+                    'absent': owner_absent,
+                    'grow_world': owner['grow'], 'seed_world': owner['seed']})
+                print('[udf direct fused 0100]', part,
+                      'owner=', owner['item_index'], 'assigned=', len(all_ids),
+                      'valid=', owner_valid, 'absent=', owner_absent, flush=True)
+            report_parts[part] = part_stats
+
+        keep, remove, unknown = classify_consistency(assigned, valid, supported, absent)
+        if np.all(remove):
+            raise RuntimeError('0100 refuses to remove the complete fused mesh')
+        out = Path(output_folder) / 'udf_direct_fused_0100'
+        out.mkdir(parents=True, exist_ok=True)
+        for part in requested:
+            belongs = routed == part_names.index(part)
+            report_parts[part].update({
+                'supported_faces': int((keep & belongs).sum()),
+                'removed_faces': int((remove & belongs).sum()),
+                'unknown_faces': int((unknown & belongs).sum()),
+                'missing_valid_evidence': int((belongs & (assigned > 0) & (valid < assigned)).sum()),
+                'unassigned_faces': int((belongs & (assigned == 0)).sum()),
+            })
+            for label, mask in (('removed', remove), ('unknown', unknown)):
+                selected = belongs & mask
+                if selected.any():
+                    mesh_from_mask(mesh, selected).export(out / f'{part}_{label}.ply')
+        mesh_from_mask(mesh, ~remove).export(out / 'fused_direct_kept.ply')
+        if remove.any():
+            mesh_from_mask(mesh, remove).export(out / 'fused_direct_removed.ply')
+        if unknown.any():
+            mesh_from_mask(mesh, unknown).export(out / 'fused_direct_unknown.ply')
+        np.savez_compressed(out / 'consistency.npz',
+                            assigned=assigned, valid=valid, supported=supported,
+                            absent=absent, keep=keep, remove=remove, unknown=unknown,
+                            part_index=routed)
+        report = {
+            'status': 'EXPERIMENTAL_DIRECT_FUSED_UDF_0100',
+            'method': 'new_adapted_learned_UDF_queries_on_fused_SDF_triangles',
+            'source_fused_sdf': str(fused_file),
+            'source_face_count': int(n),
+            'removed_valid_unsupported': int(remove.sum()),
+            'supported': int(keep.sum()), 'unknown_retained': int(unknown.sum()),
+            'no_part_correspondence': int((routed < 0).sum()),
+            'missing_valid_model_evidence': int(((assigned > 0) & (valid < assigned)).sum()),
+            'no_owner': int((assigned == 0).sum()),
+            'parts': report_parts,
+            'limitations': [
+                'Invalid UDF queries are UNKNOWN and retained, not proof of an opening.',
+                'Raw UDF values are not a guaranteed calibrated world-space distance after deformation.',
+                'This experimental result may retain the bottom if localization does not cover it.',
+                'No cross-resolution guidance, old 0081 mask, 0079 component gate or 0092 cut-mask transfer used.',
+                'The kept mesh can be open and is not guaranteed manifold.',
+            ]}
+        (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+        print('[udf direct fused 0100] removed=', int(remove.sum()),
+              'unknown=', int(unknown.sum()), 'out=', out, flush=True)
+        return report
+
     @torch.no_grad()
     def action_part_adapt_udf_cut(self, arg):
         output_folder = arg["output_folder"]
@@ -2575,6 +2776,16 @@ class AgentUDFCut(AgentUDF):
             extraction_config.get("udf_cut_query_batch_size", 32768)
         )
         far_world = float(extraction_config.get("udf_far_value", 0.1))
+
+        direct_fused_0100 = extraction_config.get('udf_direct_fused_0100', {})
+        if isinstance(direct_fused_0100, dict) and direct_fused_0100.get('enabled'):
+            return self._cut_fused_direct_0100(
+                settings=direct_fused_0100, adaptation_items=adaptation_items,
+                extraction_config=extraction_config, root_path=root_path,
+                output_folder=output_folder, target_curves=target_curves,
+                seam_plan=seam_plan, apply_seam_warp=apply_seam_warp,
+                model_batch_size=model_batch_size,
+                query_batch_size=query_batch_size, far_world=far_world)
 
         direct_root_leaves = bool(extraction_config.get('udf_cut_direct_root_leaves', False))
         mc_mesh_spec = extraction_config.get("mc_mesh")
