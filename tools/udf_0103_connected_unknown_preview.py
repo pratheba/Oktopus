@@ -139,48 +139,56 @@ def mesh_mask(mesh, mask):
     return result
 
 
-def keep_largest_edge_component(mesh):
-    """Return (largest_component_mesh, dropped_debris_mesh, stats)."""
-    if len(mesh.faces) == 0:
-        empty = mesh.copy()
-        stats = {
-            'components_before': 0,
-            'largest_faces': 0,
-            'kept_fraction': 0.0,
-            'dropped_faces': 0,
-            'dropped_components': 0,
-        }
-        return empty, empty.copy(), stats
-    comps = mesh.split(only_watertight=False, adjacency=None)
-    if len(comps) <= 1:
-        empty = trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), dtype=np.int64), process=False)
-        stats = {
-            'components_before': int(len(comps)),
-            'largest_faces': int(len(mesh.faces)),
-            'kept_fraction': 1.0,
-            'dropped_faces': 0,
-            'dropped_components': 0,
-        }
-        return mesh.copy(), empty, stats
-    sizes = np.array([len(c.faces) for c in comps], dtype=np.int64)
-    keep_i = int(np.argmax(sizes))
-    kept = comps[keep_i].copy()
-    debris_parts = [c for i, c in enumerate(comps) if i != keep_i and len(c.faces) > 0]
-    if debris_parts:
-        debris = trimesh.util.concatenate(debris_parts)
-        dropped_faces = int(sum(len(c.faces) for c in debris_parts))
-    else:
-        debris = trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), dtype=np.int64), process=False)
-        dropped_faces = 0
-    total = int(sizes.sum())
-    stats = {
-        'components_before': int(len(comps)),
-        'largest_faces': int(sizes[keep_i]),
-        'kept_fraction': float(sizes[keep_i] / total) if total else 0.0,
-        'dropped_faces': dropped_faces,
-        'dropped_components': int(len(comps) - 1),
+def keep_only_largest_face_component(*, face_adjacency, keep, min_main_fraction=0.85):
+    """Clean a face mask via shared mesh edges; never hop by Euclidean distance.
+
+    Reuses the fused mesh's face adjacency, without building temporary meshes or
+    processing/welding vertices. Refuse a cleanup that would discard a large
+    proportion of the retained surface (which could be a real tentacle).
+    """
+    keep = np.asarray(keep, dtype=bool).reshape(-1)
+    n = len(keep)
+    if not 0 < min_main_fraction <= 1:
+        raise ValueError('0103 invalid min_main_fraction')
+    ids = np.flatnonzero(keep)
+    if not ids.size:
+        raise ValueError('0103 no faces left for largest-component cleanup')
+    edges = np.asarray(face_adjacency, dtype=np.int64).reshape(-1, 2)
+    if len(edges) and (edges.min() < 0 or edges.max() >= n):
+        raise ValueError('0103 cleanup adjacency outside face array')
+    local = np.full(n, -1, dtype=np.int32)
+    local[ids] = np.arange(len(ids), dtype=np.int32)
+    pairs = edges[keep[edges[:, 0]] & keep[edges[:, 1]]]
+    uv = local[pairs]
+    graph = coo_matrix(
+        (np.ones(2 * len(uv), dtype=np.uint8),
+         (np.r_[uv[:, 0], uv[:, 1]], np.r_[uv[:, 1], uv[:, 0]])),
+        shape=(len(ids), len(ids)),
+    ).tocsr()
+    num, labels = connected_components(graph, directed=False)
+    counts = np.bincount(labels, minlength=num)
+    winner = int(np.argmax(counts))
+    biggest = int(counts[winner])
+    fraction = float(biggest / len(ids))
+    if fraction < min_main_fraction:
+        raise ValueError(
+            f'0103 cleanup refused: largest component has {biggest}/{len(ids)} '
+            f'faces ({fraction:.1%}); may contain legitimate disconnected parts'
+        )
+    cleaned = np.zeros(n, dtype=bool)
+    cleaned[ids[labels == winner]] = True
+    debris = keep & ~cleaned
+    return cleaned, debris, {
+        'mode': 'largest_edge_connected_component',
+        'components_before': int(num),
+        'largest_faces': biggest,
+        'precleanup_kept_faces': int(len(ids)),
+        'main_fraction': fraction,
+        'detached_faces': int(debris.sum()),
+        'detached_components': int(num - 1),
+        'min_main_fraction': float(min_main_fraction),
+        'boundary_smoothing': False,
     }
-    return kept, debris, stats
 
 
 def run(args):
@@ -245,6 +253,15 @@ def run(args):
         raise RuntimeError('0103 would delete known-supported UDF faces')
     if np.all(removed | candidate):
         raise RuntimeError('0103 would remove the entire fused exterior')
+    # Cleanup is part of this same 0103 run. The PRIMARY preview PLY is cleaned.
+    precleanup_kept = ~(removed | candidate)
+    cleaned_kept, debris, cleanup = keep_only_largest_face_component(
+        face_adjacency=adjacency, keep=precleanup_kept,
+        min_main_fraction=args.min_main_fraction,
+    )
+    print(f'[0103 cleanup] components={cleanup["components_before"]}'
+          f' main_faces={cleanup["largest_faces"]}'
+          f' debris_faces={cleanup["detached_faces"]}', flush=True)
     dest.mkdir(parents=True)
     if candidate.any():
         mesh_mask(mesh, candidate).export(dest / 'fused_newly_selected_unknown.ply')
@@ -252,23 +269,26 @@ def run(args):
             pmask = candidate & (part_index == names.index(part))
             if pmask.any():
                 mesh_mask(mesh, pmask).export(dest / f'{part}_newly_selected_unknown.ply')
-    kept_mesh = mesh_mask(mesh, ~(removed | candidate))
-    kept_mesh.export(dest / 'fused_kept_connected_unknown_preview.ply')
-    largest_mesh, debris_mesh, cleanup = keep_largest_edge_component(kept_mesh)
-    largest_mesh.export(dest / 'fused_kept_connected_unknown_preview_largest_component.ply')
-    if cleanup['dropped_faces'] > 0:
-        debris_mesh.export(dest / 'fused_kept_connected_unknown_preview_debris.ply')
+    if args.save_precleanup_preview:
+        mesh_mask(mesh, precleanup_kept).export(
+            dest / 'fused_kept_connected_unknown_preview_precleanup.ply')
+    mesh_mask(mesh, cleaned_kept).export(dest / 'fused_kept_connected_unknown_preview.ply')
+    if debris.any():
+        mesh_mask(mesh, debris).export(dest / 'fused_cleanup_debris.ply')
     np.savez_compressed(dest / 'selection_0103.npz', confirmed_removed=removed,
                         newly_selected_unknown=candidate,
-                        preview_removed=removed | candidate,
-                        preview_kept=~(removed | candidate))
+                        cleanup_removed_debris=debris,
+                        preview_removed=~cleaned_kept,
+                        preview_kept=cleaned_kept)
     output = {
         'status': 'EXPERIMENTAL_CONNECTED_UNKNOWN_PREVIEW_0103',
         'source_0100': str(source), 'parts': stats,
         'confirmed_removed_0100': int(removed.sum()),
         'additional_unknown_proposed': int(candidate.sum()),
         'total_preview_removed': int((removed | candidate).sum()),
-        'known_supported_faces_deleted': int(np.count_nonzero(supported & (removed | candidate))),
+        'known_supported_faces_deleted': int(np.count_nonzero(supported & ~cleaned_kept)),
+        'known_supported_faces_dropped_by_cleanup': int(np.count_nonzero(supported & debris)),
+        'cleanup_largest_component': cleanup,
         'criteria': {
             'connectivity': 'shared_mesh_edges_within_same_part; no Euclidean hopping',
             'min_area_fraction_of_part': args.min_area_fraction,
@@ -276,7 +296,6 @@ def run(args):
             'min_removed_boundary_fraction': args.min_removed_contact_fraction,
             'min_removed_contact_edges': args.min_removed_contact_edges,
         },
-        'cleanup_largest_component': cleanup,
         'limitations': [
             'Model-invalid is not proof of absent surface; new cuts are unverified proposals.',
             'Direct UDF thresholds for non-body parts are uncalibrated.',
@@ -301,6 +320,10 @@ def main():
     p.add_argument('--min-invalid-fraction', type=float, default=.60)
     p.add_argument('--min-removed-contact-fraction', type=float, default=.80)
     p.add_argument('--min-removed-contact-edges', type=int, default=4)
+    p.add_argument('--min-main-fraction', type=float, default=0.85,
+                   help='Refuse cleanup if largest connected component holds less than this fraction')
+    p.add_argument('--save-precleanup-preview', action='store_true',
+                   help='Also export the uncleaned preview for comparison')
     args = p.parse_args()
     run(args)
 

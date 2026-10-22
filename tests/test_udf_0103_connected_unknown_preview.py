@@ -7,10 +7,7 @@ import numpy as np
 import trimesh
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from udf_0103_connected_unknown_preview import (
-    choose_connected_unknown,
-    keep_largest_edge_component,
-)
+from udf_0103_connected_unknown_preview import choose_connected_unknown, keep_only_largest_face_component
 
 
 def plane(z=0., nx=8, ny=8):
@@ -119,17 +116,50 @@ class Test0103ConnectedUnknown(unittest.TestCase):
                                supported=np.zeros(n, bool), invalid=small)
             self.assertFalse(keep.any())
 
-    def test_keep_largest_edge_component_drops_debris(self):
-        a = plane(nx=4, ny=4)
-        b = plane(z=10.0, nx=3, ny=3)
-        both = trimesh.util.concatenate((a, b))
-        kept, debris, stats = keep_largest_edge_component(both)
-        self.assertEqual(int(stats['components_before']), 2)
-        self.assertEqual(int(stats['largest_faces']), len(a.faces))
-        self.assertEqual(int(stats['dropped_faces']), len(b.faces))
-        self.assertEqual(int(stats['dropped_components']), 1)
-        self.assertEqual(len(kept.faces), len(a.faces))
-        self.assertEqual(len(debris.faces), len(b.faces))
+
+    def test_cleanup_keeps_one_edge_component_and_debris(self):
+        first = plane(nx=5, ny=5)
+        small = plane(z=1e-6, nx=3, ny=3)
+        combined = trimesh.util.concatenate((first, small))
+        mask = np.ones(len(combined.faces), bool)
+        cleaned, debris, report = keep_only_largest_face_component(
+            face_adjacency=combined.face_adjacency, keep=mask,
+            min_main_fraction=0.75,
+        )
+        self.assertEqual(report['components_before'], 2)
+        self.assertEqual(report['largest_faces'], len(first.faces))
+        self.assertEqual(report['detached_faces'], len(small.faces))
+        self.assertTrue(cleaned[:len(first.faces)].all())
+        self.assertFalse(cleaned[len(first.faces):].any())
+        self.assertEqual(int(debris.sum()), len(small.faces))
+        self.assertEqual(int(np.count_nonzero(cleaned & debris)), 0)
+
+    def test_cleanup_no_change_when_one_component(self):
+        mask = np.ones(len(self.m.faces), bool)
+        cleaned, debris, report = keep_only_largest_face_component(
+            face_adjacency=self.m.face_adjacency, keep=mask,
+        )
+        np.testing.assert_array_equal(cleaned, mask)
+        self.assertFalse(debris.any())
+        self.assertEqual(report['components_before'], 1)
+
+    def test_cleanup_refuses_discarding_large_components(self):
+        both = trimesh.util.concatenate((plane(nx=4, ny=4), plane(z=1e-6, nx=4, ny=4)))
+        with self.assertRaisesRegex(ValueError, 'cleanup refused'):
+            keep_only_largest_face_component(
+                face_adjacency=both.face_adjacency,
+                keep=np.ones(len(both.faces), bool),
+                min_main_fraction=0.85,
+            )
+
+    def test_cleanup_does_not_restore_original_removed_faces(self):
+        face_keep = np.ones(len(self.m.faces), bool)
+        face_keep[:4] = False
+        cleaned, debris, _ = keep_only_largest_face_component(
+            face_adjacency=self.m.face_adjacency, keep=face_keep,
+        )
+        self.assertFalse(cleaned[:4].any())
+        self.assertTrue(np.all(~cleaned[debris]))
 
 
 if __name__ == '__main__':
