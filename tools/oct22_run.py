@@ -239,8 +239,12 @@ def udf_parts(args):
             edited['udf_cut_root_leaves_mesh_dir'] = str(parts.relative_to(ROOT))
             runtime.write_text(yaml.safe_dump(edited, sort_keys=False), encoding='utf8')
     print('[oct22 UDF] Input:', parts, flush=True)
-    print('[oct22 UDF] IMPORTANT: 0084 UDF cuts EIGHT PARTS, not the 0087 fused exterior. '
-          'Its boundary stitching is NOT an SDF Boolean.', flush=True)
+    if (data.get('udf_fused_exterior_0092') or {}).get('enabled', False):
+        if not args.dry_run and not (shape_base / 'riggable_fused_sdf_exterior.ply').is_file():
+            raise ValueError('0092 requires the true 0087 fused SDF exterior PLY')
+        print('[oct22 UDF] 0092 enabled: eight-part learned evidence -> cut TRUE fused SDF; no loop stitching.', flush=True)
+    else:
+        print('[oct22 UDF] 0084 legacy: cuts eight parts and attempts boundary stitching; not SDF Boolean.', flush=True)
     cmd = [sys.executable, str(ROOT / 'test_udf_sdf_cut_stitch.py'), '-c', config,
            '-o', args.out, '-s', args.shape, '-y', str(runtime if not args.dry_run else path),
            '-r', str(args.resolution), '-ckpt', args.checkpoint,

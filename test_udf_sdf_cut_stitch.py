@@ -30,6 +30,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from tools.promote_udf_0081_assembly import promote
 from tools.udf_stitch_0084 import PARTS, _load_part, stitch_parts, preflight
+sys.path.insert(0, str(ROOT / 'src' / 'app'))
+from udf_cut_fused_exterior_0092 import generate_fused_cut
 
 
 def _read_yaml(path: str) -> tuple[Path, dict]:
@@ -180,17 +182,32 @@ def execute(args, passthrough: list[str] | None = None) -> dict:
     print('[udf full 0084] 2/3 validate and assemble 8 riggable cut meshes', flush=True)
     promote(sdf_run=sdf, udf_run=udf_stage, out=final,
             tolerance=float(config['udf_full_pipeline_0084'].get('preview_vertex_tolerance', 2e-5)))
-    print('[udf full 0084] 3/3 stitch 7 root/leaf attachments', flush=True)
-    report = _export_stitch(final, stitch_cfg)
+    fused_cfg = config.get('udf_fused_exterior_0092') or {}
+    if not isinstance(fused_cfg, dict):
+        raise ValueError('udf_fused_exterior_0092 must be a mapping')
+    if fused_cfg.get('enabled', False):
+        print('[udf fused 0092] 3/3 cut true SDF Boolean exterior using saved learned-UDF evidence; NO stitching', flush=True)
+        report = generate_fused_cut(
+            sdf_shape=sdf, udf_shape=udf_stage, out=final,
+            distance_edge_factor=float(fused_cfg.get('distance_edge_factor', 1.75)),
+            normal_dot=float(fused_cfg.get('normal_dot', .55)),
+            allow_zero_seed_caps=bool(fused_cfg.get('zero_seed_cap_fallback', True)),
+        )
+    else:
+        print('[udf full 0084] 3/3 stitch 7 root/leaf attachments', flush=True)
+        report = _export_stitch(final, stitch_cfg)
+    is_fused = bool(fused_cfg.get('enabled', False))
     summary = {
-        'status': 'COMPLETE' if report['status'] == 'STITCHED' else 'STITCH_FAILED',
+        'status': report['status'] if is_fused else ('COMPLETE' if report['status'] == 'STITCHED' else 'STITCH_FAILED'),
         'sdf_input': str(sdf), 'udf_inference_stage': str(udf_stage),
         'output': str(final), 'elapsed_s': round(time.monotonic() - start, 3),
         'glb': str(final / 'riggable_after_udf_cut.glb'),
         'riggable_parts': str(final / 'riggable_parts_after_udf_cut'),
         'unstitched_ply': str(final / 'riggable_after_udf_cut_UNSTITCHED_parts.ply'),
-        'stitched_ply': report.get('stitched_ply'),
-        'stitch_report': str(final / 'riggable_after_udf_cut_STITCHED_report.json'),
+        'stitched_ply': None if is_fused else report.get('stitched_ply'),
+        'stitch_report': None if is_fused else str(final / 'riggable_after_udf_cut_STITCHED_report.json'),
+        'fused_sdf_cut_ply': report.get('output_ply') if is_fused else None,
+        'fused_sdf_cut_report': str(final / 'riggable_fused_sdf_exterior_after_udf_cut_report.json') if is_fused else None,
     }
     _json_atomic(final / 'udf_sdf_cut_stitch_0084_report.json', summary)
     print('[udf full 0084] summary:', json.dumps(summary, indent=2), flush=True)
@@ -199,13 +216,19 @@ def execute(args, passthrough: list[str] | None = None) -> dict:
     # stitched mesh is created alongside it.
     assembly_report_path = final / 'riggable_after_udf_cut_report.json'
     assembly_report = json.loads(assembly_report_path.read_text(encoding='utf8'))
-    assembly_report['stitched_combined_ply'] = {
-        'status': report['status'], 'path': report.get('stitched_ply'),
-        'connected': report['status'] == 'STITCHED',
-        'report': str(final / 'riggable_after_udf_cut_STITCHED_report.json'),
-    }
+    if is_fused:
+        assembly_report['fused_sdf_cut_0092'] = {
+            'status': report['status'], 'path': report['output_ply'],
+            'method': report['method'], 'direct_fused_model_inference': False,
+        }
+    else:
+        assembly_report['stitched_combined_ply'] = {
+            'status': report['status'], 'path': report.get('stitched_ply'),
+            'connected': report['status'] == 'STITCHED',
+            'report': str(final / 'riggable_after_udf_cut_STITCHED_report.json'),
+        }
     _json_atomic(assembly_report_path, assembly_report)
-    if report['status'] != 'STITCHED' and stitch_cfg.get('require_success', True):
+    if not is_fused and report['status'] != 'STITCHED' and stitch_cfg.get('require_success', True):
         raise RuntimeError('Real root/leaf stitch failed; see '
                            + str(final / 'riggable_after_udf_cut_STITCHED_report.json'))
     return summary
