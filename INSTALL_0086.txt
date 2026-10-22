@@ -1,0 +1,11 @@
+Oktopus 0086 - 0084 missing module hotfix
+
+From the SAME repository directory in which you run test_udf_sdf_cut_stitch.py:
+
+    unzip -o ~/Downloads/oktopus-0086-module-hotfix.zip -d .
+    python -c "from tools.promote_udf_0081_assembly import promote; from tools.udf_stitch_0084 import stitch_parts; print('0086 imports OK')"
+    python test_udf_sdf_cut_stitch.py --help
+
+This restores the promoter that 0084 imports but did not bundle.
+It also includes the 0084 stitcher and an __init__.py to ensure local imports.
+No SDF, UDF, thresholds, YAML or mesh geometry is modified.
