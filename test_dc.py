@@ -71,6 +71,10 @@ def start_test(opt):
         elif isinstance(_adapt_spec, dict):
             geometry_only = not bool(_adapt_spec.get('combine_adaptations', False))
             _rig = _adapt_spec.get('root_leaves')
+            if _adapt_spec.get('sdf_stream_combined_wrap', False):
+                # 0093 single-part streaming owns its compact crop; no need
+                # for a second full-resolution global accumulator.
+                geometry_only = True
             if (isinstance(_rig, dict)
                     and not bool(_rig.get('export_legacy_combined', False))
                     and not bool(_adapt_spec.get('sdf_fused_exterior_0087', False))):

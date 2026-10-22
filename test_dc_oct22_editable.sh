@@ -29,7 +29,7 @@ case "$CASE" in
     MODEL="config/config_grid_b13d3_oktopus_puffer.yaml"
     SHAPE="oktopus_9_v1" ;;
   cone)
-    YAML="oct22_adapt_oktopus_cone_post_sdf_0091_sdf_optimization.yaml"
+    YAML="oct22_adapt_oktopus_cone_wrap_0093_sdf_optimization.yaml"
     MODEL="config/config_grid_b13d3_oktopus_cone.yaml"
     SHAPE="oktopus_9_v1" ;;
   boots_t7)

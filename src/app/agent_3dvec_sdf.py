@@ -1488,8 +1488,21 @@ class AgentSDF(AgentBase):
             items, raw_config.get('blend_groups', {}))
         query_seams = build_seam_plan(
             items, raw_config.get('blend_groups', {}), self.curve_from_key)
+        stream_plan = build_root_leaf_plan(items, cfg.get('root_leaves'))
         pair = validate_cone_stream(items, cfg, post_seams, query_seams,
-                                    root_leaf_plan=cfg.get('root_leaves'))
+                                    root_leaf_plan=stream_plan)
+        seams = {1: pair} if len(items) == 2 else pair
+        bool_spec = cfg.get('sdf_postblend_avatar_boolean_0093', False)
+        if isinstance(bool_spec, dict):
+            do_postblend_cut = bool(bool_spec.get('enabled', False))
+            clearance = float(bool_spec.get('clearance', 0.0))
+            tolerance = float(bool_spec.get('avatar_overlap_tolerance', 0.005))
+        else:
+            do_postblend_cut = bool(bool_spec)
+            clearance, tolerance = 0.0, 0.005
+        if do_postblend_cut and (not np.isfinite(clearance) or clearance < 0
+                                 or not np.isfinite(tolerance) or tolerance < 0):
+            raise ValueError('Post-blend Boolean clearance/tolerance must be finite and nonnegative')
         if not (hasattr(self, '_dcsdd_band') and hasattr(self, '_crop_cube_bounds')):
             raise ValueError('0046 requires AgentSDFDC for cropped contouring')
         if self._normalize_surface_extraction_method(
@@ -1501,12 +1514,16 @@ class AgentSDF(AgentBase):
         if not scratch or not op.isdir(scratch):
             raise ValueError('0046 needs writable --dcsdd-stream-replay-dir or --sdf-grid-memmap-dir')
         t0 = time()
-        print('[sdf_stream_combined_wrap] enabled=True group=', pair.group,
-              'adaptations=2 sparse_group=True crop_first=True', flush=True)
+        print('[sdf_stream_combined_wrap] enabled=True group=', seams[1].group,
+              'adaptations=', len(items), 'one_part=',
+              None if stream_plan is None else stream_plan.part_names[0],
+              'postblend_avatar_boolean=', do_postblend_cut,
+              'sparse_group=True crop_first=True', flush=True)
         # The stage needs to survive both pieces, until their sparse SDFs have
         # been merged. TemporaryDirectory also cleans up failed runs.
         with tempfile.TemporaryDirectory(prefix='oktopus-wrap-cone-', dir=scratch) as stage:
             pieces = []
+            avatar_pieces = []
             for j, item in enumerate(items):
                 target_key = item['target_key']
                 accessory_key = item['accessory_key']
@@ -1570,6 +1587,10 @@ class AgentSDF(AgentBase):
                     inference=lambda data, key=accessory_key:
                         self._inference_full_vals(data, key),
                     record_avatar_source=True,
+                    avatar_inference=(
+                        (lambda data, key=target_key:
+                            self._inference_full_vals(data, key, batch_size=batch_size)['dist'])
+                        if do_postblend_cut else None),
                 )
                 wrap_arg['_dcsdd_stream_callback'] = piece_stream.push
                 t_piece = time()
@@ -1591,6 +1612,26 @@ class AgentSDF(AgentBase):
                 indices = piece_stream.replay.records['index']
                 sources = piece_stream.source_s
                 pieces.append((indices, values, sources))
+                if do_postblend_cut:
+                    avatar_pieces.append((indices, piece_stream.avatar_sdf))
+                if cfg.get('sdf_stream_export_sections_0093', False):
+                    # Optional per-adaptation diagnostic, extracted from the
+                    # uncarved, globally calibrated individual SDF field.
+                    from app.sdf_puffer_sparse_groups import crop_final_piece
+                    step = float(mc_grid.grid_config['step'])
+                    section_grid, _sec_start, _sec_side = crop_final_piece(
+                        mc_grid, indices, values,
+                        band=self._dcsdd_band(step, cfg),
+                        bounds_fn=self._crop_cube_bounds, batch_size=batch_size)
+                    section_cfg = dict(cfg)
+                    section_cfg['dcsdd_crop_grid'] = False
+                    section_cfg.pop('dcsdd_output_pattern', None)
+                    section_mesh = self.extract_surface_mesh(
+                        section_grid, section_cfg, context=f'wrap_section_{j}')
+                    section_dir = op.join(output_folder, 'individual_adaptations')
+                    os.makedirs(section_dir, exist_ok=True)
+                    section_mesh.export(op.join(section_dir, f'section_{j:02d}.ply'))
+                    del section_grid, section_mesh
                 print('[sdf_stream_piece timing] name=', item.get('name', str(j)),
                       'finish_s=', f'{finalizing_s:.3f}',
                       'compose_s=', f'{composing_s:.3f}',
@@ -1603,12 +1644,30 @@ class AgentSDF(AgentBase):
                       'model_s=', f'{writer.inference_compute_s:.3f}',
                       'piece_s=', f'{time()-t_piece:.3f}', flush=True)
             merge_t0 = time()
-            indices, sdf, seam_samples = combine_two_sparse_parts(
-                pieces[0][0], pieces[0][1], pieces[1][0], pieces[1][1],
-                pieces[1][2], pair)
-            print('[sdf_stream_combined_wrap] seam_blend=', pair.group,
-                  'overlap_samples=', seam_samples, 'evaluated_union=', len(indices),
+            indices = pieces[0][0]
+            sdf = pieces[0][1]
+            seam_samples = 0
+            for j in range(1, len(pieces)):
+                indices, sdf, overlap = combine_two_sparse_parts(
+                    indices, sdf, pieces[j][0], pieces[j][1],
+                    pieces[j][2], seams[j])
+                seam_samples += overlap
+            print('[sdf_stream_combined_wrap] seam_blend=', seams[1].group,
+                  'sections=', len(items), 'overlap_samples=', seam_samples,
+                  'evaluated_union=', len(indices),
                   'merge_s=', f'{time()-merge_t0:.3f}', flush=True)
+            if do_postblend_cut:
+                from app.sdf_stream_combined_wrap import (
+                    merge_sparse_avatar_field, apply_postblend_avatar_boolean)
+                avatar_indices, avatar_sdf = avatar_pieces[0]
+                for j in range(1, len(avatar_pieces)):
+                    avatar_indices, avatar_sdf = merge_sparse_avatar_field(
+                        avatar_indices, avatar_sdf,
+                        avatar_pieces[j][0], avatar_pieces[j][1], tolerance=tolerance)
+                sdf = apply_postblend_avatar_boolean(
+                    indices, sdf, avatar_indices, avatar_sdf, clearance=clearance)
+                print('[sdf stream 0093] POSTBLEND_AVATAR_BOOLEAN applied'
+                      ' clearance=', clearance, 'voxels=', len(indices), flush=True)
             # Match legacy final min-union semantics for a SINGLE completed
             # group: every valid group sample becomes a final valid sample.
             crop_t0 = time()
@@ -1642,6 +1701,30 @@ class AgentSDF(AgentBase):
                 mesh_cfg['dcsdd_output_pattern'] = f'combined_{{method}}_{out_name}.ply'
             extract_t0 = time()
             mesh = self.extract_surface_mesh(crop_grid, mesh_cfg, context='combined')
+            if stream_plan is not None:
+                # One Boolean-composed part, not an unstitched multi-part GLB.
+                export_root_leaf_scene(
+                    {stream_plan.part_names[0]: mesh}, output_folder,
+                    out_name, stream_plan)
+            if cfg.get('sdf_fused_exterior_0087', False):
+                from pathlib import Path
+                from app.sdf_fused_report_0087 import fused_surface_report
+                target = Path(output_folder) / 'riggable_fused_sdf_exterior.ply'
+                if len(mesh.faces) == 0:
+                    raise RuntimeError('Empty streamed fused exterior mesh')
+                mesh.export(target)
+                report = fused_surface_report(mesh)
+                report.update({
+                    'mode': 'single_part_post_sdf_seam_and_optional_boolean',
+                    'source_parts': ([stream_plan.part_names[0]]
+                                     if stream_plan else [seams[1].group]),
+                    'postblend_avatar_boolean': do_postblend_cut,
+                    'udf_applied': False,
+                    'fused_file': str(target),
+                })
+                (Path(output_folder) / 'riggable_fused_sdf_exterior_report.json').write_text(
+                    json.dumps(report, indent=2), encoding='utf8')
+                print('[sdf fused 0087] saved', target, flush=True)
             if 'dcsdd_output_pattern' not in mesh_cfg:
                 outfile = op.join(output_folder, out_name + '.ply')
                 mesh.export(outfile)
@@ -1706,6 +1789,9 @@ class AgentSDF(AgentBase):
                         'dcsdd_stream_one_pass',
                         'sdf_localize_after_gate',
                         'sdf_optimize_zero_angular_wrap',
+                        'sdf_wrap_auto_safe_0093',
+                        'sdf_postblend_avatar_boolean_0093',
+                        'sdf_stream_export_sections_0093',
                         'sdf_stream_combined_wrap',
                         'sdf_stream_unified',
                         'sdf_puffer_sparse_groups',
@@ -1761,6 +1847,19 @@ class AgentSDF(AgentBase):
                 f"{type(raw_config).__name__}."
             )
 
+        if extraction_config.get('sdf_wrap_auto_safe_0093', True):
+            # Eligibility remains per-adaptation (including rigid/wrap mixes),
+            # never selected by garment or avatar identity. Each adaptation
+            # can explicitly opt out by setting its own flag to false.
+            extraction_config.setdefault('sdf_optimize_zero_angular_wrap', True)
+        _postblend_spec = extraction_config.get('sdf_postblend_avatar_boolean_0093', False)
+        _postblend_enabled = (_postblend_spec.get('enabled', False)
+                              if isinstance(_postblend_spec, dict) else bool(_postblend_spec))
+        if (_postblend_enabled
+                and not extraction_config.get('sdf_stream_combined_wrap', False)):
+            raise ValueError('0093 post-blend avatar Boolean currently requires '
+                             'sdf_stream_combined_wrap: true on one safe wrap group; '
+                             'mixed rigid/wrap groups retain legacy per-item cutting')
         if (extraction_config.get('dcsdd_stream_crop_first', False)
                 and not extraction_config.get('dcsdd_stream_inference', False)):
             raise ValueError('--dcsdd-stream-crop-first requires --dcsdd-stream-inference')
@@ -1895,7 +1994,7 @@ class AgentSDF(AgentBase):
         # filters, mapping, model inference, avatar cut and seam rules intact.
         puffer_sparse = bool(extraction_config.get('sdf_puffer_sparse_groups', False))
         fused_exterior_0087 = bool(extraction_config.get('sdf_fused_exterior_0087', False))
-        if fused_exterior_0087:
+        if fused_exterior_0087 and not extraction_config.get('sdf_stream_combined_wrap', False):
             if not combine_adaptations:
                 raise ValueError('0087 fused exterior requires combine_adaptations: true')
             if requested_extractor != 'ours':

@@ -29,10 +29,10 @@ class CurveFixture(_LocalizeMixin):
     def update_frame(self):
         pass
 
-    def curve_projection_interval(self, samples, s0, s1, *, outside=False):
+    def curve_projection_interval(self, samples, s0, s1, *, outside=False, **_projection_flags):
         return np.asarray(samples)[:, 0] + .5
 
-    def curve_projection(self, samples, *, outside=False):
+    def curve_projection(self, samples, *, outside=False, **_projection_flags):
         return np.asarray(samples)[:, 0] + .5
 
     def calc_x_radius(self, ts):

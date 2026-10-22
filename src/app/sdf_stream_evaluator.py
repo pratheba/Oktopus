@@ -25,12 +25,17 @@ class SDFStreamPiece:
     """
 
     def __init__(self, *, batch_size, outdir, inference,
-                 record_avatar_source=False):
+                 record_avatar_source=False, avatar_inference=None):
         self.outdir = Path(outdir)
         self.writer = OnePassBootStreamWriter(
             batch_size=batch_size, outdir=outdir, inference=inference)
         self.replay = self.writer.replay
         self.record_avatar_source = bool(record_avatar_source)
+        self.avatar_inference = avatar_inference
+        self._avatar_path = self.outdir / 'avatar_sdf.bin'
+        self._avatar_file = (self._avatar_path.open('wb', buffering=1024 * 1024)
+                             if avatar_inference is not None else None)
+        self._avatar_values = None
         self._source_path = self.outdir / 'avatar_source_s.bin'
         self._source_file = (self._source_path.open('wb', buffering=1024 * 1024)
                              if self.record_avatar_source else None)
@@ -53,6 +58,14 @@ class SDFStreamPiece:
             raise ValueError('Finish the SDF stream before reading source coordinates')
         return self._source_values
 
+    @property
+    def avatar_sdf(self):
+        if self.avatar_inference is None:
+            return None
+        if self.profiles is None:
+            raise ValueError('Finish the SDF stream before reading avatar predictions')
+        return self._avatar_values
+
     def push(self, accessory_data, indices, avatar_data=None):
         """Append one accepted batch; preserve original global voxel order."""
         if self.profiles is not None:
@@ -69,10 +82,21 @@ class SDFStreamPiece:
                 raise ValueError('Avatar seam coordinate/replay index mismatch')
         else:
             source_s = None
+        if self.avatar_inference is not None:
+            if avatar_data is None:
+                raise ValueError('Post-blend avatar cut requires avatar localized data')
+            distances = np.asarray(self.avatar_inference(avatar_data), dtype=np.float64).reshape(-1)
+            if len(distances) != len(indices) or not np.all(np.isfinite(distances)):
+                raise ValueError('Avatar SDF batch length/nonfinite mismatch')
+            # Write only after all validations and model inference succeed.
+        else:
+            distances = None
         # Writer validates inference columns and append order before accepting.
         self.writer.push(accessory_data, indices)
         if len(indices):
             self._last_index = int(indices[-1])
+        if distances is not None:
+            self._avatar_file.write(np.ascontiguousarray(distances).tobytes())
         if source_s is not None:
             t0 = perf_counter()
             self._source_file.write(np.ascontiguousarray(source_s).tobytes())
@@ -89,6 +113,13 @@ class SDFStreamPiece:
             self._source_file = None
             if self._source_path.stat().st_size != self.accepted * np.dtype('float64').itemsize:
                 raise RuntimeError('SDF stream avatar seam records are incomplete')
+        if self._avatar_file is not None:
+            self._avatar_file.close()
+            self._avatar_file = None
+            if self._avatar_path.stat().st_size != self.accepted * np.dtype('float64').itemsize:
+                raise RuntimeError('Post-blend avatar SDF records are incomplete')
+            self._avatar_values = np.memmap(
+                self._avatar_path, dtype=np.float64, mode='r', shape=(self.accepted,))
         t0 = perf_counter()
         profiles = self.writer.finish(fallback=fallback)
         self.prediction_finalize_s = perf_counter() - t0
