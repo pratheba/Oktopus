@@ -91,3 +91,36 @@ class SparseSDFGroup:
             self.values = np.concatenate((old_val, novel_val))[order]
         self.pieces += 1
         return {'overlap': n_overlap, 'total': len(self.indices)}
+
+
+def merge_sparse_field_min(global_grid, indices, values, *, batch_size=262144):
+    """Boolean-union sparse *corrected SDF values*, not extracted triangles.
+
+    The per-part support has already been computed by the standard SDF path.
+    Merge into the global accumulator in bounded chunks so the 0067 crop-first
+    adaptation path retains its memory behavior apart from the optional final
+    (preferably disk-backed) global output grid. Unknown voxels stay unknown.
+    """
+    indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+    values = np.asarray(values).reshape(-1)
+    if len(indices) != len(values):
+        raise ValueError('Sparse union indices and values must have the same length')
+    if batch_size <= 0:
+        raise ValueError('Sparse union batch size must be positive')
+    if len(indices) and (np.any(indices < 0) or
+                         np.any(indices >= global_grid.val_grid.size)):
+        raise IndexError('Sparse union index outside global SDF grid')
+    if len(indices) and np.any(indices[1:] <= indices[:-1]):
+        raise ValueError('Sparse union indices must be strictly increasing')
+    if not np.all(np.isfinite(values)):
+        raise ValueError('Sparse union contains nonfinite corrected SDF values')
+    marks = global_grid.empty_marks
+    field = global_grid.val_grid
+    for start in range(0, len(indices), batch_size):
+        sl = indices[start:start+batch_size]
+        candidate = values[start:start+batch_size]
+        vacant = marks[sl]
+        old = field[sl]
+        field[sl] = np.where(vacant, candidate, np.minimum(old, candidate))
+        marks[sl] = False
+    return int(len(indices))

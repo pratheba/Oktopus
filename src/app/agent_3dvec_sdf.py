@@ -1,4 +1,4 @@
-import os, pickle
+import os, pickle, json
 import os.path as op
 import numpy as np
 import trimesh
@@ -1893,6 +1893,21 @@ class AgentSDF(AgentBase):
         # 0049: only replace dense grid staging; keep existing per-adaptation
         # filters, mapping, model inference, avatar cut and seam rules intact.
         puffer_sparse = bool(extraction_config.get('sdf_puffer_sparse_groups', False))
+        fused_exterior_0087 = bool(extraction_config.get('sdf_fused_exterior_0087', False))
+        if fused_exterior_0087:
+            if root_leaf_plan is None or not combine_adaptations:
+                raise ValueError('0087 fused exterior requires combined root_leaves SDF')
+            if requested_extractor != 'ours':
+                raise ValueError('0087 fused exterior requires DCSDD surface_extraction=ours')
+            if root_leaf_plan.export_legacy_combined:
+                raise ValueError('Use either 0087 fused exterior or export_legacy_combined, not both')
+            from app.sdf_puffer_sparse_groups import merge_sparse_field_min
+            if getattr(mc_grid, 'geometry_only', False):
+                raise RuntimeError('0087 needs an allocated SDF accumulator; use patched test_dc.py')
+            if not getattr(mc_grid, 'memmap_dir', None):
+                raise ValueError('0087 requires --sdf-grid-memmap-dir to bound RAM use')
+            print('[sdf fused 0087] enabled: scalar min-union of finished parts; '
+                  'extra global disk-backed grid is required', flush=True)
         # 0052: explicitly partial benchmark mode: return immediately after
         # a requested number of COMPLETED adaptations. No root/leaf assembly
         # is exported, preventing a partial mesh being mistaken for final.
@@ -1996,6 +2011,7 @@ class AgentSDF(AgentBase):
         # the user also explicitly requests the old fused mesh.
         needs_global_union = (
             root_leaf_plan is None or root_leaf_plan.export_legacy_combined
+            or fused_exterior_0087
         ) if combine_adaptations else False
         if needs_global_union and getattr(mc_grid, 'geometry_only', False):
             raise RuntimeError('Combined legacy SDF needs a non-geometry-only MCGrid')
@@ -3029,6 +3045,13 @@ class AgentSDF(AgentBase):
                                   'part=', part_name, 'crop=', side,
                                   'start=', starts.tolist(),
                                   'faces=', len(part_mesh.faces), flush=True)
+                            if fused_exterior_0087:
+                                merged = merge_sparse_field_min(
+                                    mc_grid, group.indices, group.values,
+                                    batch_size=batch_size,
+                                )
+                                print('[sdf fused 0087] part=', part_name,
+                                      'merged_samples=', merged, flush=True)
                             del group, part_grid, blend_groups[blend_group]
                             print('[part_adapt group release] group=', blend_group,
                                   'merged_into_final= False', flush=True)
@@ -3158,7 +3181,13 @@ class AgentSDF(AgentBase):
                         del new_local, overlap_local, group_empty_local
                         del group_vals, group_empty, group
                     else:
-                        if root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
+                        if puffer_sparse and fused_exterior_0087:
+                            merged = merge_sparse_field_min(
+                                mc_grid, kidx, vals_final, batch_size=batch_size)
+                            print('[sdf fused 0087] single=',
+                                  root_leaf_plan.item_to_part[item_index],
+                                  'merged_samples=', merged, flush=True)
+                        elif root_leaf_plan is None or root_leaf_plan.export_legacy_combined:
                             current = mc_grid.val_grid[kidx]
                             mc_grid.val_grid[kidx] = np.minimum(
                                 current, np.asarray(vals_final)
@@ -3230,7 +3259,7 @@ class AgentSDF(AgentBase):
             export_root_leaf_scene(
                 rig_part_meshes, output_folder, out_name, root_leaf_plan
             )
-            if not root_leaf_plan.export_legacy_combined:
+            if not root_leaf_plan.export_legacy_combined and not fused_exterior_0087:
                 print('[part_adapt] riggable root-leaves exported; '
                       'global Boolean union deliberately skipped')
                 return
@@ -3260,6 +3289,28 @@ class AgentSDF(AgentBase):
                 f"combined_extract_s={time() - final_extract_t0:.3f}",
                 f"total_s={time() - part_adapt_t0:.3f}",
             )
+        if fused_exterior_0087:
+            from pathlib import Path
+            fused_path = Path(output_folder) / 'riggable_fused_sdf_exterior.ply'
+            if len(mesh.faces) == 0:
+                raise RuntimeError('0087 fused SDF extraction returned an empty mesh')
+            mesh.export(fused_path)
+            # Face-sharing topology measures remain diagnostic; a scalar union
+            # does not itself guarantee watertight extraction at partial grid
+            # support limits or that physically disjoint objects touch.
+            # Keep full geometry; do not silently discard disconnected pieces.
+            from app.sdf_fused_report_0087 import fused_surface_report
+            report = fused_surface_report(mesh)
+            report.update({'mode': 'scalar_sdf_min_union',
+                           'source_parts': list(root_leaf_plan.part_names),
+                           'udf_applied': False,
+                           'fused_file': str(fused_path)})
+            report_path = Path(output_folder) / 'riggable_fused_sdf_exterior_report.json'
+            report_path.write_text(json.dumps(report, indent=2), encoding='utf8')
+            print('[sdf fused 0087] saved', fused_path,
+                  'faces=', len(mesh.faces),
+                  'components=', report['face_components'],
+                  'boundary_edges=', report['boundary_edges'], flush=True)
         if "dcsdd_output_pattern" not in combined_extraction_config:
             mesh_file = op.join(output_folder, f'{out_name}.ply')
             os.makedirs(op.dirname(mesh_file), exist_ok=True)
