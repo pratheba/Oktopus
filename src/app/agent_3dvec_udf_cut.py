@@ -44,6 +44,7 @@ from udf_cut_cap_guard_0071 import (
     calibrate_p95_from_final_faces, endcap_face_evidence, filter_cap_components,
 )
 from udf_cut_evidence_0074 import export_evidence
+from udf_cut_reconcile_0079 import vote_agreement, keep_largest_edge_component
 from udf_cut_final_root_leaves import (
     load_final_root_leaf_meshes, export_direct_root_leaf_results,
     curve_interval_owner_masks,
@@ -1406,6 +1407,7 @@ class AgentUDFCut(AgentUDF):
                 combined_mesh, owners,
                 pad=float(config.get('udf_cut_direct_interval_pad_0069', 0.035)),
                 samples=int(config.get('udf_cut_direct_curve_samples_0069', 1025)),
+                preserve_overlaps=bool(config.get('udf_cut_reconcile_0079', False)),
             )
             owner_count = np.zeros(n_faces, dtype=np.int16)
             print('[udf cut owner intervals 0069]',
@@ -1451,6 +1453,21 @@ class AgentUDFCut(AgentUDF):
         # 0074 does not query the model a second time or change any cut
         # decisions. Capture per-owner face evidence before and after metric
         # calibration, so missing ownership != missing UDF support.
+        reconcile_0079 = bool(config.get('udf_cut_reconcile_0079', False))
+        # Owner intervals may overlap. Every relevant owner must be evaluated,
+        # not just a single winner of the projection-priority ranking.
+        vote_assigned_0079 = np.zeros(n_faces, dtype=np.int16) if reconcile_0079 else None
+        vote_valid_0079 = np.zeros(n_faces, dtype=np.int16) if reconcile_0079 else None
+        vote_remove_0079 = np.zeros(n_faces, dtype=np.int16) if reconcile_0079 else None
+        vote_keep_0079 = np.zeros(n_faces, dtype=np.int16) if reconcile_0079 else None
+        vote_seed_0079 = np.zeros(n_faces, dtype=bool) if reconcile_0079 else None
+        vote_grow_0079 = np.zeros(n_faces, dtype=bool) if reconcile_0079 else None
+        owner_vote_reports_0079 = []
+        if reconcile_0079:
+            adjacency_0079 = np.asarray(combined_mesh.face_adjacency, dtype=np.int64)
+            areas_0079 = np.asarray(combined_mesh.area_faces, dtype=np.float64)
+            boundary_0079 = self._existing_boundary_faces(combined_mesh)
+            topology_0079 = self._prepare_search_topology(combined_mesh)
         diagnostic_0074 = bool(config.get('udf_cut_evidence_0074', False))
         assignment_count_0074 = np.zeros(n_faces, dtype=np.int16) if diagnostic_0074 else None
         raw_valid_count_0074 = np.zeros(n_faces, dtype=np.int16) if diagnostic_0074 else None
@@ -1459,6 +1476,8 @@ class AgentUDFCut(AgentUDF):
 
         for owner_index, (owner, owner_mask) in enumerate(zip(owners, owner_masks)):
             face_ids = np.flatnonzero(owner_mask)
+            if reconcile_0079:
+                vote_assigned_0079[face_ids] += 1
             if diagnostic_0074:
                 assignment_count_0074[face_ids] += 1
             if face_ids.size == 0:
@@ -1579,6 +1598,48 @@ class AgentUDFCut(AgentUDF):
                       f"{metric_report.get('sample_count', 0)}",
                       f'seed={seed_world:.8g}', f'grow={grow_world:.8g}',
                       flush=True)
+            if reconcile_0079:
+                # Apply original seed/grow connected-component selection to
+                # EACH adapted UDF independently. Keep evidence is a veto in
+                # overlap regions, while unknown never becomes a cut vote.
+                owner_scores = np.full(n_faces, np.nan, dtype=np.float64)
+                owner_usable = np.zeros(n_faces, dtype=bool)
+                owner_scores[face_ids] = scores
+                owner_usable[face_ids] = usable
+                if not np.isfinite(seed_world) or not np.isfinite(grow_world):
+                    raise ValueError(f'Non-finite UDF threshold for {owner["item_index"]}')
+                (
+                    owner_seed, owner_grow, owner_decisions, owner_proposed,
+                    _owner_kept_stats, _owner_removed_stats,
+                ) = self._evaluate_cut_candidate_fast(
+                    combined_mesh, face_scores=owner_scores, usable_faces=owner_usable,
+                    seed_world=float(seed_world), grow_world=float(grow_world),
+                    min_faces=int(config.get('udf_cut_combined_direct_min_faces', 8)),
+                    min_seed_faces=int(config.get('udf_cut_combined_direct_min_seed_faces', 2)),
+                    min_seed_fraction=float(config.get('udf_cut_combined_direct_min_seed_fraction', .10)),
+                    min_area_world2=float(config.get('udf_cut_combined_direct_min_area_world2', 0.0)),
+                    preserve_existing_boundaries=bool(config.get('udf_cut_combined_direct_preserve_existing_boundaries', True)),
+                    reference_tree=None, reference_max_distance_world=None,
+                    adjacency=adjacency_0079, face_areas=areas_0079,
+                    existing_boundary_faces=boundary_0079, centroids=centroids,
+                    topology=topology_0079,
+                )
+                vote_valid_0079[owner_usable] += 1
+                vote_remove_0079[owner_proposed] += 1
+                vote_keep_0079[owner_usable & ~owner_proposed] += 1
+                vote_seed_0079 |= owner_seed
+                vote_grow_0079 |= owner_grow
+                owner_vote_reports_0079.append({
+                    'item_index': int(owner['item_index']),
+                    'assigned': int(face_ids.size),
+                    'valid': int(np.sum(owner_usable)),
+                    'proposed_removed': int(np.sum(owner_proposed)),
+                    'seed': int(np.sum(owner_seed)),
+                    'grow': int(np.sum(owner_grow)),
+                    'components_accepted': int(sum(x.accepted for x in owner_decisions)),
+                    'components_rejected': int(sum(not x.accepted for x in owner_decisions)),
+                    'seed_world': float(seed_world), 'grow_world': float(grow_world),
+                })
             if diagnostic_0074:
                 effective_valid_count_0074[face_ids[usable]] += 1
                 owner_evidence_0074.append({
@@ -1669,6 +1730,32 @@ class AgentUDFCut(AgentUDF):
             topology=topology,
         )
 
+        reconcile_report_0079 = None
+        if reconcile_0079:
+            # The historical normalized-minimum-score fused component mask is
+            # diagnostic only in this mode. It is replaced by per-owner
+            # connected-component proposals and explicit keep/unknown vetoes.
+            remove_mask, vote_classes = vote_agreement(
+                vote_assigned_0079, vote_valid_0079,
+                vote_remove_0079, vote_keep_0079,
+            )
+            seed_mask = vote_seed_0079
+            grow_mask = vote_grow_0079
+            kept_stats, removed_stats = self._topology_stats_from_remove_mask(
+                topology, remove_mask)
+            reconcile_report_0079 = {
+                'mode': 'per_owner_component_agreement',
+                'classes': {name: int(np.count_nonzero(mask))
+                            for name, mask in vote_classes.items()},
+                'owners': owner_vote_reports_0079,
+                'proposed_faces': int(remove_mask.sum()),
+                'unknown_policy': 'preserve',
+            }
+            print('[udf cut reconcile 0079]',
+                  f"agreed={reconcile_report_0079['proposed_faces']}",
+                  'keep_conflict=', reconcile_report_0079['classes']['keep_conflict'],
+                  'missing_evidence=', reconcile_report_0079['classes']['missing_evidence'],
+                  'unassigned=', reconcile_report_0079['classes']['unassigned'], flush=True)
         cap_guard_report = None
         cap_preselection = remove_mask.copy()
         if bool(config.get('_udf_cut_cap_guard_active_0071', False)):
@@ -1711,31 +1798,40 @@ class AgentUDFCut(AgentUDF):
                 int(kept_stats["components"]) > max_components
                 or int(kept_stats["nonmanifold_edges"]) > max_nonmanifold
             ):
-                components, _labels = self._face_components_fast(grow_mask, adjacency)
-                accepted_ids = [
-                    i for i, decision in enumerate(decisions) if decision.accepted
-                ]
-                accepted_ids.sort(
-                    key=lambda i: decisions[i].score_median, reverse=True
-                )
-                safe_remove = np.zeros(n_faces, dtype=bool)
-                for component_id in accepted_ids:
-                    trial = safe_remove.copy()
-                    trial[components[component_id]] = True
-                    trial_kept, _trial_removed = self._topology_stats_from_remove_mask(
-                        topology, trial
+                if reconcile_0079:
+                    # In reconciled mode, accepted components belong to
+                    # different owners and cannot be indexed via legacy
+                    # fused-score component decisions. Keep no cut rather
+                    # than accidentally index the wrong component.
+                    topology_pruned = int(np.count_nonzero(remove_mask))
+                    remove_mask[:] = False
+                    kept_stats, removed_stats = self._topology_stats_from_remove_mask(topology, remove_mask)
+                else:
+                    components, _labels = self._face_components_fast(grow_mask, adjacency)
+                    accepted_ids = [
+                        i for i, decision in enumerate(decisions) if decision.accepted
+                    ]
+                    accepted_ids.sort(
+                        key=lambda i: decisions[i].score_median, reverse=True
                     )
-                    if (
-                        int(trial_kept["components"]) <= max_components
-                        and int(trial_kept["nonmanifold_edges"]) <= max_nonmanifold
-                    ):
-                        safe_remove = trial
-                    else:
-                        topology_pruned += 1
-                remove_mask = safe_remove
-                kept_stats, removed_stats = self._topology_stats_from_remove_mask(
-                    topology, remove_mask
-                )
+                    safe_remove = np.zeros(n_faces, dtype=bool)
+                    for component_id in accepted_ids:
+                        trial = safe_remove.copy()
+                        trial[components[component_id]] = True
+                        trial_kept, _trial_removed = self._topology_stats_from_remove_mask(
+                            topology, trial
+                        )
+                        if (
+                            int(trial_kept["components"]) <= max_components
+                            and int(trial_kept["nonmanifold_edges"]) <= max_nonmanifold
+                        ):
+                            safe_remove = trial
+                        else:
+                            topology_pruned += 1
+                    remove_mask = safe_remove
+                    kept_stats, removed_stats = self._topology_stats_from_remove_mask(
+                        topology, remove_mask
+                    )
 
         kept = self._mesh_from_face_mask(combined_mesh, ~remove_mask)
         removed = self._mesh_from_face_mask(combined_mesh, remove_mask)
@@ -1745,6 +1841,7 @@ class AgentUDFCut(AgentUDF):
             "ownership_mode": ownership_mode,
             "curve_interval_0069": interval_summary,
             "cap_guard_0071": cap_guard_report,
+            "reconcile_0079": reconcile_report_0079,
             "median_edge_length": edge_scale,
             "owner_radius_edges": radius_edges,
             "owner_radius_world": radius_world,
@@ -1768,6 +1865,14 @@ class AgentUDFCut(AgentUDF):
             "owners": owner_reports,
             "components": [decision.as_dict() for decision in decisions],
         }
+        if reconcile_0079:
+            report['_votes_payload_0079'] = {
+                'assigned': vote_assigned_0079, 'valid': vote_valid_0079,
+                'remove_votes': vote_remove_0079, 'keep_votes': vote_keep_0079,
+                'pre_topology': cap_preselection,
+                'final_removed': remove_mask,
+                'classes': vote_classes,
+            }
         if diagnostic_0074:
             # Private arrays are popped and serialized by the caller; never
             # include NumPy arrays in JSON part reports.
@@ -2135,6 +2240,12 @@ class AgentUDFCut(AgentUDF):
             unknown = selected - set(rig_parts_plan.part_names)
             if unknown:
                 raise ValueError(f'0073 {label} unknown part(s): {sorted(unknown)}')
+        if bool(extraction_config.get('udf_cut_reconcile_0079', False)):
+            not_dry = set(rig_parts_plan.part_names) - dry_parts
+            if not_dry and not bool(extraction_config.get('udf_cut_reconcile_allow_apply_0079', False)):
+                raise ValueError('0079 trial requires dry-run for every part; '
+                                 'explicitly enable udf_cut_reconcile_allow_apply_0079 '
+                                 'only after reviewing the eight preview meshes')
         if metric_parts & calibrate_parts:
             raise ValueError('0073 gradient metric and 0071 P95 overlap')
         if metric_parts & guard_parts:
@@ -2173,6 +2284,11 @@ class AgentUDFCut(AgentUDF):
                 owner['metric_0073'] = part in metric_parts
             part_config = dict(extraction_config)
             part_config['_udf_cut_cap_guard_active_0071'] = part in guard_parts
+            if bool(extraction_config.get('udf_cut_reconcile_0079', False)):
+                if part in guard_parts:
+                    raise ValueError('0079 cannot combine with 0071 cap guard')
+                part_config['udf_cut_final_owner_mode_0069'] = 'curve_interval'
+
             kept, removed, scoring, _evidence = self._direct_udf_cut_combined_mesh(
                 mesh, owners=owners, config=part_config,
                 model_batch_size=model_batch_size,
@@ -2184,6 +2300,20 @@ class AgentUDFCut(AgentUDF):
                     else 'udf_support'
                 ),
             )
+            votes_payload_0079 = scoring.pop('_votes_payload_0079', None)
+            if votes_payload_0079 is not None:
+                vote_dir = Path(output_folder) / 'udf_cut_reconcile_0079' / part
+                vote_dir.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(
+                    vote_dir / 'votes.npz',
+                    **{k: v for k, v in votes_payload_0079.items() if k != 'classes'},
+                    **{'class_' + k: v for k, v in votes_payload_0079['classes'].items()},
+                )
+                for label in ('pre_topology', 'final_removed'):
+                    selected = votes_payload_0079[label]
+                    if np.any(selected):
+                        self._mesh_from_face_mask(mesh, selected).export(vote_dir / f'{label}.ply')
+                scoring['reconcile_0079']['evidence_dir'] = str(vote_dir)
             evidence_payload_0074 = scoring.pop('_evidence_payload_0074', None)
             if evidence_payload_0074 is not None:
                 summary_0074 = export_evidence(
@@ -2223,6 +2353,28 @@ class AgentUDFCut(AgentUDF):
                 removed.export(removed_dir / f'{part}_removed.ply')
                 print('[udf cut safety 0070]', 'part=', part,
                       'diagnostic_removed_faces=', len(removed.faces), flush=True)
+            if bool(extraction_config.get('udf_cut_reconcile_0079', False)):
+                # Non-destructive predicted mesh, including optional detached
+                # cleanup. Do NOT alter final output while validity is unproven.
+                try:
+                    preview, detached, detach_report = keep_largest_edge_component(kept)
+                except ValueError as exc:
+                    # The cut could split the part into large pieces. Reject
+                    # automatic cleanup, but preserve the evidence for review.
+                    preview, detached = kept, self._mesh_from_face_mask(mesh, np.zeros(len(mesh.faces), dtype=bool))
+                    detach_report = {'skipped': True, 'reason': str(exc),
+                                     'detached_faces': 0, 'components_before': None}
+                preview_dir = Path(output_folder) / 'udf_cut_reconcile_0079' / part
+                preview_dir.mkdir(parents=True, exist_ok=True)
+                preview.export(preview_dir / 'proposed_kept_cleaned.ply')
+                if len(detached.faces):
+                    detached.export(preview_dir / 'detached_removed.ply')
+                scoring['reconcile_0079']['cleanup_preview'] = detach_report
+                print('[udf cut cleanup 0079]', f'part={part}',
+                      f'detached={detach_report["detached_faces"]}',
+                      f'components_before={detach_report["components_before"]}', flush=True)
+                if part not in dry_parts and bool(extraction_config.get('udf_cut_largest_component_0079', False)):
+                    kept = preview
             if part in dry_parts:
                 print('[udf cut dry run 0073]', f'part={part}',
                       f'candidate_removed={len(removed.faces)}',

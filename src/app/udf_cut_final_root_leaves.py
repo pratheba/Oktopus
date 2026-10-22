@@ -86,7 +86,8 @@ def export_direct_root_leaf_results(*, plan, source_dir, meshes, per_part_report
     return report
 
 
-def curve_interval_owner_masks(mesh, owners, *, pad=0.035, samples=1025):
+def curve_interval_owner_masks(mesh, owners, *, pad=0.035, samples=1025,
+                               preserve_overlaps=False):
     """Assign each final face to one adaptation along its target curve.
 
     No source/intermediate mesh is needed.  A face is owned by the adaptation
@@ -164,9 +165,12 @@ def curve_interval_owner_masks(mesh, owners, *, pad=0.035, samples=1025):
 
     eligible_count = np.sum(np.isfinite(priority), axis=0)
     preferred = np.argmin(priority, axis=0)
-    masks = [(preferred == i) & (eligible_count > 0) for i in range(len(owners))]
+    masks = ([np.isfinite(priority[i]) for i in range(len(owners))]
+             if preserve_overlaps else
+             [(preferred == i) & (eligible_count > 0) for i in range(len(owners))])
     summary = {
         'mode': 'curve_interval',
+        'overlap_evaluations': bool(preserve_overlaps),
         'assigned_faces': int(np.count_nonzero(eligible_count)),
         'unassigned_faces': int(np.count_nonzero(eligible_count == 0)),
         'overlap_faces': int(np.count_nonzero(eligible_count > 1)),
