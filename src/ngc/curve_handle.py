@@ -347,6 +347,12 @@ class CurveHandle():
         # The old full-curve candidate set is available for exact localizer
         # audits before enabling pruning on a new adaptation/configuration.
         interval_prune = bool(adapt_arg.get('sdf_candidate_interval_prune', False))
+        safe_prune_0094 = bool(adapt_arg.get('sdf_candidate_safe_prune_0094', False))
+        safe_audit_0094 = bool(adapt_arg.get('sdf_candidate_safe_audit_0094', False))
+        if safe_audit_0094 and not safe_prune_0094:
+            raise ValueError('0094 exact audit requires certified ROI pruning')
+        if safe_prune_0094 and interval_prune:
+            raise ValueError('0094 certified ROI and 0048 sampled ROI are mutually exclusive')
         interval_audit = bool(adapt_arg.get('sdf_candidate_interval_audit', False))
         piecewise_0057 = bool(adapt_arg.get('sdf_candidate_piecewise_0057', False))
         piecewise_bins_0057 = int(adapt_arg.get('sdf_candidate_piecewise_bins_0057', 12))
@@ -429,6 +435,8 @@ class CurveHandle():
                 interval_slice = slice(None)
 
         bounded = bool(adapt_arg.get("dcsdd_bounded_filtering", False))
+        if safe_prune_0094 and (not bounded or adapt_arg.get('mode', 'direct') != 'direct'):
+            raise ValueError('0094 certified ROI requires bounded direct localization')
         # 0046: the callback-based bounded iterator also supports cone's direct
         # wrap mapping, but ONLY via the explicitly guarded combined-wrap path.
         # Other bounded users retain the previous rigid-only restriction.
@@ -570,6 +578,43 @@ class CurveHandle():
                 cyl_mesh = self.cyl_mesh
                 samples, kidx = (None, None) if bounded else cyl_mesh.filter_grid(mc_grid, fast_bbox=fast_bbox)
 
+        if safe_prune_0094:
+            from ngc.handle_utils.safe_candidate_roi_0094 import certified_source_boxes
+            from ngc.handle_utils.interval_envelope import PiecewiseGateEnvelopeCandidates
+            boxes_0094 = certified_source_boxes(
+                self.core, adapt_arg['src_0'], adapt_arg['src_1'], adapt_arg, mc_grid)
+            if boxes_0094 is None:
+                print('[sdf_candidate_safe_0094] fallback=original_broad_phase '
+                      'reason=uncertified_curve_or_gate', flush=True)
+            else:
+                # Clip ORIGINAL broad-phase boxes. Do not use a truncated
+                # cylinder, which loses valid along-tangent endpoint samples.
+                if use_src_interval_filter:
+                    raise ValueError('0094 requires full-cylinder broad phase; '
+                                     'disable adapt_filter_use_src_interval')
+                original_cylinder_0094 = cyl_mesh
+                cyl_mesh = PiecewiseGateEnvelopeCandidates(original_cylinder_0094, boxes_0094)
+                if safe_audit_0094:
+                    from ngc.handle_utils.interval_audit import audit_candidate_subset
+                    audit_arg = dict(adapt_arg)
+                    audit_arg.pop('_dcsdd_stream_callback', None)
+                    audit_arg['adapt_debug_counts'] = False
+                    audit_batch = int(adapt_arg.get('dcsdd_filter_batch_size', 262144))
+                    proof_0094 = audit_candidate_subset(
+                        original_cylinder_0094.iter_filter_grid_indices(
+                            mc_grid, batch_size=audit_batch),
+                        cyl_mesh.iter_filter_grid_indices(
+                            mc_grid, batch_size=audit_batch),
+                        mc_grid.idx2pts,
+                        lambda points: self.core.localize_samples_adapt(
+                            points, audit_arg)[2])
+                    print('[sdf_candidate_safe_0094 audit] full=',
+                          proof_0094['full_candidates'], 'narrow=',
+                          proof_0094['narrow_candidates'], 'excluded=',
+                          proof_0094['excluded_candidates'], 'missing_accepted=',
+                          proof_0094['missing_accepted'], flush=True)
+                print('[sdf_candidate_safe_0094] enabled=True boxes=',
+                      len(boxes_0094), 'radius_modes=rigid_or_wrap', flush=True)
         if interval_prune:
             # 0048a: selecting only the truncated cylinder does not account
             # for the along-tangent x_radius in localize_samples(). Near the

@@ -18,6 +18,8 @@ dcsdd_bounded_filtering: false
 dcsdd_filter_batch_size: 262144
 dcsdd_fast_bbox_marking: true
 dcsdd_crop_grid: true
+sdf_candidate_safe_prune_0094: true
+sdf_candidate_safe_audit_0094: false
 sdf_candidate_piecewise_0057: false
 sdf_localize_sphere_0058: false
 sdf_localize_reuse_0059: false

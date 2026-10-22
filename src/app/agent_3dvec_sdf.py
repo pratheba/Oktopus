@@ -1548,7 +1548,9 @@ class AgentSDF(AgentBase):
                 wrap_arg['dcsdd_fast_bbox_marking'] = True
                 # 0048: optional conservative interval-ROI broad phase for
                 # the shared stream, with pre-inference exact-localizer audit.
-                for roi_key in ('sdf_candidate_interval_prune',
+                for roi_key in ('sdf_candidate_safe_prune_0094',
+                                'sdf_candidate_safe_audit_0094',
+                                'sdf_candidate_interval_prune',
                                 'sdf_candidate_interval_audit',
                                 'sdf_candidate_interval_pad',
                                 'sdf_candidate_piecewise_0057',
@@ -1820,7 +1822,9 @@ class AgentSDF(AgentBase):
                         'sdf_prediction_scratch_dir_0056',
                         'sdf_prediction_zero_copy_write_0056',
                         'sdf_puffer_stop_after',
-                        'sdf_candidate_interval_prune',
+                        'sdf_candidate_safe_prune_0094',
+                                'sdf_candidate_safe_audit_0094',
+                                'sdf_candidate_interval_prune',
                         'sdf_candidate_interval_audit',
                         'sdf_candidate_interval_pad',
                                 'sdf_candidate_piecewise_0057',
@@ -2312,7 +2316,9 @@ class AgentSDF(AgentBase):
                 # 0054a: forward projection controls to each puffer adaptation.
                 # Loading them into extraction_config alone does not activate
                 # caching/workers in localize_samples_adapt.
-                for roi_key in ('sdf_candidate_interval_prune',
+                for roi_key in ('sdf_candidate_safe_prune_0094',
+                                'sdf_candidate_safe_audit_0094',
+                                'sdf_candidate_interval_prune',
                                 'sdf_candidate_interval_audit',
                                 'sdf_candidate_interval_pad',
                                 'sdf_candidate_piecewise_0057',
