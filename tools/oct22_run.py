@@ -93,6 +93,23 @@ def check_basics(args):
         raise ValueError('resolution must be >= 16')
 
 
+
+def verify_fused_yaml_forwarding(source_path):
+    """Fail early if action_part_adapt would silently drop the 0087 YAML flag."""
+    source_path = Path(source_path)
+    if not source_path.is_file():
+        raise ValueError(f'SDF implementation missing: {source_path}')
+    source = source_path.read_text(encoding='utf8')
+    start = 'for config_key, config_value in raw_config.items():'
+    stop = 'adaptation_items = raw_config.get('
+    if start not in source or stop not in source.split(start, 1)[1]:
+        raise ValueError('Cannot verify 0087 SDF YAML forwarding; inspect agent_3dvec_sdf.py')
+    forwarding = source.split(start, 1)[1].split(stop, 1)[0]
+    if "'sdf_fused_exterior_0087'" not in forwarding and '"sdf_fused_exterior_0087"' not in forwarding:
+        raise ValueError('0087 fused YAML flag is NOT forwarded by agent_3dvec_sdf.py; '
+                         'apply the 0089 fusion-activation fix before inference')
+
+
 def sdf(args):
     check_basics(args)
     filename = args.yaml or infer_case_yaml(args.case, 'sdf')
@@ -108,6 +125,9 @@ def sdf(args):
     has_root = bool(data.get('root_leaves'))
     if fused and not root_leaf_is_full_puffer(data):
         raise ValueError('0087 fused SDF presently supports only 15-adaptation puffer root_leaves')
+    if fused:
+        # 0089: preflight the actual action's YAML allowlist, not just YAML.
+        verify_fused_yaml_forwarding(ROOT / 'src/app/agent_3dvec_sdf.py')
     if fused and not args.dry_run and not (ROOT / 'src/app/sdf_fused_report_0087.py').is_file():
         raise ValueError('0087 SDF code not installed: apply the 0087 patch first')
     if args.require_fused and not fused:

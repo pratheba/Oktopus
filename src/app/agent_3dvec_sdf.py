@@ -1709,6 +1709,7 @@ class AgentSDF(AgentBase):
                         'sdf_stream_combined_wrap',
                         'sdf_stream_unified',
                         'sdf_puffer_sparse_groups',
+                        'sdf_fused_exterior_0087',
                         'sdf_puffer_minimal_staging',
                         'sdf_puffer_direct_predictions_0053',
                         'sdf_projection_workers_0054',
