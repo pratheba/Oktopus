@@ -43,7 +43,10 @@ from udf_cut_root_leaf_transfer import transfer_udf_cut_root_leaves
 from udf_cut_cap_guard_0071 import (
     calibrate_p95_from_final_faces, endcap_face_evidence, filter_cap_components,
 )
-from udf_cut_evidence_0074 import export_evidence
+from udf_cut_evidence_0074 import export_evidence, classify_face_evidence
+from udf_cut_curve_local_0081 import (
+    LocalExpansionSettings, project_faces_to_curve_arclength, expand_face_mask,
+)
 from udf_cut_reconcile_0079 import vote_agreement, keep_largest_edge_component
 from udf_cut_final_root_leaves import (
     load_final_root_leaf_meshes, export_direct_root_leaf_results,
@@ -2240,6 +2243,13 @@ class AgentUDFCut(AgentUDF):
             unknown = selected - set(rig_parts_plan.part_names)
             if unknown:
                 raise ValueError(f'0073 {label} unknown part(s): {sorted(unknown)}')
+        if bool(extraction_config.get('udf_cut_curve_local_preview_0081', False)):
+            if not bool(extraction_config.get('udf_cut_reconcile_0079', False)):
+                raise ValueError('0081 preview requires per-owner reconciliation 0079')
+            if not bool(extraction_config.get('udf_cut_evidence_0074', False)):
+                raise ValueError('0081 preview requires face evidence 0074')
+            if set(rig_parts_plan.part_names) - dry_parts:
+                raise ValueError('0081 is non-destructive: all parts must be in 0073 dry-run list')
         if bool(extraction_config.get('udf_cut_reconcile_0079', False)):
             not_dry = set(rig_parts_plan.part_names) - dry_parts
             if not_dry and not bool(extraction_config.get('udf_cut_reconcile_allow_apply_0079', False)):
@@ -2336,6 +2346,88 @@ class AgentUDFCut(AgentUDF):
                       f"seed_not_removed={summary_0074['all']['classes']['seed_not_removed']}",
                       f"removed={summary_0074['all']['classes']['removed']}",
                       flush=True)
+            # 0081: the successful four-class 0080 expansion, now restricted
+            # by mesh-edge connectivity and *curve arclength* continuity.
+            # Do not replace the eight authoritative SDF meshes. Save a
+            # counterfactual cut/cleanup preview for geometry inspection.
+            if bool(extraction_config.get('udf_cut_curve_local_preview_0081', False)):
+                if votes_payload_0079 is None or evidence_payload_0074 is None:
+                    raise RuntimeError('0081 requires matching 0079 votes and 0074 evidence')
+                category = classify_face_evidence(
+                    assignments=evidence_payload_0074['assignment_count'],
+                    raw_valid=evidence_payload_0074['raw_valid_count'],
+                    effective_valid=evidence_payload_0074['effective_valid_count'],
+                    fused=evidence_payload_0074['fused'],
+                    remove_mask=evidence_payload_0074['remove_mask'],
+                )
+                seeds = np.asarray(votes_payload_0079['classes']['agreed_remove'], dtype=bool)
+                candidate = np.isin(category, (0, 1, 6, 7))
+                # Real, opposing valid keep votes remain a veto. We do not
+                # redefine an explicit conflict as an unsupported closure.
+                candidate &= ~np.asarray(votes_payload_0079['classes']['keep_conflict'], dtype=bool)
+                settings = LocalExpansionSettings(
+                    max_curve_fraction=float(extraction_config.get(
+                        'udf_cut_curve_local_band_0081', 0.11)),
+                    max_neighbor_curve_jump=float(extraction_config.get(
+                        'udf_cut_curve_local_step_0081', 0.07)),
+                    max_surface_walk_fraction=float(extraction_config.get(
+                        'udf_cut_curve_local_surface_walk_0081', 0.40)),
+                    min_seed_component_faces=int(extraction_config.get(
+                        'udf_cut_curve_local_min_seed_faces_0081', 8)),
+                )
+                arclength, total_length = project_faces_to_curve_arclength(
+                    mesh, owners[0]['avatar_curve'],
+                    samples=int(extraction_config.get('udf_cut_direct_curve_samples_0069', 1025)),
+                )
+                selected, local_report = expand_face_mask(
+                    mesh, seed_mask=seeds, candidate_mask=candidate,
+                    curve_s=arclength, curve_length_world=total_length, settings=settings,
+                )
+                folder = Path(output_folder) / 'udf_cut_curve_local_0081' / part
+                folder.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(folder / 'locality.npz',
+                                    face_curve_arclength=arclength.astype(np.float32),
+                                    curve_length_world=np.asarray(total_length, dtype=np.float64),
+                                    seed_faces=seeds, candidate_faces=candidate,
+                                    selected_faces=selected,
+                                    blocked_faces=(candidate & ~selected),
+                                    face_centroids_xyz=np.asarray(mesh.triangles_center, dtype=np.float32))
+                if np.any(selected):
+                    self._mesh_from_face_mask(mesh, selected).export(folder / 'proposed_removed.ply')
+                if np.any(candidate & ~selected):
+                    self._mesh_from_face_mask(mesh, candidate & ~selected).export(folder / 'blocked_candidate_faces.ply')
+                if np.any(selected & ~seeds):
+                    self._mesh_from_face_mask(mesh, selected & ~seeds).export(folder / 'added_unsupported_faces.ply')
+                preview_input = self._mesh_from_face_mask(mesh, ~selected)
+                if not len(preview_input.faces):
+                    raise RuntimeError(f'0081 would remove the entire part {part}')
+                try:
+                    preview, detached, clean_report = keep_largest_edge_component(preview_input)
+                    if len(detached.faces):
+                        detached.export(folder / 'detached_fragments.ply')
+                except ValueError as exc:
+                    # Do not discard a large legitimate component to satisfy
+                    # the preview requirement; expose the unsafe geometry.
+                    preview = preview_input
+                    clean_report = {'skipped': True, 'reason': str(exc)}
+                preview.export(folder / 'proposed_kept_cleaned.ply')
+                local_report['cleanup'] = clean_report
+                local_report['faces_after_preview'] = int(len(preview.faces))
+                local_report['WARNING'] = (
+                    'Experimental locality heuristic: do not apply without inspecting '
+                    'all eight outputs, especially bent or self-near tentacles.'
+                )
+                (folder / 'summary.json').write_text(json.dumps(local_report, indent=2), encoding='utf-8')
+                scoring['curve_local_0081'] = {'summary': str(folder / 'summary.json'),
+                                                'candidate_faces': local_report['candidate_faces'],
+                                                'selected_faces': local_report['selected_faces'],
+                                                'faces_after_preview': local_report['faces_after_preview']}
+                print('[udf cut curve local 0081]', f'part={part}',
+                      f'seeds={local_report["seed_faces"]}',
+                      f'candidates={local_report["candidate_faces"]}',
+                      f'added={local_report["added_faces"]}',
+                      f'blocked={local_report["blocked_candidates"]}',
+                      f'kept={local_report["faces_after_preview"]}', flush=True)
             blocked_mask = scoring.pop('_blocked_mask_0071', None)
             if blocked_mask is not None and np.any(blocked_mask):
                 blocked_dir = Path(output_folder) / 'udf_cut_blocked_diagnostics_0071'
