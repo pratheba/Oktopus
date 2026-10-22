@@ -139,6 +139,50 @@ def mesh_mask(mesh, mask):
     return result
 
 
+def keep_largest_edge_component(mesh):
+    """Return (largest_component_mesh, dropped_debris_mesh, stats)."""
+    if len(mesh.faces) == 0:
+        empty = mesh.copy()
+        stats = {
+            'components_before': 0,
+            'largest_faces': 0,
+            'kept_fraction': 0.0,
+            'dropped_faces': 0,
+            'dropped_components': 0,
+        }
+        return empty, empty.copy(), stats
+    comps = mesh.split(only_watertight=False, adjacency=None)
+    if len(comps) <= 1:
+        empty = trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), dtype=np.int64), process=False)
+        stats = {
+            'components_before': int(len(comps)),
+            'largest_faces': int(len(mesh.faces)),
+            'kept_fraction': 1.0,
+            'dropped_faces': 0,
+            'dropped_components': 0,
+        }
+        return mesh.copy(), empty, stats
+    sizes = np.array([len(c.faces) for c in comps], dtype=np.int64)
+    keep_i = int(np.argmax(sizes))
+    kept = comps[keep_i].copy()
+    debris_parts = [c for i, c in enumerate(comps) if i != keep_i and len(c.faces) > 0]
+    if debris_parts:
+        debris = trimesh.util.concatenate(debris_parts)
+        dropped_faces = int(sum(len(c.faces) for c in debris_parts))
+    else:
+        debris = trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), dtype=np.int64), process=False)
+        dropped_faces = 0
+    total = int(sizes.sum())
+    stats = {
+        'components_before': int(len(comps)),
+        'largest_faces': int(sizes[keep_i]),
+        'kept_fraction': float(sizes[keep_i] / total) if total else 0.0,
+        'dropped_faces': dropped_faces,
+        'dropped_components': int(len(comps) - 1),
+    }
+    return kept, debris, stats
+
+
 def run(args):
     source = Path(args.direct).resolve()
     dest = Path(args.out).resolve()
@@ -208,7 +252,12 @@ def run(args):
             pmask = candidate & (part_index == names.index(part))
             if pmask.any():
                 mesh_mask(mesh, pmask).export(dest / f'{part}_newly_selected_unknown.ply')
-    mesh_mask(mesh, ~(removed | candidate)).export(dest / 'fused_kept_connected_unknown_preview.ply')
+    kept_mesh = mesh_mask(mesh, ~(removed | candidate))
+    kept_mesh.export(dest / 'fused_kept_connected_unknown_preview.ply')
+    largest_mesh, debris_mesh, cleanup = keep_largest_edge_component(kept_mesh)
+    largest_mesh.export(dest / 'fused_kept_connected_unknown_preview_largest_component.ply')
+    if cleanup['dropped_faces'] > 0:
+        debris_mesh.export(dest / 'fused_kept_connected_unknown_preview_debris.ply')
     np.savez_compressed(dest / 'selection_0103.npz', confirmed_removed=removed,
                         newly_selected_unknown=candidate,
                         preview_removed=removed | candidate,
@@ -227,6 +276,7 @@ def run(args):
             'min_removed_boundary_fraction': args.min_removed_contact_fraction,
             'min_removed_contact_edges': args.min_removed_contact_edges,
         },
+        'cleanup_largest_component': cleanup,
         'limitations': [
             'Model-invalid is not proof of absent surface; new cuts are unverified proposals.',
             'Direct UDF thresholds for non-body parts are uncalibrated.',

@@ -7,7 +7,10 @@ import numpy as np
 import trimesh
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from udf_0103_connected_unknown_preview import choose_connected_unknown
+from udf_0103_connected_unknown_preview import (
+    choose_connected_unknown,
+    keep_largest_edge_component,
+)
 
 
 def plane(z=0., nx=8, ny=8):
@@ -115,6 +118,18 @@ class Test0103ConnectedUnknown(unittest.TestCase):
             keep, _ = classify(m, unknown=small, removed=rm,
                                supported=np.zeros(n, bool), invalid=small)
             self.assertFalse(keep.any())
+
+    def test_keep_largest_edge_component_drops_debris(self):
+        a = plane(nx=4, ny=4)
+        b = plane(z=10.0, nx=3, ny=3)
+        both = trimesh.util.concatenate((a, b))
+        kept, debris, stats = keep_largest_edge_component(both)
+        self.assertEqual(int(stats['components_before']), 2)
+        self.assertEqual(int(stats['largest_faces']), len(a.faces))
+        self.assertEqual(int(stats['dropped_faces']), len(b.faces))
+        self.assertEqual(int(stats['dropped_components']), 1)
+        self.assertEqual(len(kept.faces), len(a.faces))
+        self.assertEqual(len(debris.faces), len(b.faces))
 
 
 if __name__ == '__main__':
