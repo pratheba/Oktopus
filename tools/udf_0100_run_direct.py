@@ -49,6 +49,8 @@ def main():
     ap.add_argument('--face-batch-size', type=int, default=16384)
     ap.add_argument('--allow-uncalibrated-nonbody', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--skip-connected-cleanup', action='store_true',
+                    help='Save direct classifications only; do not run connected unknown cleanup')
     args = ap.parse_args()
     try:
         selected_parts = parse_parts(args.parts)
@@ -115,6 +117,27 @@ def main():
         subprocess.run(cmd, cwd=ROOT, check=True)
     finally:
         runtime.unlink(missing_ok=True)
+    if not args.skip_connected_cleanup:
+        # Direct UDF and connected-region cleanup are a single user-facing run.
+        # Import the tested 0103 implementation: no second shell invocation.
+        from udf_0103_connected_unknown_preview import run as connected_cleanup
+        cleanup_dest = dest / 'udf_connected_final_0106'
+        cleanup_args = argparse.Namespace(
+            direct=str(dest / 'udf_direct_fused_0100'),
+            out=str(cleanup_dest),
+            parts=args.parts,
+            allow_uncalibrated_nonbody=args.allow_uncalibrated_nonbody,
+            min_area_fraction=0.005,
+            min_invalid_fraction=0.60,
+            min_removed_contact_fraction=0.80,
+            min_removed_contact_edges=4,
+            min_main_fraction=0.85,
+            save_precleanup_preview=False,
+        )
+        cleanup_report = connected_cleanup(cleanup_args)
+        print('[udf 0106] cleaned fused mesh:',
+              cleanup_dest / 'fused_kept_connected_unknown_preview.ply')
+        print('[udf 0106] cleanup:', cleanup_report['cleanup_largest_component'])
 
 
 if __name__ == '__main__':
