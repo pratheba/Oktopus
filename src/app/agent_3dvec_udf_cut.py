@@ -2515,13 +2515,13 @@ class AgentUDFCut(AgentUDF):
                                model_batch_size, query_batch_size, far_world):
         """Experimental direct learned-UDF query ON the true fused mesh.
 
-        No 0079 votes, 0081 growth, 0092 cut-mask transfer, or cross-resolution
-        guidance. A saved 0092 part correspondence only ROUTES queries to the
-        correct learned owner, never supplies a keep/remove decision.
+        No 0079 votes, 0081 growth, 0092 evidence, or cross-resolution
+        guidance. Fused faces are routed from this SDF run's own root/leaf
+        part meshes, then evaluated with fresh learned-UDF queries.
         """
         from udf_direct_surface_0100 import classify_consistency, classify_owner_scores
         from udf_cut_final_root_leaves import curve_interval_owner_masks, load_final_root_leaf_meshes
-        from udf_cut_fused_exterior_0092 import mesh_from_mask, transfer_cut_to_fused
+        from udf_fused_part_ownership_0107 import mesh_from_mask, route_fused_faces_from_sdf_parts
 
         if not isinstance(settings, dict):
             raise ValueError('udf_direct_fused_0100 must be a YAML mapping')
@@ -2542,27 +2542,18 @@ class AgentUDFCut(AgentUDF):
             root_path=root_path, require_manifest=True)
         part_names = list(plan.part_names)
 
-        # A saved correspondence is a performance shortcut, not learned-UDF
-        # evidence. Never use its old cut_mask as a deletion instruction.
-        reference = settings.get('correspondence_0092')
-        if reference:
-            reference_path = Path(reference)
-            if not reference_path.is_absolute():
-                reference_path = Path(root_path) / reference_path
-            with np.load(reference_path) as z:
-                routed = np.asarray(z['source_part_index'], np.int32).copy()
-            if len(routed) != len(mesh.faces) or np.any((routed < -1) | (routed >= len(part_names))):
-                raise ValueError('0100 saved 0092 correspondence does not match fused mesh/part count')
-            # The 0092 correspondence file has no vertex hash. Require
-            # explicit acknowledgement rather than silently trust arbitrary runs.
-            if settings.get('correspondence_confirmed_same_sdf') is not True:
-                raise ValueError('Set correspondence_confirmed_same_sdf: true ONLY for the exact 0092/SDF pair')
-        else:
-            _, routed, _, _ = transfer_cut_to_fused(
-                mesh, {name: (part_meshes[name], np.zeros(len(part_meshes[name].faces), bool))
-                       for name in part_names},
-                distance_edge_factor=float(settings.get('distance_edge_factor', 1.75)),
-                normal_dot=float(settings.get('normal_dot', .55)))
+        # The SDF Boolean remesh changes face indices. Reconstruct ownership
+        # from the SDF's own validated per-part geometry (no 0092/UDF run).
+        routed, ownership_report = route_fused_faces_from_sdf_parts(
+            mesh, {name: part_meshes[name] for name in part_names},
+            distance_edge_factor=float(settings.get('distance_edge_factor', 1.75)),
+            normal_dot=float(settings.get('normal_dot', .55)),
+            neighbors=int(settings.get('routing_neighbors', 12)),
+            batch_size=int(settings.get('routing_batch_size', 4096)),
+            max_unmatched_fraction=float(settings.get('max_unmatched_fraction', .05)),
+        )
+        print('[udf direct fused 0107] SDF-only routing:', ownership_report,
+              flush=True)
 
         requested = settings.get('parts', ['body'])
         if requested == 'all':
@@ -2698,11 +2689,13 @@ class AgentUDFCut(AgentUDF):
             'missing_valid_model_evidence': int(((assigned > 0) & (valid < assigned)).sum()),
             'no_owner': int((assigned == 0).sum()),
             'parts': report_parts,
+            'routing_0107': ownership_report,
             'limitations': [
                 'Invalid UDF queries are UNKNOWN and retained, not proof of an opening.',
                 'Raw UDF values are not a guaranteed calibrated world-space distance after deformation.',
                 'This experimental result may retain the bottom if localization does not cover it.',
-                'No cross-resolution guidance, old 0081 mask, 0079 component gate or 0092 cut-mask transfer used.',
+                'No cross-resolution guidance, old 0081 mask, 0079 component gate, or 0092 evidence used.',
+                'Unmatched fused faces remain UNKNOWN; part routing is approximate near Boolean seams.',
                 'The kept mesh can be open and is not guaranteed manifold.',
             ]}
         (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

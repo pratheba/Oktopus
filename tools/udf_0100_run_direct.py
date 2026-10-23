@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Experimental learned-UDF queries ON the existing fused SDF mesh.
 
-Uses saved 0092 nearest-source-PART routing (never its cutting decisions).
-Runs UDF model inference again on the fused mesh, not SDF inference.
+Routes fused faces using the SDF's own riggable_parts + ownership manifest.
+No previous UDF/0092 run is needed. Queries UDF on fused SDF geometry.
 """
 import argparse
 from pathlib import Path
@@ -36,7 +36,8 @@ def needs_nonbody_opt_in(parts):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--sdf-run', required=True)
-    ap.add_argument('--udf-run', required=True, help='Completed 0092 run: correspondence only')
+    ap.add_argument('--udf-run', default=None,
+                    help='DEPRECATED and ignored: this tool no longer needs a previous UDF run')
     ap.add_argument('--out', required=True, help='NEW output run name')
     ap.add_argument('--shape', default='oktopus_9_v1')
     ap.add_argument('--model-size', default='4M')
@@ -60,7 +61,7 @@ def main():
         ap.error('Non-body 0100 UDF distance thresholds are not calibrated. '
                  'For an experimental all-parts preview, pass '
                  '--allow-uncalibrated-nonbody; or use --parts body.')
-    for item in (args.sdf_run, args.udf_run, args.out, args.shape):
+    for item in (args.sdf_run, args.out, args.shape):
         if not item or Path(item).name != item or item in ('.', '..'):
             ap.error('run names and shape must be single directory names')
     config = YAMLS / args.yaml
@@ -68,31 +69,22 @@ def main():
         ap.error('YAML must be an existing filename directly in exp/train/manipulation')
     udf_cfg = yaml.safe_load(config.read_text(encoding='utf-8'))
     sdf = ROOT / 'inference' / args.model_size / args.sdf_run / args.shape
-    prior = ROOT / 'inference' / args.model_size / args.udf_run / args.shape
-    transfer = prior / 'fused_udf_transfer_evidence_0092.npz'
     dest = ROOT / 'inference' / args.model_size / args.out / args.shape
     if dest.exists() and not args.dry_run:
         ap.error('Output already exists; use a new --out')
     if not args.dry_run:
-        # Reject stale cross-run correspondence. This metadata comes from
-        # 0092 and identifies the actual fused SDF it was computed against.
-        prior_report = prior / 'riggable_fused_sdf_exterior_after_udf_cut_report.json'
-        if not prior_report.is_file():
-            ap.error(f'Cannot verify correspondence without 0092 report: {prior_report}')
-        import json
-        actual = json.loads(prior_report.read_text(encoding='utf-8')).get('sdf_fused_input')
-        if not actual or Path(actual).resolve() != (sdf / 'riggable_fused_sdf_exterior.ply').resolve():
-            ap.error('0092 correspondence was generated for another SDF run; refusing')
         for path in (sdf / 'riggable_fused_sdf_exterior.ply',
-                     sdf / 'root_leaves_ownership.json', transfer,
-                     ROOT / args.config):
+                     sdf / 'root_leaves_ownership.json', ROOT / args.config):
             if not path.is_file():
-                ap.error(f'Required input missing: {path}')
+                ap.error(f'Required SDF/model input missing: {path}')
+        if not (sdf / 'riggable_parts').is_dir():
+            ap.error(f'Missing SDF riggable_parts: {sdf / "riggable_parts"}')
+    if args.udf_run:
+        print('[udf direct fused 0107] --udf-run is deprecated and ignored; '
+              'no saved 0092 evidence is read')
     udf_cfg['udf_direct_fused_0100'] = {
         'enabled': True,
         'sdf_shape': str(sdf),
-        'correspondence_0092': str(transfer),
-        'correspondence_confirmed_same_sdf': True,
         'parts': selected_parts,
         'face_batch_size': args.face_batch_size,
         'allow_uncalibrated_nonbody': args.allow_uncalibrated_nonbody,
@@ -106,7 +98,7 @@ def main():
            '-ckpt', args.ckpt, '--udf-far-value', '0.1',
            '--udf-model-batch-size', '32768', '--udf-cut-query-batch-size', '32768']
     print('[udf direct fused 0100] source:', sdf)
-    print('[udf direct fused 0100] routing only:', transfer)
+    print('[udf direct fused 0107] routing from SDF riggable_parts + root_leaves manifest')
     print('[udf direct fused 0100] query parts:', selected_parts)
     print('[udf direct fused 0100] new output:', dest / 'udf_direct_fused_0100')
     if args.dry_run:
