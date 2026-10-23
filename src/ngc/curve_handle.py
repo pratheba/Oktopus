@@ -437,8 +437,8 @@ class CurveHandle():
         bounded = bool(adapt_arg.get("dcsdd_bounded_filtering", False))
         if safe_prune_0094 and (not bounded or adapt_arg.get('mode', 'direct') != 'direct'):
             raise ValueError('0094 certified ROI requires bounded direct localization')
-        # 0046: the callback-based bounded iterator also supports cone's direct
-        # wrap mapping, but ONLY via the explicitly guarded combined-wrap path.
+        # 0103: the guarded combined callback handles independent direct
+        # rigid and wrap mappings.  The ordinary bounded path stays rigid-only.
         # Other bounded users retain the previous rigid-only restriction.
         cone_bounded = bool(adapt_arg.get('sdf_stream_combined_wrap', False))
         # 0050a: the root/leaf puffer pipeline needs the original *staged*
@@ -466,7 +466,9 @@ class CurveHandle():
             raise ValueError('0050a puffer bounded wrap requires staged direct wrap (unless validated 0053 callback)')
         if bounded and (
             adapt_arg.get('mode', 'direct') != 'direct'
-            or (cone_bounded and not adapt_arg.get('wrap_radius', False))
+            or (cone_bounded and
+                (bool(adapt_arg.get('wrap_radius', False)) ==
+                 bool(adapt_arg.get('rigid_radius', False))))
             or (not cone_bounded and not puffer_wrap_staging and (
                 not adapt_arg.get('rigid_radius', False)
                 or adapt_arg.get('wrap_radius', False)))

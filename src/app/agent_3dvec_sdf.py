@@ -1467,7 +1467,7 @@ class AgentSDF(AgentBase):
     def _stream_combined_wrap_cone(self, arg, cfg, items, raw_config,
                                    avatar_handle, output_folder, out_name,
                                    batch_size):
-        """0046: only validated two-section wrap cone, never a generic union.
+        """0046/0103: validated direct rigid/wrap sections, single output.
 
         One localization traversal per section. Each section retains compact
         prediction/replay arrays until the GLOBAL rho clamp is calibrated.
@@ -1500,6 +1500,23 @@ class AgentSDF(AgentBase):
         else:
             do_postblend_cut = bool(bool_spec)
             clearance, tolerance = 0.0, 0.005
+        has_mixed_radius = (len({bool(item.get('wrap_radius', False))
+                                for item in items}) > 1)
+        # Keep pre-0103 wrap-only parity by default.  Mixed-mode sections
+        # require an avatar field independent of their source intervals.
+        requested_mode = (bool_spec.get('avatar_field_mode', 'auto')
+                          if isinstance(bool_spec, dict) else 'auto')
+        if requested_mode == 'auto':
+            avatar_field_mode = ('canonical_world' if has_mixed_radius
+                                 else 'section_parity')
+        else:
+            avatar_field_mode = requested_mode
+        if do_postblend_cut and avatar_field_mode not in ('section_parity', 'canonical_world'):
+            raise ValueError('Post-blend avatar_field_mode must be auto, '
+                             'section_parity or canonical_world')
+        if do_postblend_cut and has_mixed_radius and avatar_field_mode != 'canonical_world':
+            raise ValueError('Mixed rigid/wrap sections require canonical_world '
+                             'post-blend avatar field, not per-section parity')
         if do_postblend_cut and (not np.isfinite(clearance) or clearance < 0
                                  or not np.isfinite(tolerance) or tolerance < 0):
             raise ValueError('Post-blend Boolean clearance/tolerance must be finite and nonnegative')
@@ -1518,6 +1535,7 @@ class AgentSDF(AgentBase):
               'adaptations=', len(items), 'one_part=',
               None if stream_plan is None else stream_plan.part_names[0],
               'postblend_avatar_boolean=', do_postblend_cut,
+              'avatar_field_mode=', avatar_field_mode if do_postblend_cut else 'none',
               'sparse_group=True crop_first=True', flush=True)
         # The stage needs to survive both pieces, until their sparse SDFs have
         # been merged. TemporaryDirectory also cleans up failed runs.
@@ -1591,8 +1609,10 @@ class AgentSDF(AgentBase):
                     record_avatar_source=True,
                     avatar_inference=(
                         (lambda data, key=target_key:
-                            self._inference_full_vals(data, key, batch_size=batch_size)['dist'])
-                        if do_postblend_cut else None),
+                            self._inference_full_vals(data, key, batch_size=batch_size,
+                                                      slice_batches=True)['dist'])
+                        if do_postblend_cut and avatar_field_mode == 'section_parity'
+                        else None),
                 )
                 wrap_arg['_dcsdd_stream_callback'] = piece_stream.push
                 t_piece = time()
@@ -1614,7 +1634,7 @@ class AgentSDF(AgentBase):
                 indices = piece_stream.replay.records['index']
                 sources = piece_stream.source_s
                 pieces.append((indices, values, sources))
-                if do_postblend_cut:
+                if do_postblend_cut and avatar_field_mode == 'section_parity':
                     avatar_pieces.append((indices, piece_stream.avatar_sdf))
                 if cfg.get('sdf_stream_export_sections_0093', False):
                     # Optional per-adaptation diagnostic, extracted from the
@@ -1659,16 +1679,31 @@ class AgentSDF(AgentBase):
                   'evaluated_union=', len(indices),
                   'merge_s=', f'{time()-merge_t0:.3f}', flush=True)
             if do_postblend_cut:
-                from app.sdf_stream_combined_wrap import (
-                    merge_sparse_avatar_field, apply_postblend_avatar_boolean)
-                avatar_indices, avatar_sdf = avatar_pieces[0]
-                for j in range(1, len(avatar_pieces)):
-                    avatar_indices, avatar_sdf = merge_sparse_avatar_field(
-                        avatar_indices, avatar_sdf,
-                        avatar_pieces[j][0], avatar_pieces[j][1], tolerance=tolerance)
-                sdf = apply_postblend_avatar_boolean(
-                    indices, sdf, avatar_indices, avatar_sdf, clearance=clearance)
-                print('[sdf stream 0093] POSTBLEND_AVATAR_BOOLEAN applied'
+                if avatar_field_mode == 'canonical_world':
+                    from app.sdf_stream_combined_wrap import apply_canonical_world_avatar_boolean
+                    target_key = items[0]['target_key']  # validated SAME target
+                    target_curve = next((c for c in avatar_handle.curves
+                                         if self.encode_key(shape_name, c.name) == target_key), None)
+                    if target_curve is None:
+                        raise KeyError('Unknown canonical avatar curve ' + target_key)
+                    sdf = apply_canonical_world_avatar_boolean(
+                        indices, sdf, mc_grid, target_curve.core,
+                        lambda data: self._inference_full_vals(
+                            data, target_key, batch_size=batch_size,
+                            slice_batches=True)['dist'],
+                        clearance=clearance, chunk_size=batch_size)
+                else:
+                    from app.sdf_stream_combined_wrap import (
+                        merge_sparse_avatar_field, apply_postblend_avatar_boolean)
+                    avatar_indices, avatar_sdf = avatar_pieces[0]
+                    for j in range(1, len(avatar_pieces)):
+                        avatar_indices, avatar_sdf = merge_sparse_avatar_field(
+                            avatar_indices, avatar_sdf,
+                            avatar_pieces[j][0], avatar_pieces[j][1], tolerance=tolerance)
+                    sdf = apply_postblend_avatar_boolean(
+                        indices, sdf, avatar_indices, avatar_sdf, clearance=clearance)
+                print('[sdf stream 0103] POSTBLEND_AVATAR_BOOLEAN applied'
+                      ' mode=', avatar_field_mode,
                       ' clearance=', clearance, 'voxels=', len(indices), flush=True)
             # Match legacy final min-union semantics for a SINGLE completed
             # group: every valid group sample becomes a final valid sample.
@@ -1863,7 +1898,7 @@ class AgentSDF(AgentBase):
                 and not extraction_config.get('sdf_stream_combined_wrap', False)):
             raise ValueError('0093 post-blend avatar Boolean currently requires '
                              'sdf_stream_combined_wrap: true on one safe wrap group; '
-                             'mixed rigid/wrap groups retain legacy per-item cutting')
+                             'combined direct group (rigid/wrap supported)')
         if (extraction_config.get('dcsdd_stream_crop_first', False)
                 and not extraction_config.get('dcsdd_stream_inference', False)):
             raise ValueError('--dcsdd-stream-crop-first requires --dcsdd-stream-inference')

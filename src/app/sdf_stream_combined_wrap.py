@@ -1,8 +1,8 @@
-"""0046 opt-in, one-pass sparse SDF composition for a two-piece wrap cone.
+"""0046/0103 sparse SDF composition for compatible direct sections.
 
-Do not reuse the independent rigid-boot fast path for an arbitrary wrap or
-blend group: composition must retain the post-SDF overlap crossfade and the
-GLOBAL support-profile calibration for each individual piece.
+Each section preserves its own rigid/wrap mapping and global calibration.
+The post-blend Boolean can query a single, canonical avatar field at world
+voxel positions, independent of the individual adaptation projections.
 """
 from pathlib import Path
 import numpy as np
@@ -12,7 +12,7 @@ from post_sdf_seam_blend import overlap_crossfade_sdf
 
 
 def validate_cone_stream(items, cfg, post_seams, query_seams, root_leaf_plan):
-    """Validate a generic *single-part* multi-section direct wrap stream.
+    """Validate a generic *single-part* multi-section direct stream.
 
     The original name is retained for existing callers/tests. Eligibility is
     geometric, never based on cone/boot/dress/puffer identities. Unsupported
@@ -46,9 +46,12 @@ def validate_cone_stream(items, cfg, post_seams, query_seams, root_leaf_plan):
     if len({item['target_key'] for item in items}) != 1:
         raise ValueError('Wrap streaming requires all sections on the same target curve')
     for i, item in enumerate(items):
-        if item.get('mode', 'direct') != 'direct' or not item.get('wrap_radius', False) or item.get('rigid_radius', False):
-            raise ValueError(f'Wrap section {i}: requires direct wrap_radius without rigid_radius')
-        if float(item.get('wrap_angular_follow', 1.0)) != 0.0:
+        is_wrap = bool(item.get('wrap_radius', False))
+        is_rigid = bool(item.get('rigid_radius', False))
+        if item.get('mode', 'direct') != 'direct' or is_wrap == is_rigid:
+            raise ValueError(f'Section {i}: requires direct mode with exactly one '
+                             'of wrap_radius or rigid_radius enabled')
+        if is_wrap and float(item.get('wrap_angular_follow', 1.0)) != 0.0:
             raise ValueError(f'Wrap section {i}: nonzero angular follow uses standard pipeline')
         if not item.get('use_accessory_support_clamp', False):
             raise ValueError(f'Wrap section {i}: requires accessory support clamp')
@@ -73,6 +76,59 @@ def validate_cone_stream(items, cfg, post_seams, query_seams, root_leaf_plan):
         if item.get('avatar_snug_scale_field') is not None:
             raise ValueError(f'Wrap section {i}: external snug field unsupported')
     return post_seams[1] if len(items) == 2 else post_seams
+
+
+
+def apply_canonical_world_avatar_boolean(indices, blended_sdf, grid,
+                                         target_core, avatar_inference, *,
+                                         clearance=0.0, chunk_size=262144):
+    """In-place Boolean with ONE avatar model field at world-space voxels.
+
+    The merged indices are global x-fast MCGrid indices.  Unlike adapting each
+    piece with its own source interval and control field, canonical evaluation
+    projects every voxel on the SAME unmodified target curve, over [0,1].
+    This is intentionally a new geometry option relative to section-parity
+    0093; a mixed rigid/wrap group selects it automatically.
+
+    Memory scales with ``chunk_size`` rather than the union voxel count.  The
+    recipient owns ``blended_sdf`` (no new global SDF buffer is allocated).
+    """
+    indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+    values = np.asarray(blended_sdf)
+    if values.ndim != 1 or len(indices) != len(values):
+        raise ValueError('Canonical Boolean index/value length mismatch')
+    if (len(indices) and (indices[0] < 0 or
+                          np.any(indices[1:] <= indices[:-1]))):
+        raise ValueError('Canonical Boolean indices must be sorted and unique')
+    if not np.issubdtype(values.dtype, np.floating):
+        raise ValueError('Canonical Boolean needs a floating-point SDF')
+    if not np.isfinite(clearance) or clearance < 0:
+        raise ValueError('Canonical Boolean clearance must be finite and nonnegative')
+    if int(chunk_size) <= 0:
+        raise ValueError('Canonical Boolean chunk_size must be positive')
+    n1 = int(grid.reso) + 1
+    if len(indices) and indices[-1] >= n1 ** 3:
+        raise ValueError('Canonical Boolean global index outside MCGrid')
+
+    for start in range(0, len(indices), int(chunk_size)):
+        stop = min(len(indices), start + int(chunk_size))
+        xyz_world = grid.idx2pts(indices[start:stop])
+        # No adaptation-specific source interval, control smoothing, radial
+        # scale or localization gate.  Endpoint projections are clamped so
+        # every selected global voxel has a stable avatar value.
+        data, selected = target_core.localize_samples(
+            xyz_world, norm=np.inf, outside=True,
+            sdf_localize_after_gate=True)
+        selected = np.asarray(selected, dtype=np.int64).reshape(-1)
+        if not np.array_equal(selected, np.arange(stop - start, dtype=np.int64)):
+            raise RuntimeError('Canonical avatar localization dropped or reordered voxels')
+        av = np.asarray(avatar_inference(data), dtype=np.float64).reshape(-1)
+        if len(av) != stop - start or not np.all(np.isfinite(av)):
+            raise ValueError('Canonical avatar inference returned invalid SDF')
+        if not np.all(np.isfinite(values[start:stop])):
+            raise ValueError('Canonical Boolean received nonfinite accessory SDF')
+        values[start:stop] = np.maximum(values[start:stop], clearance - av)
+    return blended_sdf
 
 
 def merge_sparse_avatar_field(left_idx, left_sdf, right_idx, right_sdf, *, tolerance=0.005):
