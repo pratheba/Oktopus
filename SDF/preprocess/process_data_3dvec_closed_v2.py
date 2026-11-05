@@ -18,6 +18,7 @@ from ngc import Handle
 from sdf_closure_utils_v2 import (
     PerCurveClosedSDFEvaluator,
     prepare_closed_meshes,
+    prepare_existing_closed_meshes,
 )
 
 import argparse
@@ -1104,6 +1105,9 @@ def ngc_dataset(arg):
     base_part_pattern = arg['base_part_pattern']
     closed_mesh_dir_spec = arg['closed_mesh_dir']
     reclose_meshes = bool(arg.get('reclose_meshes', False))
+    use_existing_closed_meshes = bool(arg.get('use_existing_closed_meshes', False))
+    if use_existing_closed_meshes and reclose_meshes:
+        raise ValueError('--use_existing_closed_meshes conflicts with --reclose_meshes')
     sdf_chunk_size = int(arg.get('sdf_chunk_size', 200000))
     surface_tolerance = float(arg.get('surface_tolerance', 1.0e-6))
     cap_density_scale = float(arg.get('cap_density_scale', 2.0))
@@ -1165,7 +1169,10 @@ def ngc_dataset(arg):
                 global_base_closed,
                 full_closed_assets_by_curve,
                 base_closed_assets_by_curve,
-            ) = prepare_closed_meshes(
+            ) = (
+                prepare_existing_closed_meshes if use_existing_closed_meshes
+                else prepare_closed_meshes
+            )(
                 item_path=item_path,
                 item_name=name,
                 handle=handle,
@@ -1176,7 +1183,7 @@ def ngc_dataset(arg):
                 full_part_pattern=full_part_pattern,
                 base_part_pattern=base_part_pattern,
                 closed_mesh_dir_spec=closed_mesh_dir_spec,
-                reclose=reclose_meshes,
+                **({} if use_existing_closed_meshes else {'reclose': reclose_meshes}),
             )
 
             print(
@@ -1309,6 +1316,16 @@ if __name__ == "__main__":
         help='Ignore cached closed meshes and close all source meshes again.',
     )
     p.add_argument(
+        '--use_existing_closed_meshes',
+        action='store_true',
+        help=(
+            'Never close or rewrite meshes. Require validated preclosed '
+            'per-curve files inside --closed_mesh_dir/parts_full and '
+            'parts_base. Missing cap-only meshes disable explicit cap '
+            'supervision (with a warning).'
+        ),
+    )
+    p.add_argument(
         '--sdf_chunk_size',
         type=int,
         default=200000,
@@ -1367,6 +1384,7 @@ if __name__ == "__main__":
         'base_part_pattern': args.base_part_pattern,
         'closed_mesh_dir': args.closed_mesh_dir,
         'reclose_meshes': args.reclose_meshes,
+        'use_existing_closed_meshes': args.use_existing_closed_meshes,
         'sdf_chunk_size': args.sdf_chunk_size,
         'surface_tolerance': args.surface_tolerance,
         'cap_density_scale': args.cap_density_scale,

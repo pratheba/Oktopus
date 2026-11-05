@@ -402,6 +402,166 @@ def close_mesh_cached(
         is_volume=True,
     )
 
+
+def _validated_existing_closed_asset(
+    source_path: str | Path,
+    closed_path: str | Path,
+    *,
+    kind: str,
+) -> ClosedMeshAsset:
+    """Use supplied closed geometry without invoking any mesh-closing routine.
+
+    Cap-only meshes are optional but their absence disables explicit cap
+    on-surface/perturbed supervision for this part.  No closure cache report
+    is required, and the supplied closed mesh is never rewritten.
+    """
+    source_path = Path(source_path).resolve()
+    closed_path = Path(closed_path).resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Original {kind} mesh missing: {source_path}")
+    if not closed_path.is_file():
+        raise FileNotFoundError(
+            f"Existing closed {kind} mesh missing: {closed_path}. "
+            "With --use_existing_closed_meshes, no automatic capping is attempted. "
+            "Place the preclosed mesh there or change --closed_mesh_dir."
+        )
+
+    closed = load_triangle_mesh(closed_path)
+    boundaries, _, nonmanifold, _, _ = describe_boundaries(closed)
+    if (len(boundaries) or len(nonmanifold) or not closed.is_watertight
+            or not closed.is_winding_consistent or not closed.is_volume):
+        raise ValueError(
+            f"Existing closed {kind} mesh is not a valid oriented volume: "
+            f"{closed_path}; boundary_edges={len(boundaries)}, "
+            f"nonmanifold_edges={len(nonmanifold)}, "
+            f"watertight={closed.is_watertight}, "
+            f"winding_consistent={closed.is_winding_consistent}, "
+            f"is_volume={closed.is_volume}. "
+            "No automatic repair or capping will be performed."
+        )
+
+    source = load_triangle_mesh(source_path)
+    source_boundaries, _, _, source_components, source_sizes = describe_boundaries(source)
+    cap_path = closed_path.with_name(closed_path.stem + '_caps_only.ply')
+    cap_area = 0.0
+    cap_faces = 0
+    if cap_path.is_file():
+        cap = load_triangle_mesh(cap_path)
+        cap_faces = int(len(cap.faces))
+        cap_area = float(cap.area)
+        if not np.isfinite(cap_area) or cap_area <= 0:
+            raise ValueError(f"Invalid existing cap-only mesh: {cap_path}")
+        resolved_cap = str(cap_path)
+    else:
+        resolved_cap = None
+        if len(source_boundaries) != 0:
+            print(
+                f"[existing closed mesh WARNING] {kind}: original part has "
+                f"{len(source_boundaries)} boundary edges, but there is no "
+                f"cap-only mesh {cap_path}. SDF distances will use the closed "
+                "mesh, but explicit cap surface supervision will be ABSENT. "
+                "Provide a matching *_caps_only.ply to restore it.",
+                flush=True,
+            )
+
+    print(
+        f"[existing closed mesh] kind={kind} source={source_path} "
+        f"closed={closed_path} cap_faces={cap_faces} cap_area={cap_area:.8g}",
+        flush=True,
+    )
+    return ClosedMeshAsset(
+        source_path=str(source_path),
+        closed_path=str(closed_path),
+        cap_path=resolved_cap,
+        source_face_count=int(len(source.faces)),
+        boundary_loop_count=int(len(source_components)),
+        boundary_loop_sizes=tuple(int(v) for v in source_sizes),
+        cap_face_count=cap_faces,
+        cap_area=cap_area,
+        watertight=True,
+        winding_consistent=True,
+        is_volume=True,
+    )
+
+
+def _find_existing_closed_part(
+    closed_dir: Path, segment_id: int, segment_name: str,
+) -> Path:
+    """Look up an existing closed curve part; fail instead of closing it."""
+    name = safe_name(segment_name)
+    stems = [f'{segment_id:03d}_{name}_closed',
+             f'{segment_id}_{name}_closed']
+    for stem in stems:
+        p = closed_dir / f'{stem}.ply'
+        if p.is_file():
+            return p.resolve()
+    # Allow another naming convention only if the ID resolves unambiguously.
+    matches = sorted(set(
+        p.resolve()
+        for glob in (f'{segment_id:03d}_*_closed.ply',
+                     f'{segment_id}_*_closed.ply')
+        for p in closed_dir.glob(glob)
+    ))
+    if len(matches) == 1:
+        print(f'[existing closed name fallback] {segment_name}: {matches[0]}')
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f'Ambiguous existing closed part for curve {segment_id} '
+            f'{segment_name!r}: {[str(p) for p in matches]}'
+        )
+    raise FileNotFoundError(
+        f'No preclosed part found for curve {segment_id} {segment_name!r} '
+        f'in {closed_dir}. Expected {stems[0]}.ply. '
+        'With --use_existing_closed_meshes, closing is disabled.'
+    )
+
+
+def prepare_existing_closed_meshes(
+    *, item_path: str | Path, item_name: str, handle,
+    global_full_mesh_spec: str, global_base_mesh_spec: str,
+    full_parts_dir_spec: str, base_parts_dir_spec: str,
+    full_part_pattern: str, base_part_pattern: str,
+    closed_mesh_dir_spec: str,
+):
+    """Read only: use preclosed per-part SDF oracles without generating caps."""
+    item_path = Path(item_path)
+    closed_root = resolve_item_path(closed_mesh_dir_spec, item_path, item_name)
+    src_global_full = resolve_item_path(global_full_mesh_spec, item_path, item_name)
+    src_global_base = resolve_item_path(global_base_mesh_spec, item_path, item_name)
+    # The global source is often already watertight. Prefer existing cached
+    # global copies, but do not require them or create new ones.
+    def global_asset(source, name):
+        existing = closed_root / 'global' / name
+        return _validated_existing_closed_asset(
+            source, existing if existing.is_file() else source, kind=name,
+        )
+    global_full = global_asset(src_global_full, 'mesh_full_closed.ply')
+    global_base = global_asset(src_global_base, 'mesh_base_closed.ply')
+    full_dir = resolve_item_path(full_parts_dir_spec, item_path, item_name)
+    base_dir = resolve_item_path(base_parts_dir_spec, item_path, item_name)
+    full_assets = {}
+    base_assets = {}
+    for curve_id, curve in enumerate(handle.curves):
+        name = str(curve.name)
+        idx = int(getattr(curve, 'idx', curve_id))
+        original_full = find_part_mesh(
+            full_dir, idx, name, full_part_pattern, 'full')
+        original_base = find_part_mesh(
+            base_dir, idx, name, base_part_pattern, 'base')
+        full_assets[name] = _validated_existing_closed_asset(
+            original_full,
+            _find_existing_closed_part(closed_root / 'parts_full', idx, name),
+            kind=f'full curve {idx} {name}',
+        )
+        base_assets[name] = _validated_existing_closed_asset(
+            original_base,
+            _find_existing_closed_part(closed_root / 'parts_base', idx, name),
+            kind=f'base curve {idx} {name}',
+        )
+    return global_full, global_base, full_assets, base_assets
+
+
 def prepare_closed_meshes(
     *,
     item_path: str | Path,
