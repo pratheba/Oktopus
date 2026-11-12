@@ -425,6 +425,118 @@ def prepare_samples_by_curve(handle, name, samples_by_curve):
     return data, meta
 
 
+def prepare_source_pair_by_curve(
+    handle,
+    full_name,
+    full_samples_by_curve,
+    base_name,
+    base_samples_by_curve,
+    chunk_size=100_000,
+):
+    """Localize full and base into one output, avoiding several 3M-point copies.
+
+    Ordering and metadata are identical to:
+      prepare_samples_by_curve(full), prepare_samples_by_curve(base),
+      concat_prepared_data(full, base).
+
+    Temporary localization is bounded by chunk_size.  Each output field has
+    one allocation; no per-curve output arrays or final concatenate copies
+    are retained.  Source sample arrays and std_handle.npz are untouched.
+    """
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
+    fields = (
+        "samples", "samples_local", "coords", "angles", "rho", "rho_n", "radius",
+    )
+    sources = (
+        (full_name, full_samples_by_curve),
+        (base_name, base_samples_by_curve),
+    )
+    max_count = sum(
+        len(points)
+        for _, source in sources
+        for points in source.values()
+    )
+    buffers = None
+    position = 0
+    meta_by_source = []
+    source_lengths = []
+
+    for name, samples_by_curve in sources:
+        source_start = position
+        inside_by_curve = {}
+
+        for cid, curve in enumerate(handle.curves):
+            points = np.asarray(
+                samples_by_curve.get(curve.name, np.zeros((0, 3))),
+            )
+            inside_parts = []
+            num_inside = 0
+            for start in range(0, len(points), chunk_size):
+                stop = min(start + chunk_size, len(points))
+                curve_data, inside = curve.localize_samples(
+                    np.asarray(points[start:stop], dtype=np.float64),
+                    update_curve=False,
+                    update_radius=False,
+                    name=name + "_" + str(cid),
+                )
+                inside = np.asarray(inside, dtype=np.int64)
+                if len(inside) == 0:
+                    del curve_data, inside
+                    continue
+
+                if buffers is None:
+                    buffers = {
+                        key: np.empty(
+                            (max_count,) + np.asarray(curve_data[key]).shape[1:],
+                            dtype=np.asarray(curve_data[key]).dtype,
+                        )
+                        for key in fields
+                    }
+                    buffers["curve_idx"] = np.empty(max_count, dtype=int)
+
+                count = len(inside)
+                end = position + count
+                for key in fields:
+                    buffers[key][position:end] = curve_data[key]
+                buffers["curve_idx"][position:end] = cid
+                inside_parts.append(inside + start)
+                position = end
+                num_inside += count
+                # Also frees unused frame_mat/radius_cylinder matrices immediately.
+                del curve_data, inside
+
+            inside_by_curve[curve.name] = (
+                np.concatenate(inside_parts)
+                if inside_parts else np.zeros(0, dtype=np.int64)
+            )
+            print(
+                f"[prepare_by_curve] {name} curve={curve.name} "
+                f"input={len(points)} inside={num_inside}",
+                flush=True,
+            )
+
+        meta_by_source.append({"inside_by_curve": inside_by_curve})
+        source_lengths.append(position - source_start)
+
+    if buffers is None:
+        raise RuntimeError(
+            f"No samples survived prepare_source_pair_by_curve "
+            f"for {full_name} / {base_name}."
+        )
+    # Views keep a single backing allocation; no second large copy.
+    data = {key: value[:position] for key, value in buffers.items()}
+    print(
+        f"[prepare_source_pair_by_curve] total={position} "
+        f"full={source_lengths[0]} base={source_lengths[1]} "
+        f"chunk_size={chunk_size}",
+        flush=True,
+    )
+    return data, meta_by_source[0], meta_by_source[1], source_lengths[0]
+
+
 def concat_prepared_data(data_a, data_b):
     """
     Concatenate already-localized prepared data.
@@ -866,21 +978,17 @@ def get_full_base_residual_samples(
     on_full_tag = f"{name_prefix}_on_full" if name_prefix else "on_full"
     on_base_tag = f"{name_prefix}_on_base" if name_prefix else "on_base"
 
-    on_full_data, on_full_meta = prepare_samples_by_curve(
+    (
+        on_surface_data,
+        on_full_meta,
+        on_base_meta,
+        on_full_count,
+    ) = prepare_source_pair_by_curve(
         handle,
         on_full_tag,
         on_surface_full_by_curve,
-    )
-
-    on_base_data, on_base_meta = prepare_samples_by_curve(
-        handle,
         on_base_tag,
         on_surface_base_by_curve,
-    )
-
-    on_surface_data = concat_prepared_data(
-        on_full_data,
-        on_base_data,
     )
 
     on_full_is_cap_used = filter_curve_field_after_prepare(
@@ -922,10 +1030,11 @@ def get_full_base_residual_samples(
         on_surface_data["sdf"] - on_surface_data["sdf_base"]
     ).astype(np.float32)
 
-    on_surface_data["sample_origin"] = np.concatenate([
-        np.zeros(len(on_full_data["samples"]), dtype=np.int32),   # 0 = full surface
-        np.ones(len(on_base_data["samples"]), dtype=np.int32),    # 1 = base surface
-    ], axis=0)
+    on_surface_data["sample_origin"] = np.empty(
+        len(on_surface_data["samples"]), dtype=np.int32,
+    )
+    on_surface_data["sample_origin"][:on_full_count] = 0  # full surface
+    on_surface_data["sample_origin"][on_full_count:] = 1  # base surface
 
     # 0=original full, 1=original base, 2=cap full, 3=cap base
     on_surface_data["surface_role"] = (
@@ -951,21 +1060,17 @@ def get_full_base_residual_samples(
     off_full_tag = f"{name_prefix}_off_full" if name_prefix else "off_full"
     off_base_tag = f"{name_prefix}_off_base" if name_prefix else "off_base"
 
-    pert_full_data, pert_full_meta = prepare_samples_by_curve(
+    (
+        pert_surface_data,
+        pert_full_meta,
+        pert_base_meta,
+        pert_full_count,
+    ) = prepare_source_pair_by_curve(
         handle,
         off_full_tag,
         surface_full_by_curve,
-    )
-
-    pert_base_data, pert_base_meta = prepare_samples_by_curve(
-        handle,
         off_base_tag,
         surface_base_by_curve,
-    )
-
-    pert_surface_data = concat_prepared_data(
-        pert_full_data,
-        pert_base_data,
     )
 
     full_sigma_used = filter_curve_field_after_prepare(
@@ -1037,10 +1142,11 @@ def get_full_base_residual_samples(
         pert_surface_data["sdf"] - pert_surface_data["sdf_base"]
     ).astype(np.float32)
 
-    pert_surface_data["sample_origin"] = np.concatenate([
-        np.zeros(len(pert_full_data["samples"]), dtype=np.int32),  # 0 = full perturb
-        np.ones(len(pert_base_data["samples"]), dtype=np.int32),   # 1 = base perturb
-    ], axis=0)
+    pert_surface_data["sample_origin"] = np.empty(
+        len(pert_surface_data["samples"]), dtype=np.int32,
+    )
+    pert_surface_data["sample_origin"][:pert_full_count] = 0  # full perturb
+    pert_surface_data["sample_origin"][pert_full_count:] = 1  # base perturb
 
     pert_surface_data["surface_role"] = (
         pert_surface_data["sample_origin"]
