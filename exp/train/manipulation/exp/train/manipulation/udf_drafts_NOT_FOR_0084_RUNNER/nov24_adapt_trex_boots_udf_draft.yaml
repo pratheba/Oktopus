@@ -1,0 +1,43 @@
+# Matched adaptation records only; NOT a validated UDF cutting config.
+# The 0084 hard-coded puffer stitch runner does NOT support generic outfits.
+# 0107 direct-UDF cutting uses SDF run provenance; do not give it this draft.
+- target_key: trex_9_v1|back_r_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_r_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_r_leg
+- target_key: trex_9_v1|back_l_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_l_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_l_leg
