@@ -1,0 +1,75 @@
+{
+  "trex_dress": {
+    "sdf_standard": "nov24_adapt_trex_dress_sdf.yaml",
+    "sdf_paired": "nov24_adapt_trex_dress_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_trex_dress_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "dress_top",
+      "dress_bottom"
+    ],
+    "new_experimental_changes": []
+  },
+  "armadillo_dress": {
+    "sdf_standard": "nov24_adapt_armadillo_dress_sdf.yaml",
+    "sdf_paired": "nov24_adapt_armadillo_dress_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_armadillo_dress_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "dress_top",
+      "dress_bottom"
+    ],
+    "new_experimental_changes": []
+  },
+  "trex_puffer": {
+    "sdf_standard": "nov24_adapt_trex_puffer_sdf.yaml",
+    "sdf_paired": "nov24_adapt_trex_puffer_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_trex_puffer_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "body",
+      "neck",
+      "front_r_leg",
+      "front_l_leg"
+    ],
+    "new_experimental_changes": []
+  },
+  "armadillo_puffer": {
+    "sdf_standard": "nov24_adapt_armadillo_puffer_sdf.yaml",
+    "sdf_paired": "nov24_adapt_armadillo_puffer_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_armadillo_puffer_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "body",
+      "neck",
+      "r_arm",
+      "l_arm"
+    ],
+    "new_experimental_changes": []
+  },
+  "trex_boots": {
+    "sdf_standard": "nov24_adapt_trex_boots_sdf.yaml",
+    "sdf_paired": "nov24_adapt_trex_boots_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_trex_boots_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "boot_back_r_leg",
+      "boot_back_l_leg"
+    ],
+    "new_experimental_changes": []
+  },
+  "armadillo_boots": {
+    "sdf_standard": "nov24_adapt_armadillo_boots_sdf.yaml",
+    "sdf_paired": "nov24_adapt_armadillo_boots_sdf_for_direct_0107.yaml",
+    "sdf_udf_direct": "nov24_adapt_armadillo_boots_sdf_udf_direct_0107.yaml",
+    "root_parts": [
+      "boot_shaft",
+      "boot_foot"
+    ],
+    "new_experimental_changes": [
+      {
+        "index": 0,
+        "deleted_blend_group": "boot"
+      },
+      {
+        "index": 1,
+        "deleted_blend_group": "boot"
+      }
+    ]
+  }
+}

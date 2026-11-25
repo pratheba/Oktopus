@@ -1,0 +1,608 @@
+# 0092: the learned UDF is evaluated on the original eight final SDF parts;
+# the accepted 0081 cuts are mapped onto the true 0087 fused exterior.
+# This SKIPS 0084 7-loop boundary stitching (which fails on 5 body loops).
+# No new SDF run; source parts and fused exterior MUST come from same SDF run.
+udf_fused_exterior_0092:
+  enabled: true
+  distance_edge_factor: 1.75
+  normal_dot: 0.55
+  zero_seed_cap_fallback: true
+
+# Oct22 puffer learned UDF (0084): operates on EIGHT SDF riggable_parts, NOT on the 0087 fused exterior.
+# UDF parts output and optional boundary stitching are NOT a Boolean-unioned final exterior.
+# Paired SDF source: oct22_adapt_oktopus_puffer_full_sdf_optimization.yaml.
+# OCT22 | Puffer | 0084 UDF settings paired to 0067 SDF.
+# Requires test_udf_sdf_cut_stitch.py + installed 0081/0084/0085 code.
+# Input riggable_parts must be from the 0067 SDF run named below.
+# One command: UDF inference -> curve-local 4-region removal -> 8 parts -> assembly -> stitch attempt.
+# Note: stitched PLY only on compatible boundary loops.
+udf_full_pipeline_0084:
+  enabled: true
+  stitch:
+    enabled: true
+    require_success: true
+    max_seam_gap: 0.025
+    max_bridge_edge: 0.06
+    max_perimeter_ratio: 1.65
+  preview_vertex_tolerance: 2.0e-05
+udf_cut_curve_local_preview_0081: true
+udf_cut_curve_local_band_0081: 0.11
+udf_cut_curve_local_step_0081: 0.07
+udf_cut_curve_local_surface_walk_0081: 0.4
+udf_cut_curve_local_min_seed_faces_0081: 8
+udf_cut_reconcile_0079: true
+udf_cut_largest_component_0079: false
+udf_cut_combined_direct_min_seed_fraction: 0.1
+udf_cut_direct_root_leaves: true
+udf_cut_evidence_0074: true
+udf_cut_direct_metric_parts_0073:
+- tentacle_t1
+- tentacle_t2
+- tentacle_t3
+- tentacle_t4
+- tentacle_t5
+- tentacle_t6
+- tentacle_t8
+udf_cut_direct_export_removed_0070: true
+udf_cut_direct_dry_run_parts_0073:
+- body
+- tentacle_t1
+- tentacle_t2
+- tentacle_t3
+- tentacle_t4
+- tentacle_t5
+- tentacle_t6
+- tentacle_t8
+udf_cut_metric_calibration_samples: 256
+udf_cut_metric_calibration_min_samples: 32
+udf_cut_metric_calibration_epsilon_edges: 0.05
+udf_cut_final_owner_mode_0069: curve_interval
+udf_cut_direct_interval_pad_0069: 0.035
+udf_cut_direct_curve_samples_0069: 1025
+udf_cut_combined_mode: direct_udf
+udf_cut_root_leaves_mesh_dir: inference/4M/puffer_oct22_fused_sdf_r512/oktopus_9_v1/riggable_parts
+udf_cut_require_owner_manifest: true
+udf_cut_seed_world: 0.02
+udf_cut_grow_world: 0.01
+udf_cut_auto_thresholds:
+  enabled: false
+udf_cut_direct_far_band_world: 0.002
+udf_cut_direct_min_informative_fraction: 0.05
+udf_cut_direct_min_informative_faces: 128
+udf_cut_combined_direct_preserve_components: false
+udf_cut_combined_direct_preserve_existing_boundaries: true
+udf_cut_write_debug_outputs: false
+udf_cut_cleanup_boundary: false
+udf_model_batch_size: 32768
+udf_cut_query_batch_size: 32768
+combine_adaptations: true
+root_leaves:
+  root: puffer_body_wrap_no_snug
+  output_mode: separate_parts
+  export_legacy_combined: false
+  leaves:
+    tentacle_t1:
+      blend_group: t1
+      attach_to: root
+    tentacle_t2:
+      blend_group: t2
+      attach_to: root
+    tentacle_t3:
+      target_key: oktopus_9_v1|t3
+      attach_to: root
+    tentacle_t4:
+      blend_group: t4
+      attach_to: root
+    tentacle_t5:
+      blend_group: t5
+      attach_to: root
+    tentacle_t6:
+      target_key: oktopus_9_v1|t6
+      attach_to: root
+    tentacle_t8:
+      target_key: oktopus_9_v1|t8
+      attach_to: root
+blend_groups:
+  t1:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true
+      optimize_position: true
+      radius_mode: anisotropic
+      max_radius_change: 0.2
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.2
+      position_sample_window: 0.025
+  t2:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true
+      optimize_position: true
+      radius_mode: anisotropic
+      max_radius_change: 0.2
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.2
+      position_sample_window: 0.025
+  t4:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true
+      optimize_position: true
+      radius_mode: angular
+      angular_profile_order: 3
+      max_angular_radius_change: 0.08
+      angular_deformation_weight: 0.02
+      max_angular_tangent_change: 1.0
+      max_radius_change: 0.2
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.2
+      position_sample_window: 0.025
+  t5:
+    seam_optimization:
+      enabled: true
+      optimize_radius: true
+      optimize_position: true
+      radius_mode: anisotropic
+      max_radius_change: 0.2
+      max_anisotropic_change: 0.15
+      max_position_change: 0.05
+      transition_fraction: 0.2
+      position_sample_window: 0.025
+adaptations:
+- name: puffer_body_wrap_no_snug
+  target_key: oktopus_9_v1|body
+  accessory_key: puffer_3_v1|body
+  mode: direct
+  cache_as: puffer_3_v1|body
+  src_0: 0.4
+  src_1: 0.9
+  tgt_0: 0.1
+  tgt_1: 0.5
+  scale: 0.72
+  rot_deg: 0.0
+  wrap_radius: true
+  rigid_radius: false
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  auto_avatar_snug_field: false
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 0.0001
+  avatar_clearance: 0.0001
+  cut_avatar: false
+- name: puffer_t1_1_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t1
+  accessory_key: puffer_3_v1|l_arm
+  blend_group: t1
+  mesh_blend_delta: 0.005
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.9
+  src_1: 0.6
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 2.0
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+- name: puffer_t1_2_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t1
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.62
+  src_1: 0.32
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 2.2
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  loop_projection_candidates: 1
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  use_adapt_control_filter_grid: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+  blend_group: t1
+  mesh_blend_delta: 0.005
+- name: puffer_t1_3_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t1
+  accessory_key: puffer_3_v1|l_arm
+  mode: direct
+  cache_as: puffer_3_v1|l_arm
+  src_0: 0.34
+  src_1: 0.1
+  tgt_0: 0.6
+  tgt_1: 0.9
+  scale: 2.2
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  loop_projection_candidates: 1
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  use_adapt_control_filter_grid: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+  blend_group: t1
+  mesh_blend_delta: 0.005
+- name: puffer_t2_1_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t2
+  accessory_key: puffer_3_v1|r_arm
+  blend_group: t2
+  mesh_blend_delta: 0.005
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.1
+  src_1: 0.4
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 1.8
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  accessory_offset_mode: none
+  use_soft_snug: true
+  local_offset_strength: 0.15
+  local_offset_band: 0.03
+  local_offset_gate_sigma: 0.01
+  use_hard_avatar_clamp: true
+  hard_clearance: 1.0e-05
+  avatar_clearance: 1.0e-05
+  cut_avatar: false
+- name: puffer_t2_2_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t2
+  accessory_key: puffer_3_v1|r_arm
+  blend_group: t2
+  mesh_blend_delta: 0.005
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.35
+  src_1: 0.68
+  tgt_0: 0.6
+  tgt_1: 0.9
+  scale: 1.8
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  use_adapt_control_filter_grid: true
+  cut_avatar: false
+- target_key: oktopus_9_v1|t3
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.1
+  src_1: 0.5
+  tgt_0: 0.25
+  tgt_1: 0.9
+  scale: 1.8
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  accessory_offset_mode: none
+  cut_avatar: false
+- name: puffer_t4_1_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t4
+  accessory_key: puffer_3_v1|r_arm
+  blend_group: t4
+  mesh_blend_delta: 0.005
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.1
+  src_1: 0.4
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 1.5
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  accessory_offset_mode: none
+  cut_avatar: false
+- name: puffer_t4_2_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t4
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  blend_group: t4
+  mesh_blend_delta: 0.005
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.38
+  src_1: 0.68
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 1.7
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_adapt_control_filter_grid: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  use_adaptive_control_filter_grid: true
+  avatar_filter_radius_scale: 1.2
+  avatar_filter_norm: 1.2
+  avatar_cylinder_radius_scale: 1.0
+  adapt_localize_norm: 1.0
+  cut_avatar: false
+- name: puffer_t4_3_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t4
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  blend_group: t4
+  mesh_blend_delta: 0.005
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.66
+  src_1: 0.9
+  tgt_0: 0.55
+  tgt_1: 0.9
+  scale: 1.7
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_adapt_control_filter_grid: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  cut_avatar: false
+- name: puffer_t5_1_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t5
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.1
+  src_1: 0.4
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 1.5
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  accessory_offset_mode: none
+  cut_avatar: false
+- name: puffer_t5_2_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t5
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.38
+  src_1: 0.68
+  tgt_0: 0.25
+  tgt_1: 0.7
+  scale: 1.7
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_adapt_control_filter_grid: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  use_adaptive_control_filter_grid: true
+  avatar_filter_radius_scale: 1.2
+  avatar_filter_norm: 1.2
+  avatar_cylinder_radius_scale: 1.0
+  adapt_localize_norm: 1.0
+  cut_avatar: false
+- name: puffer_t5_3_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t5
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  blend_group: t5
+  mesh_blend_delta: 0.005
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.66
+  src_1: 0.9
+  tgt_0: 0.55
+  tgt_1: 0.9
+  scale: 1.7
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_adapt_control_filter_grid: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  cut_avatar: false
+- name: puffer_t6_3_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t6
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.98
+  src_1: 0.4
+  tgt_0: 0.2
+  tgt_1: 0.9
+  scale: 1.8
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_adapt_control_filter_grid: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  cut_avatar: false
+- name: puffer_t8_1_rigid
+  sdf_candidate_interval_prune: false
+  sdf_candidate_piecewise_0057: false
+  sdf_localize_sphere_0058: false
+  sdf_localize_reuse_0059: false
+  sdf_projection_grid_0062: false
+  sdf_projection_bound_query_0062: false
+  target_key: oktopus_9_v1|t8
+  accessory_key: puffer_3_v1|r_arm
+  mode: direct
+  cache_as: puffer_3_v1|r_arm
+  src_0: 0.95
+  src_1: 0.5
+  tgt_0: 0.4
+  tgt_1: 1.0
+  scale: 1.5
+  rot_deg: 0.0
+  wrap_radius: false
+  rigid_radius: true
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  support_clamp_verbose: true
+  cut_avatar: false

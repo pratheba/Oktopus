@@ -1,0 +1,62 @@
+# EXPERIMENTAL 0107 direct UDF cutter config. NOT geometry-validated.
+# Requires matching sdf/paired_direct/nov24_adapt_trex_boots_sdf_for_direct_0107.yaml run, and its ownership manifest.
+# tools/udf_run_direct.py injects udf_direct_fused_0100 at runtime.
+root_leaves:
+  output_mode: separate_parts
+  export_legacy_combined: false
+  parts:
+    boot_back_r_leg:
+      adaptation_indices:
+      - 0
+    boot_back_l_leg:
+      adaptation_indices:
+      - 1
+udf_model_batch_size: 32768
+udf_cut_query_batch_size: 32768
+udf_cut_seed_world: 0.02
+udf_cut_grow_world: 0.01
+udf_cut_auto_thresholds:
+  enabled: false
+udf_cut_cleanup_boundary: false
+udf_cut_write_debug_outputs: false
+adaptations:
+- target_key: trex_9_v1|back_r_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_r_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_r_leg
+- target_key: trex_9_v1|back_l_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_l_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_l_leg

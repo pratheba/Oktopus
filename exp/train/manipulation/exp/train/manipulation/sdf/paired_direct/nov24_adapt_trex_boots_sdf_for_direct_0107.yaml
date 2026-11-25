@@ -1,0 +1,76 @@
+# EXPERIMENTAL SDF pairing for 0107 direct UDF cutting. NOT geometry-validated.
+# Enables named per-adaptation riggable_parts and the 0087 fused exterior.
+# Run this SDF YAML before its matching sdf_udf YAML; ordinary SDF runs do not create required assets.
+sdf_projection_workers_0054: 2
+sdf_projection_cache_0054: true
+sdf_projection_refine_fast_0055: true
+sdf_projection_profile_split_0055: false
+sdf_projection_leafsize_0056: 32
+sdf_prediction_scratch_dir_0056: /tmp
+sdf_prediction_zero_copy_write_0056: true
+sdf_inference_batch_size: 262144
+sdf_perf_timing: true
+sdf_localize_after_gate: true
+dcsdd_bounded_filtering: true
+dcsdd_filter_batch_size: 262144
+dcsdd_fast_bbox_marking: true
+dcsdd_crop_grid: true
+sdf_candidate_piecewise_0057: false
+sdf_localize_sphere_0058: false
+sdf_localize_reuse_0059: false
+sdf_projection_grid_0062: false
+sdf_projection_bound_query_0062: false
+combine_adaptations: true
+export_individual_meshes: true
+adaptations:
+- target_key: trex_9_v1|back_r_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_r_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_r_leg
+- target_key: trex_9_v1|back_l_leg
+  accessory_key: boots_1_v1|boot
+  wrap_radius: false
+  rigid_radius: true
+  mode: direct
+  src_0: 0.0
+  src_1: 0.85
+  tgt_0: 0.0
+  tgt_1: 0.85
+  scale: 1.0
+  rot_deg: 0.0
+  cache_as: trex_boot_back_l_leg
+  use_accessory_support_clamp: true
+  support_rho_limit: 1.0
+  support_w_limit: 999.0
+  support_positive_value: 1.0
+  use_soft_snug: false
+  cut_avatar: false
+  avatar_clearance: 0.0001
+  name: boot_back_l_leg
+root_leaves:
+  output_mode: separate_parts
+  export_legacy_combined: false
+  parts:
+    boot_back_r_leg:
+      adaptation_indices:
+      - 0
+    boot_back_l_leg:
+      adaptation_indices:
+      - 1
+sdf_fused_exterior_0087: true

@@ -1,98 +1,73 @@
-# Oktopus adaptation configs — cleaned selection (24 November 2026)
+# Oktopus manipulation configurations — organized 2026-11-25
 
-This directory is a **curated replacement** for the 198 root YAML files in the
-uploaded `manipulation.zip`. The original ZIP is your unmodified experiment archive.
-Do not delete it: the excluded Oct22/Oct23 trials still document tuning history.
+The original uploaded `manipulation.zip` is preserved without changes in `archive/`. This package does not delete or overwrite your checkout.
 
-## Proven working Oktopus references (copied byte-for-byte)
+| Folder | Role | Runner |
+|---|---|---|
+| `sdf/` | Avatar/accessory SDF adaptation | SDF inference / `-y` |
+| `udf/` | Legacy standalone UDF optimization/adaptation experiments | Old UDF-specific runner, **not** 0107 |
+| `sdf_udf/` | UDF model queries on completed SDF output | `tools/udf_run_direct.py --yaml ...` |
+| `sdf/paired_direct/` | SDF YAML with named part ownership + fused exterior required for NEW 0107 pairings | SDF inference |
+| `archive/` | Complete original 196-YAML archive, untouched | None |
 
-- `oct23_adapt_oktopus_boots_t1_stream_2048.yaml`
-- `oct22_adapt_oktopus_boots_t7_boot1_only_sdf_optimization.yaml`
-- `oct23_adapt_oktopus_cone_wrap_canonical_world_0103.yaml`
-- `oct22_adapt_oktopus_puffer_full_sdf_optimization.yaml`
+## Essential distinction
 
-These four are your identified working experiments, **not** proof that their
-performance flags safely transfer to T-rex or armadillo.
+- `config/config_*sdf*.yaml` and `config/config_*udf*.yaml` TRAIN the networks jointly on avatar + accessory. **They are not manipulation YAMLs.**
+- An `sdf_udf/` YAML does not train a UDF and is not a separately meshed UDF. It provides exactly the SDF adaptations + ownership layout while the 0107 runner loads the UDF checkpoint via `--config` / `--ckpt`.
+- Legacy `udf/` optimization configs (`udf_cut_seed_world`, etc.) are not substitutes for `sdf_udf/` configs because 0107 explicitly requires matching `root_leaves`, `riggable_parts` and `root_leaves_ownership.json`.
 
-## New SDF adaptation starting points
+## Original Oktopus references
 
-| File | Mappings | Basis / confidence |
-|---|---:|---|
-| `nov24_adapt_trex_dress_sdf.yaml` | 2 | 2 active records, top+bottom. Source dress_2_v2 based on newly preprocessed data. OCT22 source was dress_2_v1; check the new checkpoint. |
-| `nov24_adapt_armadillo_dress_sdf.yaml` | 2 | 2 active records, top+bottom, with separate cache keys. Alternative bottom-only tests archived in original ZIP. |
-| `nov24_adapt_trex_puffer_sdf.yaml` | 4 | 4 records from oct22 Trex-v2 puffer, retargeted to Trex-v1 after comparison with uploaded v1 part names; scale/placement needs visual confirmation. |
-| `nov24_adapt_armadillo_puffer_sdf.yaml` | 4 | 4 new puffer_3_v1 source mappings using Armadillo long_puffer geometry; especially neck must be visually tuned. |
-| `nov24_adapt_trex_boots_sdf.yaml` | 2 | NEW and untested: boots_1_v1 boot mapped to both rear legs of Trex-v1 with neutral scale/rotation. Not a validated fit. |
-| `nov24_adapt_armadillo_boots_sdf.yaml` | 2 | Only shaft test #0 and foot #3 retained from oct22 4-record experiment; assumes boot_2_v1 source model and handle are available. |
+The four known working reference SDF files were copied byte-for-byte into `sdf/`. The original puffer fused 0092 example was copied byte-for-byte into `sdf_udf/` as an archived-compatible reference.
 
-**Important corrections to the OCT22 imports:**
+## New paired experiments
 
-1. The original T-rex dress YAML ran six mutually competing top/bottom
-   variants; the new file uses one top and one bottom.
-2. Armadillo dress previously contained four alternative bottom settings with
-   the same `cache_as`; the new file uses one top and one bottom with distinct cache keys.
-3. Armadillo boots previously ran three shaft variants plus a foot; the new
-   file runs one shaft and one foot.
-4. The existing T-rex puffer experiment targeted `trex_9_v2`, while your recent
-   T-rex dataset is `trex_9_v1`. The new file uses v1 curves, but exact
-   geometric equivalence has NOT been demonstrated.
-5. Original dress configs refer to `dress_2_v1`. New configs refer to the
-   newly preprocessed **`dress_2_v2`**. Verify the checkpoint/model actually
-   contains those curve embeddings. Preprocessing alone does not guarantee it.
-6. The Oct22 generic SDF optimization flags are retained only where they were
-   general and conservative; OCTOPUS-specific sparse-puffer/0087 fused settings
-   and 0093 post-blend Boolean were **not** copied into these new avatars.
-7. For each multi-part outfit, `combine_adaptations: true` intentionally
-   extracts a merged SDF in addition to independent adaptation outputs.
-   Unlike the old Oct22 snapshots (which lacked this flag), this does not
-   silently stop after exporting separate pieces. Examine merged seams.
-8. `cut_avatar` remains false in the new files, consistent with the OCT22
-   SDF/UDF separation. This does not by itself prevent body collisions.
+For each of the 6 avatar/accessory combinations, there are three different configs:
+1. `sdf/nov24_adapt_<pair>_sdf.yaml` — ordinary SDF candidate from the prior package. **No 0107 ownership assets.**
+2. `sdf/paired_direct/nov24_adapt_<pair>_sdf_for_direct_0107.yaml` — *experimental* SDF with `root_leaves.parts` and `sdf_fused_exterior_0087: true`. Run this when intending to use direct cutter.
+3. `sdf_udf/nov24_adapt_<pair>_sdf_udf_direct_0107.yaml` — paired *experimental* direct cutter YAML with byte-identical adaptation list and root leaf definitions. `tools/udf_run_direct.py` inserts the `udf_direct_fused_0100` selection at runtime.
 
-## UDF: what the accompanying drafts are and are not
+Run `python verify_direct_pairs.py` to check that SDF and direct-UDF YAML adaptation lists and ownership are exactly matched. That test does NOT prove that the SDF mesher exports all required files or that UDF cutting produces correct geometry.
 
-`udf_drafts_NOT_FOR_0084_RUNNER/` contains *matching adaptation records* for
-independent UDF experiments. The old `test_udf_sdf_cut_stitch.py` 0084 runner
-expects the **OktopUS puffer 15-adaptation/8-part manifest**, so the drafts
-are NOT validated cut/stitch configs for new outfits. The later 0107 direct-UDF
-inference method uses the SDF output/ownership data; it does not require a
-separate adaptation YAML for each UDF cut. Do not assume a standalone UDF draft
-will successfully remove closure faces.
+### Armadillo boots special case
 
-## Preflight validation
+The original armadillo boots SDF YAML has shaft and foot sharing `blend_group: boot` on **different avatar curves**. The 0107 cutter requires all owners of a part to share one target curve for its curve-interval assignment. Its paired-direct SDF *and* UDF YAMLs intentionally omit both `blend_group` declarations to make separate shaft and foot parts. **This changes geometry assembly** and must be visually evaluated. The ordinary `sdf/` YAML is left untouched.
+
+### Other blockers and uncertainty
+
+- These six new SDF mappings are starters, not validated adaptations.
+- All-parts direct UDF thresholds were originally calibrated on Oktopus puffer body only. On new shapes, use `--allow-uncalibrated-nonbody` only for experimental previews; otherwise the 0107 code may refuse.
+- The inspected 0107 runner demands `riggable_fused_sdf_exterior.ply`, `riggable_parts/<part>.ply`, and `root_leaves_ownership.json` from the **same SDF run**. If the current `tools/udf_run_direct.py` differs, check its `--help` and code.
+- These paired-direct SDF YAMLs enable a fused 0087 extraction that may require disk-backed grid and substantial memory at high resolution; test at low resolution.
+
+## Important compatibility: flat YAML basenames
+
+The available 0107 runner has a check `Path(args.yaml).name == args.yaml` and rejects `--yaml sdf_udf/...`. You can make safe root-level **symlink aliases** without moving the structured files:
 
 ```bash
-python validate_manipulation.py .
-python validate_manipulation.py . --data-root /lustre/fast/fast/pselvaraju/Oktopus_now/Pack3MDataset
+cd exp/train/manipulation
+python make_flat_aliases.py --category sdf_udf       # dry-run
+python make_flat_aliases.py --category sdf_udf --apply
 ```
 
-The optional data-root step checks whether expected `std_handle.npz` curve
-names exist for each source and avatar. **It cannot validate checkpoint model
-embeddings, learned SDF quality, placement, fusion seams, or final UDF cutting.**
+Then use a basename (e.g. `--yaml nov24_adapt_trex_dress_sdf_udf_direct_0107.yaml`), which resolves through the symlink to `sdf_udf/`. To expose nested SDF basenames too, use `--category both`. This is not needed by runners that already accept relative subdirectory paths.
 
-Example SDF command (run from repository root; use your own trained config):
+## Example: T-rex + dress direct-cutter experiment
+
+Train joint T-rex+dress SDF and joint T-rex+dress UDF networks separately using your TWO training YAMLs in `config/`, then run SDF inference using the *paired direct* SDF YAML and check for all three 0107 required SDF artifacts. Finally:
 
 ```bash
-python test.py -c "$SDF_TRAINING_CONFIG" \
-  -o trex_dress_first_test -s trex_9_v1 \
-  -y nov24_adapt_trex_dress_sdf.yaml -r 128 -ckpt final
+python tools/udf_run_direct.py \
+  --sdf-run YOUR_TREX_DRESS_PAIRED_SDF_RUN \
+  --out trex_dress_udf_direct_preview \
+  --shape trex_9_v1 \
+  --config config/config_udf_grid_b13d3_trex1_dress2_v2.yaml \
+  --yaml nov24_adapt_trex_dress_sdf_udf_direct_0107.yaml \
+  --ckpt final --resolution 128 --parts all \
+  --allow-uncalibrated-nonbody
 ```
+This is an *experimental* command for 0107-style semantics. The UDF checkpoint must exist and the `--config` path must match how you trained.
 
-Set `SDF_TRAINING_CONFIG` to your **actual joint training config** whose
-model/checkpoint includes both the avatar and the target accessory. In particular
-`dress_2_v2` must be present; its preprocessed `sdf_samples.pkl` alone is not
-sufficient. Running at `-r 128` is only a geometry smoke test.
+## Migration safety
 
-## Source provenance
-
-Source settings were read from:
-- `adapt_trex_dress.yaml`
-- `adapt_armadillo_dress.yaml`
-- `adapt_trex2_puffer.yaml`
-- `adapt_armadillo_long_puffer.yaml`
-- `adapt_armadillo_boots2.yaml`
-- `oct22_adapt_oktopus_boots_t7_boot1_only_sdf_optimization.yaml`
-- the common safe Oct22 SDF flag set from `oct22_adapt_trex_dress_sdf_optimization.yaml`
-
-No experiment, mesh, inference or model evaluation was executed on the six new
-YAMLs. Treat all six as **provisional** until run on your `current` branch.
+Extract into a *temporary* directory; review before copying the three folders to your repo. Do **not** delete or replace your current `exp/train/manipulation/` directory until you have confirmed SDF inference YAML resolution and checkpoint loading on your current branch.
